@@ -1,0 +1,7 @@
+apiVersion: v2
+name: neteye-operator
+description: A Helm chart for NetEye Operator
+
+type: application
+
+version: 0.0.1
