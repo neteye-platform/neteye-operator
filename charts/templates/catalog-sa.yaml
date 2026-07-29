@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "catalogd-controller-manager"
+  namespace: {{ .Values.namespace.olm | quote }}
+  annotations:
+    meta.helm.sh/release-name: {{ .Release.Name | quote }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
+imagePullSecrets:
+- name: {{ .Values.registry.name | quote }}

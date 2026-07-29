@@ -1,0 +1,17 @@
+{{- if .Values.keycloak.enabled -}}
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterExtension
+metadata:
+  name: {{ .Values.keycloak.packageName | quote }}
+spec:
+  namespace: {{ .Values.namespace.operators | quote }}
+  source:
+    sourceType: Catalog
+    catalog:
+      packageName: {{ .Values.keycloak.packageName | quote }}
+      channels:
+        - {{ .Values.keycloak.channel | quote }}
+      selector:
+        matchLabels:
+          olm.operatorframework.io/metadata.name: {{ .Values.keycloak.catalogName | quote }}
+{{- end -}}

@@ -1,0 +1,16 @@
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterExtension
+metadata:
+  name: {{ .Values.operator.packageName | quote }}
+spec:
+  namespace: {{ .Values.namespace.operators | quote }}
+  source:
+    sourceType: Catalog
+    catalog:
+      packageName: {{ .Values.operator.packageName | quote }}
+      channels:
+      - {{ .Values.operator.channel | quote }}
+      version: {{ .Values.operator.versionRange | quote }}
+      selector:
+        matchLabels:
+          olm.example.io/catalog: {{ .Values.operator.catalogName | quote }}
