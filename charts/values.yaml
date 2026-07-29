@@ -9,8 +9,8 @@ registry:
 operator:
   packageName: neteye-operator
   catalogName: neteye-catalog
-  catalogImage: docker-si.wuerth-phoenix.com/neteye-operator-catalog:v0.1.13
-  versionRange: ">=0.1.13"
+  catalogImage: docker-si.wuerth-phoenix.com/neteye-operator-catalog:v0.2.5
+  versionRange: ">=0.2.5"
   channel: stable
   pollIntervalMinutes: 10
 
