@@ -6,37 +6,11 @@ metadata:
     capabilities: Basic Install
     operators.operatorframework.io/builder: operator-sdk-v1.32.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v3
-  name: neteye-operator.v0.1.10
+  name: neteye-operator.v0.2.6
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
-  customresourcedefinitions:
-    owned:
-    - name: prometheuses.monitoring.coreos.com
-      version: v1
-      kind: Prometheus
-      displayName: Prometheus
-      description: Prometheus monitoring instance
-    - name: alertmanagers.monitoring.coreos.com
-      version: v1
-      kind: Alertmanager
-      displayName: Alertmanager
-      description: Alertmanager alerting instance
-    - name: thanosrulers.monitoring.coreos.com
-      version: v1
-      kind: ThanosRuler
-      displayName: ThanosRuler
-      description: ThanosRuler monitoring instance
-    - name: scrapeconfigs.monitoring.coreos.com
-      version: v1alpha1
-      kind: ScrapeConfig
-      displayName: ScrapeConfig
-      description: Prometheus scrape configuration
-    - name: prometheusagents.monitoring.coreos.com
-      version: v1alpha1
-      kind: PrometheusAgent
-      displayName: PrometheusAgent
-      description: Prometheus Agent monitoring instance
+  customresourcedefinitions: {}
   description: NetEye Operator for managing cloud-native infrastructure
   displayName: NetEye Operator
   icon:
@@ -83,6 +57,7 @@ spec:
           resources:
           - namespaces
           verbs:
+          - create
           - get
           - list
           - watch
@@ -135,13 +110,17 @@ spec:
           - update
           - watch
         - apiGroups:
-          - monitoring.coreos.com
+          - apiextensions.k8s.io
           resources:
-          - prometheuses
-          - prometheusagents
-          - alertmanagers
-          - thanosrulers
-          - scrapeconfigs
+          - customresourcedefinitions
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - k8s.keycloak.org
+          resources:
+          - keycloaks
           verbs:
           - create
           - delete
@@ -149,25 +128,6 @@ spec:
           - list
           - patch
           - update
-          - watch
-        - apiGroups:
-          - monitoring.coreos.com
-          resources:
-          - prometheuses/status
-          - prometheusagents/status
-          - alertmanagers/status
-          - thanosrulers/status
-          verbs:
-          - get
-          - patch
-          - update
-        - apiGroups:
-          - apiextensions.k8s.io
-          resources:
-          - customresourcedefinitions
-          verbs:
-          - get
-          - list
           - watch
         serviceAccountName: neteye-operator
       deployments:
@@ -183,9 +143,7 @@ spec:
                 app.kubernetes.io/name: neteye-operator
             spec:
               containers:
-              - args:
-                - --log-level=info
-                image: quay.io/prometheus-operator/prometheus-operator:v0.78.2
+              - image: docker-si.wuerth-phoenix.com/neteye-operator:v0.2.6
                 imagePullPolicy: IfNotPresent
                 name: manager
                 resources:
@@ -254,4 +212,4 @@ spec:
   maturity: alpha
   provider:
     name: Wuerth Phoenix
-  version: 0.1.10
+  version: 0.2.6
