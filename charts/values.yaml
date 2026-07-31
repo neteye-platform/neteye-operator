@@ -9,14 +9,14 @@ registry:
 operator:
   packageName: neteye-operator
   catalogName: neteye-catalog
-  catalogImage: docker-si.wuerth-phoenix.com/neteye-operator-catalog:v0.2.5
-  versionRange: ">=0.2.5"
+  catalogImage: docker-si.wuerth-phoenix.com/neteye-operator-catalog:v0.2.8
+  versionRange: ">=0.2.8"
   channel: stable
   pollIntervalMinutes: 10
 
 namespace:
-  operators: neteye-system
-  system: neteye-system
+  operators: neteye2
+  system: neteye2
   olm: olmv1-system
 
 keycloak:
