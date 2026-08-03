@@ -8,7 +8,21 @@ name: stable
 entries:
 - name: neteye-operator.v0.2.6
 - name: neteye-operator.v0.2.7
+  replaces: neteye-operator.v0.2.6
 - name: neteye-operator.v0.2.8
+  replaces: neteye-operator.v0.2.7
+- name: neteye-operator.v0.2.9
+  replaces: neteye-operator.v0.2.8
+- name: neteye-operator.v0.2.10
+  replaces: neteye-operator.v0.2.9
+- name: neteye-operator.v0.2.11
+  replaces: neteye-operator.v0.2.10
+- name: neteye-operator.v0.2.12
+  replaces: neteye-operator.v0.2.11
+  skips:
+  - neteye-operator.v0.2.9
+  - neteye-operator.v0.2.10
+  - neteye-operator.v0.2.11
 ---
 schema: olm.bundle
 name: neteye-operator.v0.2.6
@@ -54,3 +68,63 @@ properties:
   value:
     packageName: neteye-operator
     version: 0.2.8
+---
+schema: olm.bundle
+name: neteye-operator.v0.2.9
+package: neteye-operator
+image: docker-si.wuerth-phoenix.com/neteye-operator-bundle:v0.2.9
+properties:
+- type: olm.gvk
+  value:
+    group: operators.coreos.com
+    kind: ClusterServiceVersion
+    version: v1alpha1
+- type: olm.package
+  value:
+    packageName: neteye-operator
+    version: 0.2.9
+---
+schema: olm.bundle
+name: neteye-operator.v0.2.10
+package: neteye-operator
+image: docker-si.wuerth-phoenix.com/neteye-operator-bundle:v0.2.10
+properties:
+- type: olm.gvk
+  value:
+    group: operators.coreos.com
+    kind: ClusterServiceVersion
+    version: v1alpha1
+- type: olm.package
+  value:
+    packageName: neteye-operator
+    version: 0.2.10
+---
+schema: olm.bundle
+name: neteye-operator.v0.2.11
+package: neteye-operator
+image: docker-si.wuerth-phoenix.com/neteye-operator-bundle:v0.2.11
+properties:
+- type: olm.gvk
+  value:
+    group: operators.coreos.com
+    kind: ClusterServiceVersion
+    version: v1alpha1
+- type: olm.package
+  value:
+    packageName: neteye-operator
+    version: 0.2.11
+---
+schema: olm.bundle
+name: neteye-operator.v0.2.12
+package: neteye-operator
+image: docker-si.wuerth-phoenix.com/neteye-operator-bundle:v0.2.12
+properties:
+- type: olm.gvk
+  value:
+    group: operators.coreos.com
+    kind: ClusterServiceVersion
+    version: v1alpha1
+- type: olm.package
+  value:
+    packageName: neteye-operator
+    version: 0.2.12

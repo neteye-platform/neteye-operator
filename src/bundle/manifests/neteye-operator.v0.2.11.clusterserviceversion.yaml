@@ -14,27 +14,12 @@ metadata:
             "neteyeVersion": "4.36",
             "targetNamespace": "neteye-system"
           }
-        },
-        {
-          "apiVersion": "neteye.wuerth-phoenix.com/v1alpha1",
-          "kind": "KeycloakConfig",
-          "metadata": {
-            "name": "keycloak-sample"
-          },
-          "spec": {
-            "neteyeRef": "neteye-sample",
-            "namespace": "neteye-system",
-            "hostname": "keycloak.example.com",
-            "database": {
-              "vendor": "postgres"
-            }
-          }
         }
       ]
     capabilities: Basic Install
     operators.operatorframework.io/builder: operator-sdk-v1.32.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v3
-  name: neteye-operator.v0.2.8
+  name: neteye-operator.v0.2.11
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -46,11 +31,6 @@ spec:
       displayName: NetEye
       kind: NetEye
       name: neteyes.neteye.wuerth-phoenix.com
-      version: v1alpha1
-    - description: KeycloakConfig manages the lifecycle of a Keycloak instance.
-      displayName: Keycloak Config
-      kind: KeycloakConfig
-      name: keycloakconfigs.neteye.wuerth-phoenix.com
       version: v1alpha1
   description: NetEye Operator for managing cloud-native infrastructure
   displayName: NetEye Operator
@@ -186,7 +166,6 @@ spec:
           - neteye.wuerth-phoenix.com
           resources:
           - neteyes
-          - keycloakconfigs
           verbs:
           - create
           - delete
@@ -199,7 +178,6 @@ spec:
           - neteye.wuerth-phoenix.com
           resources:
           - neteyes/status
-          - keycloakconfigs/status
           verbs:
           - get
           - patch
@@ -208,7 +186,6 @@ spec:
           - neteye.wuerth-phoenix.com
           resources:
           - neteyes/finalizers
-          - keycloakconfigs/finalizers
           verbs:
           - update
         serviceAccountName: neteye-operator
@@ -225,7 +202,7 @@ spec:
                 app.kubernetes.io/name: neteye-operator
             spec:
               containers:
-              - image: docker-si.wuerth-phoenix.com/neteye-operator:v0.2.8
+              - image: docker-si.wuerth-phoenix.com/neteye-operator:v0.2.11
                 imagePullPolicy: IfNotPresent
                 name: manager
                 resources:
@@ -294,4 +271,4 @@ spec:
   maturity: alpha
   provider:
     name: Wuerth Phoenix
-  version: 0.2.8
+  version: 0.2.11

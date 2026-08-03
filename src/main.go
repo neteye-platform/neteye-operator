@@ -45,6 +45,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	neteye "github.com/wuerth-phoenix/neteye-operator/api/v1alpha1"
 )
 
 const (
@@ -55,7 +57,6 @@ const (
 	keycloakCRName    = "neteye-kc"
 	dbUser            = "testuser"
 	dbPassword        = "testpassword"
-	dbHost            = "postgres-db.neteye-system.svc.rke2.neteyelocal"
 	dbName            = "keycloak"
 
 	// Keycloak ClusterExtension
@@ -71,6 +72,7 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(neteye.AddToScheme(scheme))
 }
 
 func main() {
@@ -118,6 +120,15 @@ func main() {
 		log:    ctrl.Log.WithName("keycloak-deployer"),
 	}); err != nil {
 		setupLog.Error(err, "unable to add keycloak deployer")
+		os.Exit(1)
+	}
+
+	if err := (&NetEyeReconciler{
+		Client: mgr.GetClient(),
+		Log:    ctrl.Log.WithName("neteye-reconciler"),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create NetEye controller")
 		os.Exit(1)
 	}
 
@@ -173,32 +184,20 @@ func (d *keycloakDeployer) Start(ctx context.Context) error {
 }
 
 func (d *keycloakDeployer) deploy(ctx context.Context) error {
-	if err := d.ensureNamespace(ctx); err != nil {
-		return fmt.Errorf("ensure namespace: %w", err)
-	}
 	if err := d.ensureKeycloakExtension(ctx); err != nil {
 		return fmt.Errorf("ensure keycloak extension: %w", err)
-	}
-	if err := d.ensureDBSecret(ctx); err != nil {
-		return fmt.Errorf("ensure db secret: %w", err)
-	}
-	if err := d.ensureTLSSecret(ctx); err != nil {
-		return fmt.Errorf("ensure tls secret: %w", err)
-	}
-	if err := d.ensureKeycloakCR(ctx); err != nil {
-		return fmt.Errorf("ensure keycloak cr: %w", err)
 	}
 	return nil
 }
 
-func (d *keycloakDeployer) ensureNamespace(ctx context.Context) error {
+func (d *keycloakDeployer) ensureNamespace(ctx context.Context, namespace string) error {
 	ns := &corev1.Namespace{}
-	if err := d.client.Get(ctx, types.NamespacedName{Name: keycloakNamespace}, ns); err == nil {
+	if err := d.client.Get(ctx, types.NamespacedName{Name: namespace}, ns); err == nil {
 		return nil
 	}
 	ns = &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: keycloakNamespace,
+			Name: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "neteye-operator",
 			},
@@ -207,17 +206,17 @@ func (d *keycloakDeployer) ensureNamespace(ctx context.Context) error {
 	if err := d.client.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	d.log.Info("namespace created", "namespace", keycloakNamespace)
+	d.log.Info("namespace created", "namespace", namespace)
 	return nil
 }
 
-func (d *keycloakDeployer) ensureDBSecret(ctx context.Context) error {
+func (d *keycloakDeployer) ensureDBSecret(ctx context.Context, namespace string) error {
 	desired := map[string][]byte{
 		"username": []byte(dbUser),
 		"password": []byte(dbPassword),
 	}
 	secret := &corev1.Secret{}
-	key := types.NamespacedName{Name: dbSecretName, Namespace: keycloakNamespace}
+	key := types.NamespacedName{Name: dbSecretName, Namespace: namespace}
 	if err := d.client.Get(ctx, key, secret); err == nil {
 		if reflect.DeepEqual(secret.Data, desired) {
 			return nil
@@ -232,7 +231,7 @@ func (d *keycloakDeployer) ensureDBSecret(ctx context.Context) error {
 	secret = &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      dbSecretName,
-			Namespace: keycloakNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "neteye-operator",
 			},
@@ -247,9 +246,9 @@ func (d *keycloakDeployer) ensureDBSecret(ctx context.Context) error {
 	return nil
 }
 
-func (d *keycloakDeployer) ensureTLSSecret(ctx context.Context) error {
+func (d *keycloakDeployer) ensureTLSSecret(ctx context.Context, namespace, hostname string) error {
 	secret := &corev1.Secret{}
-	key := types.NamespacedName{Name: tlsSecretName, Namespace: keycloakNamespace}
+	key := types.NamespacedName{Name: tlsSecretName, Namespace: namespace}
 	if err := d.client.Get(ctx, key, secret); err == nil {
 		// Exists — verify it still has cert and key data.
 		if len(secret.Data[corev1.TLSCertKey]) > 0 && len(secret.Data[corev1.TLSPrivateKeyKey]) > 0 {
@@ -257,7 +256,7 @@ func (d *keycloakDeployer) ensureTLSSecret(ctx context.Context) error {
 		}
 		// Data was wiped — regenerate.
 		d.log.Info("tls secret data is empty, regenerating")
-		certPEM, keyPEM, err := generateSelfSignedCert(keycloakHostname)
+		certPEM, keyPEM, err := generateSelfSignedCert(hostname)
 		if err != nil {
 			return fmt.Errorf("generate self-signed cert: %w", err)
 		}
@@ -268,7 +267,7 @@ func (d *keycloakDeployer) ensureTLSSecret(ctx context.Context) error {
 		return d.client.Update(ctx, secret)
 	}
 
-	certPEM, keyPEM, err := generateSelfSignedCert(keycloakHostname)
+	certPEM, keyPEM, err := generateSelfSignedCert(hostname)
 	if err != nil {
 		return fmt.Errorf("generate self-signed cert: %w", err)
 	}
@@ -276,7 +275,7 @@ func (d *keycloakDeployer) ensureTLSSecret(ctx context.Context) error {
 	secret = &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      tlsSecretName,
-			Namespace: keycloakNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "neteye-operator",
 			},
@@ -349,12 +348,13 @@ func (d *keycloakDeployer) ensureKeycloakExtension(ctx context.Context) error {
 	return nil
 }
 
-func (d *keycloakDeployer) ensureKeycloakCR(ctx context.Context) error {
+func (d *keycloakDeployer) ensureKeycloakCR(ctx context.Context, namespace, image string) error {
 	desiredSpec := map[string]interface{}{
 		"instances": int64(1),
+		"image":     image,
 		"db": map[string]interface{}{
 			"vendor":   "postgres",
-			"host":     dbHost,
+			"host":     dbHostForNamespace(namespace),
 			"port":     int64(5432),
 			"database": dbName,
 			"usernameSecret": map[string]interface{}{
@@ -380,7 +380,7 @@ func (d *keycloakDeployer) ensureKeycloakCR(ctx context.Context) error {
 
 	kc := &unstructured.Unstructured{}
 	kc.SetGroupVersionKind(keycloakGVK())
-	key := types.NamespacedName{Name: keycloakCRName, Namespace: keycloakNamespace}
+	key := types.NamespacedName{Name: keycloakCRName, Namespace: namespace}
 	if err := d.client.Get(ctx, key, kc); err == nil {
 		currentSpec, _, _ := unstructured.NestedMap(kc.Object, "spec")
 		if reflect.DeepEqual(currentSpec, desiredSpec) {
@@ -392,7 +392,7 @@ func (d *keycloakDeployer) ensureKeycloakCR(ctx context.Context) error {
 		if err := d.client.Update(ctx, kc); err != nil {
 			return err
 		}
-		d.log.Info("keycloak CR reconciled")
+		d.log.Info("keycloak CR reconciled", "namespace", namespace, "image", image)
 		return nil
 	}
 
@@ -402,7 +402,7 @@ func (d *keycloakDeployer) ensureKeycloakCR(ctx context.Context) error {
 			"kind":       "Keycloak",
 			"metadata": map[string]interface{}{
 				"name":      keycloakCRName,
-				"namespace": keycloakNamespace,
+				"namespace": namespace,
 				"labels": map[string]interface{}{
 					"app.kubernetes.io/managed-by": "neteye-operator",
 				},
@@ -413,8 +413,70 @@ func (d *keycloakDeployer) ensureKeycloakCR(ctx context.Context) error {
 	if err := d.client.Create(ctx, kc); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	d.log.Info("keycloak CR created")
+	d.log.Info("keycloak CR created", "namespace", namespace, "image", image)
 	return nil
+}
+
+func dbHostForNamespace(namespace string) string {
+	return "postgres-db." + namespace + ".svc.rke2.neteyelocal"
+}
+
+// NetEyeReconciler reconciles NetEye CRs and drives per-CR Keycloak deployment.
+type NetEyeReconciler struct {
+	client.Client
+	Log    logr.Logger
+	Scheme *runtime.Scheme
+}
+
+func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := r.Log.WithValues("neteye", req.NamespacedName)
+
+	ne := &neteye.NetEye{}
+	if err := r.Get(ctx, req.NamespacedName, ne); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	components, ok := neteye.ComponentsForVersion(ne.Spec.NetEyeVersion)
+	if !ok {
+		log.Error(nil, "unsupported NetEye version", "version", ne.Spec.NetEyeVersion)
+		ne.Status.Phase = "Failed"
+		ne.Status.Message = fmt.Sprintf("unsupported NetEye version %q", ne.Spec.NetEyeVersion)
+		_ = r.Status().Update(ctx, ne)
+		return ctrl.Result{}, fmt.Errorf("unsupported NetEye version %q", ne.Spec.NetEyeVersion)
+	}
+
+	ns := ne.Spec.TargetNamespace
+	d := &keycloakDeployer{client: r.Client, log: log}
+
+	if err := d.ensureNamespace(ctx, ns); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure namespace: %w", err)
+	}
+	if err := d.ensureDBSecret(ctx, ns); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure db secret: %w", err)
+	}
+	if err := d.ensureTLSSecret(ctx, ns, keycloakHostname); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure tls secret: %w", err)
+	}
+	if err := d.ensureKeycloakCR(ctx, ns, components.KeycloakImage); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure keycloak cr: %w", err)
+	}
+
+	ne.Status.Phase = "Ready"
+	ne.Status.ResolvedKeycloakImage = components.KeycloakImage
+	ne.Status.Message = ""
+	_ = r.Status().Update(ctx, ne)
+
+	log.Info("NetEye reconciled", "namespace", ns, "image", components.KeycloakImage)
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+func (r *NetEyeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&neteye.NetEye{}).
+		Complete(r)
 }
 
 func keycloakGVK() schema.GroupVersionKind {
