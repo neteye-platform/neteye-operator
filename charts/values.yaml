@@ -3,20 +3,20 @@
 # Declare variables to be passed into your templates.
 
 registry:
-  secret: "value"
+  secret: "<value>"
   name: neteye-registry-pull-secret
 
 operator:
   packageName: neteye-operator
   catalogName: neteye-catalog
-  catalogImage: docker-si.wuerth-phoenix.com/neteye-operator-catalog:v0.2.8
-  versionRange: ">=0.2.8"
+  catalogImage: docker-si.wuerth-phoenix.com/neteye-operator-catalog:v0.2.12
+  versionRange: ">=0.2.12"
   channel: stable
   pollIntervalMinutes: 10
 
 namespace:
-  operators: neteye2
-  system: neteye2
+  operators: neteye-system
+  system: neteye-system
   olm: olmv1-system
 
 keycloak:
