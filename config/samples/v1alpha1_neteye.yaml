@@ -1,0 +1,20 @@
+# The one object an admin writes: a NetEye product version, a target
+# namespace, and the managed services the instance is composed of.
+# The operator fans this out into one CR per managed service.
+apiVersion: neteye.com/v1alpha1
+kind: NetEye
+metadata:
+  labels:
+    app.kubernetes.io/name: neteye-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: neteye-sample
+spec:
+  neteyeVersion: "4.36"
+  targetNamespace: neteye-system
+  services:
+    keycloak:
+      additionalOptions:
+        # Overriding a setting does not make it unenforced: the value below is
+        # re-asserted on every reconcile pass.
+        - name: loginTheme
+          value: neteye

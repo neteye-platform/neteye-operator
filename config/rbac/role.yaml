@@ -1,0 +1,118 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  - issuers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - k8s.keycloak.org
+  resources:
+  - keycloaks
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - k8s.keycloak.org
+  resources:
+  - keycloaks/status
+  verbs:
+  - get
+- apiGroups:
+  - neteye.com
+  resources:
+  - keycloaks
+  - neteyes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - neteye.com
+  resources:
+  - keycloaks/finalizers
+  - neteyes/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - neteye.com
+  resources:
+  - keycloaks/status
+  - neteyes/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - olm.operatorframework.io
+  resources:
+  - clusterextensions
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch

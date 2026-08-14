@@ -1,0 +1,325 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "neteye.com/v1alpha1",
+          "kind": "Keycloak",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "neteye-operator"
+            },
+            "name": "keycloak-sample"
+          },
+          "spec": {
+            "configImage": "172.19.69.105:5000/neteye-keycloak-config:v0.2.27",
+            "image": "172.19.69.105:5000/neteye-keycloak:test"
+          }
+        },
+        {
+          "apiVersion": "neteye.com/v1alpha1",
+          "kind": "NetEye",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "neteye-operator"
+            },
+            "name": "neteye-sample"
+          },
+          "spec": {
+            "neteyeVersion": "4.36",
+            "services": {
+              "keycloak": {
+                "additionalOptions": [
+                  {
+                    "name": "loginTheme",
+                    "value": "neteye"
+                  }
+                ]
+              }
+            },
+            "targetNamespace": "neteye-system"
+          }
+        }
+      ]
+    capabilities: Basic Install
+    categories: Identity Management
+    containerImage: controller:latest
+    createdAt: "2026-08-05T14:33:40Z"
+    operators.operatorframework.io/builder: operator-sdk-v1.42.3
+    operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
+    repository: https://github.com/neteye/neteye-platform-operator
+    support: Wuerth IT Italy S.r.l.
+  name: neteye-operator.v0.0.1
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: |-
+        Keycloak is the Schema for the keycloaks API: one NetEye-managed Keycloak
+        instance, owned by a NetEye CR.
+
+        The kind name is shared with the upstream Keycloak Operator's
+        k8s.keycloak.org/Keycloak, which this operator drives underneath. They are
+        different groups and never conflict on the wire, but `kubectl get keycloak`
+        is ambiguous on a cluster running both — use `keycloaks.neteye.com`, or the
+        `nekc` short name, for this one.
+      displayName: Keycloak
+      kind: Keycloak
+      name: keycloaks.neteye.com
+      version: v1alpha1
+    - description: |-
+        NetEye is the Schema for the neteyes API. It is the single object an admin
+        writes: it declares which NetEye product version to run, where, and which
+        managed services it is composed of. The operator fans it out into one CR per
+        managed service.
+      displayName: Net Eye
+      kind: NetEye
+      name: neteyes.neteye.com
+      version: v1alpha1
+  description: |
+    Deploys and keeps a NetEye installation in the state it declares. An admin
+    writes a single NetEye custom resource naming a product version and the
+    managed services it is composed of; the operator resolves that version
+    into component images and fans it out into one custom resource per
+    managed service, each reconciled and kept enforced independently.
+  displayName: NetEye Operator
+  install:
+    spec:
+      clusterPermissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - namespaces
+          verbs:
+          - create
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - secrets
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - apiextensions.k8s.io
+          resources:
+          - customresourcedefinitions
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - batch
+          resources:
+          - jobs
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - cert-manager.io
+          resources:
+          - certificates
+          - issuers
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - k8s.keycloak.org
+          resources:
+          - keycloaks
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - k8s.keycloak.org
+          resources:
+          - keycloaks/status
+          verbs:
+          - get
+        - apiGroups:
+          - neteye.com
+          resources:
+          - keycloaks
+          - neteyes
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - neteye.com
+          resources:
+          - keycloaks/finalizers
+          - neteyes/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - neteye.com
+          resources:
+          - keycloaks/status
+          - neteyes/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - olm.operatorframework.io
+          resources:
+          - clusterextensions
+          verbs:
+          - create
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        serviceAccountName: neteye-operator-controller-manager
+      deployments:
+      - label:
+          app.kubernetes.io/managed-by: kustomize
+          app.kubernetes.io/name: neteye-operator
+          control-plane: controller-manager
+        name: neteye-operator-controller-manager
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: neteye-operator
+              control-plane: controller-manager
+          strategy: {}
+          template:
+            metadata:
+              annotations:
+                kubectl.kubernetes.io/default-container: manager
+              labels:
+                app.kubernetes.io/name: neteye-operator
+                control-plane: controller-manager
+            spec:
+              containers:
+              - args:
+                - --leader-elect
+                - --health-probe-bind-address=:8081
+                command:
+                - /manager
+                env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                image: controller:latest
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8081
+                  initialDelaySeconds: 15
+                  periodSeconds: 20
+                name: manager
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: 8081
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                resources:
+                  limits:
+                    cpu: 500m
+                    memory: 128Mi
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+              securityContext:
+                runAsNonRoot: true
+                seccompProfile:
+                  type: RuntimeDefault
+              serviceAccountName: neteye-operator-controller-manager
+              terminationGracePeriodSeconds: 10
+      permissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - coordination.k8s.io
+          resources:
+          - leases
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - ""
+          resources:
+          - events
+          verbs:
+          - create
+          - patch
+        serviceAccountName: neteye-operator-controller-manager
+    strategy: deployment
+  installModes:
+  - supported: true
+    type: OwnNamespace
+  - supported: true
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - neteye
+  - keycloak
+  - identity
+  maintainers:
+  - name: Wuerth IT Italy S.r.l.
+  minKubeVersion: 1.30.0
+  provider:
+    name: Wuerth IT Italy S.r.l.
+  version: 0.0.1

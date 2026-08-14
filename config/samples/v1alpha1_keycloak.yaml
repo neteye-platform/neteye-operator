@@ -1,0 +1,21 @@
+# Normally created and kept in sync by the NetEye controller — an admin edits
+# the owning NetEye CR, not this one. It is shown here because each managed
+# service carries a status of its own that can be inspected independently:
+#   kubectl get keycloaks.neteye.com -n neteye-system
+apiVersion: neteye.com/v1alpha1
+kind: Keycloak
+metadata:
+  labels:
+    app.kubernetes.io/name: neteye-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: keycloak-sample
+spec:
+  # Resolved by the operator from NetEye.spec.neteyeVersion; hand edits are
+  # reverted on the next reconcile.
+  image: 172.19.69.105:5000/neteye-keycloak:test
+  configImage: 172.19.69.105:5000/neteye-keycloak-config:v0.2.27
+  # Omitted here, so the operator provisions a self-signed cert-manager Issuer.
+  # Point this at a real CA to make the certificate trusted beyond the operator.
+  # issuerRef:
+  #   name: neteye-ca
+  #   kind: ClusterIssuer

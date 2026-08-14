@@ -1,0 +1,68 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+    categories: Identity Management
+    containerImage: controller:latest
+    repository: https://github.com/neteye/neteye-platform-operator
+    support: Wuerth IT Italy S.r.l.
+  name: neteye-operator.v0.0.1
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: |-
+        Keycloak is the Schema for the keycloaks API: one NetEye-managed Keycloak
+        instance, owned by a NetEye CR.
+
+        The kind name is shared with the upstream Keycloak Operator's
+        k8s.keycloak.org/Keycloak, which this operator drives underneath. They are
+        different groups and never conflict on the wire, but `kubectl get keycloak`
+        is ambiguous on a cluster running both — use `keycloaks.neteye.com`, or the
+        `nekc` short name, for this one.
+      displayName: Keycloak
+      kind: Keycloak
+      name: keycloaks.neteye.com
+      version: v1alpha1
+    - description: |-
+        NetEye is the Schema for the neteyes API. It is the single object an admin
+        writes: it declares which NetEye product version to run, where, and which
+        managed services it is composed of. The operator fans it out into one CR per
+        managed service.
+      displayName: Net Eye
+      kind: NetEye
+      name: neteyes.neteye.com
+      version: v1alpha1
+  description: |
+    Deploys and keeps a NetEye installation in the state it declares. An admin
+    writes a single NetEye custom resource naming a product version and the
+    managed services it is composed of; the operator resolves that version
+    into component images and fans it out into one custom resource per
+    managed service, each reconciled and kept enforced independently.
+  displayName: NetEye Operator
+  install:
+    spec:
+      deployments: null
+    strategy: deployment
+  installModes:
+  - supported: true
+    type: OwnNamespace
+  - supported: true
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - neteye
+  - keycloak
+  - identity
+  maintainers:
+  - name: Wuerth IT Italy S.r.l.
+  minKubeVersion: 1.30.0
+  provider:
+    name: Wuerth IT Italy S.r.l.
+  version: 0.0.1

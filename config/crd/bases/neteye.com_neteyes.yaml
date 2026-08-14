@@ -1,0 +1,269 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: neteyes.neteye.com
+spec:
+  group: neteye.com
+  names:
+    kind: NetEye
+    listKind: NetEyeList
+    plural: neteyes
+    shortNames:
+    - ne
+    singular: neteye
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.neteyeVersion
+      name: Version
+      type: string
+    - jsonPath: .spec.targetNamespace
+      name: Target
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          NetEye is the Schema for the neteyes API. It is the single object an admin
+          writes: it declares which NetEye product version to run, where, and which
+          managed services it is composed of. The operator fans it out into one CR per
+          managed service.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NetEyeSpec defines the desired state of NetEye.
+            properties:
+              neteyeVersion:
+                description: |-
+                  NetEyeVersion is the NetEye product version to deploy, e.g. "4.36".
+                  It resolves the component images of every managed service: the admin
+                  declares a product version, never an image tag.
+                example: "4.36"
+                minLength: 1
+                type: string
+              services:
+                description: |-
+                  Services selects which managed services this NetEye instance is made of
+                  and carries their per-service tunables. A service left unset is not
+                  deployed; a service that was set and is then removed is torn down.
+                properties:
+                  keycloak:
+                    description: Keycloak deploys the NetEye identity provider.
+                    properties:
+                      additionalOptions:
+                        description: |-
+                          AdditionalOptions overrides the operator's compiled-in defaults for
+                          individual enforced Keycloak settings.
+                        items:
+                          description: |-
+                            ServiceOption is a single setting override: it replaces the operator's
+                            compiled-in default for one enforced setting.
+
+                            Only names the operator recognises have an effect. An unrecognised name is
+                            ignored rather than rejected, so a CR written for a newer operator still
+                            reconciles on an older one; the ignored names are reported on
+                            status.conditions rather than failing the object.
+
+                            Overriding a setting does not make it unenforced: the resulting value is
+                            still re-asserted on every reconcile pass.
+                          properties:
+                            name:
+                              description: Name of the setting to override, e.g. "loginTheme".
+                              minLength: 1
+                              type: string
+                            value:
+                              description: Value to enforce instead of the operator's
+                                default.
+                              type: string
+                          required:
+                          - name
+                          - value
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      hostname:
+                        description: |-
+                          Hostname the Keycloak instance is served on. Defaults to a name derived
+                          from the target namespace when empty.
+                        type: string
+                      issuerRef:
+                        description: |-
+                          IssuerRef selects the cert-manager issuer signing the instance's
+                          certificate. Defaults to a self-signed Issuer the operator provisions.
+                        properties:
+                          kind:
+                            default: Issuer
+                            description: |-
+                              Kind of the issuer. A namespaced Issuer must live in the same namespace
+                              as the instance; a ClusterIssuer is cluster-wide.
+                            enum:
+                            - Issuer
+                            - ClusterIssuer
+                            type: string
+                          name:
+                            description: Name of the issuer.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
+                type: object
+              targetNamespace:
+                default: neteye-system
+                description: |-
+                  TargetNamespace is the namespace the managed services are deployed
+                  into. It may differ from the namespace the NetEye CR itself lives in.
+                example: neteye-system
+                minLength: 1
+                type: string
+            required:
+            - neteyeVersion
+            - targetNamespace
+            type: object
+          status:
+            description: NetEyeStatus defines the observed state of NetEye.
+            properties:
+              conditions:
+                description: Conditions report aspects that can degrade independently
+                  of the deploy.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              message:
+                description: Message is a human-readable elaboration of Phase.
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the generation of the most recently reconciled
+                  NetEye spec.
+                format: int64
+                type: integer
+              phase:
+                description: |-
+                  Phase is the rolled-up lifecycle state across every managed service:
+                  the least-advanced service's phase, so that a NetEye reads Ready only
+                  when all of it is.
+                type: string
+              services:
+                description: Services caches the state of each managed service CR
+                  this NetEye owns.
+                items:
+                  description: |-
+                    ServiceReference is the rolled-up state of one managed service, surfaced on
+                    the owning NetEye so that `kubectl get neteye` answers "what is broken"
+                    without a second lookup. The service's own CR remains the authority: this
+                    is a cache, not the source of truth.
+                  properties:
+                    kind:
+                      description: Kind of the managed service CR, e.g. "Keycloak".
+                      type: string
+                    message:
+                      description: Message last observed on the managed service CR.
+                      type: string
+                    name:
+                      description: Name of the managed service CR.
+                      type: string
+                    namespace:
+                      description: Namespace the managed service CR lives in.
+                      type: string
+                    phase:
+                      description: Phase last observed on the managed service CR.
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  - namespace
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - kind
+                x-kubernetes-list-type: map
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
