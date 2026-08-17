@@ -61,7 +61,7 @@ type NetEyeReconciler struct {
 func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("neteye", req.NamespacedName)
 
-	log.Info("Reconciling NetEye", "namespace", req.Namespace, "name", req.Name)
+	log.Info("Started reconciling NetEye", "namespace", req.Namespace, "name", req.Name)
 
 	ne := &neteye.NetEye{}
 	if err := r.Get(ctx, req.NamespacedName, ne); err != nil {
@@ -72,19 +72,8 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 	ne.Status.ObservedGeneration = ne.GetGeneration()
-	servicesStatus := neteye.NetEyeServicesStatus{
+	ne.Status.ServicesStatus = neteye.NetEyeServicesStatus{
 		Identity: identityStatus("Unknown", "", ""),
-	}
-
-	components, ok := neteye.ComponentsForVersion(ne.Spec.Version)
-	if !ok {
-		message := fmt.Sprintf("unsupported NetEye version '%s'; supported versions are: %v", ne.Spec.Version, neteye.SupportedVersions())
-		log.Error(nil, "unsupported NetEye version", "version", ne.Spec.Version, "supportedVersions", neteye.SupportedVersions(), "requeueAfter", failureRequeueAfter)
-		ne.Status.Phase = "Failed"
-		ne.Status.Message = message
-		ne.Status.ServicesStatus = servicesStatus
-		_ = r.Status().Update(ctx, ne)
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, nil
 	}
 
 	ns := ne.Namespace
@@ -93,6 +82,32 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEye", ne)
 	gateway := ne.Spec.Gateway
+
+	if !neteye.IsLatestVersion(ne.Spec.Version) && neteye.IsPreviousVersion(ne.Spec.Version) {
+		log.Info("NetEye version is not the latest", "currentVersion", ne.Spec.Version, "latestVersion", neteye.CurrentNetEyeVersion, "requeueAfter", failureRequeueAfter)
+		message := fmt.Sprintf("NetEye version '%s' is not the latest; consider upgrading to '%s'. Reconciliation will be paused until the upgrade is performed.", ne.Spec.Version, neteye.CurrentNetEyeVersion)
+		ne.Status.Phase = "PendingUpgrades"
+		ne.Status.Message = message
+		_ = r.Status().Update(ctx, ne)
+		return ctrl.Result{RequeueAfter: failureRequeueAfter}, nil
+	} else if !neteye.IsLatestVersion(ne.Spec.Version) {
+		log.Error(nil, "NetEye version missmatch detected", "currentVersion", ne.Spec.Version, "latestVersion", neteye.CurrentNetEyeVersion, "requeueAfter", failureRequeueAfter)
+		message := fmt.Sprintf("NetEye version '%s' is not the latest. Latest version is '%s'. Reconciliation will be paused until the missmatch has been resolved.", ne.Spec.Version, neteye.CurrentNetEyeVersion)
+		ne.Status.Phase = "Failed"
+		ne.Status.Message = message
+		_ = r.Status().Update(ctx, ne)
+		return ctrl.Result{RequeueAfter: failureRequeueAfter}, nil
+	}
+
+	components, ok := neteye.ComponentsForVersion(ne.Spec.Version)
+	if !ok {
+		message := fmt.Sprintf("unsupported NetEye version '%s'; supported versions are: %v", ne.Spec.Version, neteye.SupportedVersions())
+		log.Error(nil, "unsupported NetEye version", "version", ne.Spec.Version, "supportedVersions", neteye.SupportedVersions(), "requeueAfter", failureRequeueAfter)
+		ne.Status.Phase = "Failed"
+		ne.Status.Message = message
+		_ = r.Status().Update(ctx, ne)
+		return ctrl.Result{RequeueAfter: failureRequeueAfter}, nil
+	}
 
 	keycloakComponent := r.KeycloakComponent
 	if keycloakComponent == nil {
