@@ -1,5 +1,7 @@
 # Build stage
-FROM golang:1.23-alpine AS builder
+FROM golang:1.26-alpine AS builder
+
+ARG VERSION=dev
 
 WORKDIR /workspace
 
@@ -8,6 +10,7 @@ COPY go.mod go.mod
 COPY main.go main.go
 COPY api/ api/
 COPY controllers/ controllers/
+COPY internal/ internal/
 
 # Install git and ca-certificates for module downloads
 RUN apk add --no-cache git ca-certificates
@@ -16,11 +19,11 @@ RUN apk add --no-cache git ca-certificates
 RUN go build \
     -mod=mod \
     -buildvcs=false \
-    -ldflags="-w -s" \
+    -ldflags="-w -s -X main.version=${VERSION}" \
     -o manager \
     -work \
     main.go 2>&1 || \
-    (go get -d ./... && go build -a -ldflags="-w -s" -o manager main.go)
+    (go get -d ./... && go build -a -ldflags="-w -s -X main.version=${VERSION}" -o manager main.go)
 
 # Final stage
 FROM alpine:3.18

@@ -1,0 +1,271 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: neteyes.neteye.cloud
+spec:
+  group: neteye.cloud
+  names:
+    kind: NetEye
+    listKind: NetEyeList
+    plural: neteyes
+    shortNames:
+    - ne
+    singular: neteye
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.version
+      name: Version
+      type: string
+    - jsonPath: .metadata.namespace
+      name: Namespace
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          NetEye is the Schema for the neteyes API.
+          It declares which NetEye product version is being deployed and in which
+          Kubernetes namespace, driving the selection of component images (e.g. Keycloak 27).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NetEyeSpec defines the desired state of NetEyeConfig.
+            properties:
+              enabledModules:
+                description: |-
+                  EnabledModules declares which NetEye feature modules are available for tenants.
+                  The field is part of the desired API contract; module-specific reconcilers
+                  will consume it as they are implemented.
+                items:
+                  minLength: 1
+                  type: string
+                type: array
+              gateway:
+                description: |-
+                  Gateway configures the Gateway API Gateway and default routes managed by
+                  NetEye.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Annotations are written to spec.infrastructure.annotations on the Gateway.
+                      Use this for implementation-specific settings such as Cilium LB IPAM.
+                    example:
+                      lbipam.cilium.io/ips: 192.0.2.10
+                    type: object
+                  className:
+                    description: |-
+                      ClassName is the GatewayClass used when the operator creates or reconciles
+                      the Gateway.
+                    example: cilium
+                    minLength: 1
+                    type: string
+                  name:
+                    description: |-
+                      Name is the Gateway name in the NetEye CR namespace. If it already exists,
+                      the operator adopts and reconciles it; otherwise the operator creates it.
+                    example: neteye
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  tlsSecretName:
+                    description: |-
+                      TLSSecretName is the Secret written by the operator-managed Gateway
+                      wildcard Certificate and used by the Gateway HTTPS listener for TLS
+                      termination.
+                    example: neteyelocal-wildcard-tls
+                    minLength: 1
+                    type: string
+                required:
+                - className
+                - name
+                - tlsSecretName
+                type: object
+              identity:
+                description: Identity configures identity services such as Keycloak.
+                properties:
+                  dbConnection:
+                    description: |-
+                      DBConnection configures the MariaDB database used by identity services.
+                      Credential Secrets must exist in the NetEye CR namespace.
+                    properties:
+                      dbName:
+                        description: DBName is the database name used by Keycloak.
+                        example: keycloak
+                        minLength: 1
+                        type: string
+                      host:
+                        description: Host is the DNS name or IP address of the external
+                          service.
+                        example: mariadb.example.com
+                        minLength: 1
+                        type: string
+                      passwordSecret:
+                        description: |-
+                          PasswordSecret references the Secret key containing the database password.
+                          The Secret must exist in the NetEye CR namespace.
+                        properties:
+                          key:
+                            description: Key is the key inside the Secret containing
+                              the database credential value.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the name of the Secret containing
+                              the database credential.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      port:
+                        default: 3306
+                        description: Port is the service port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      usernameSecret:
+                        description: |-
+                          UsernameSecret references the Secret key containing the database username.
+                          The Secret must exist in the NetEye CR namespace.
+                        properties:
+                          key:
+                            description: Key is the key inside the Secret containing
+                              the database credential value.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the name of the Secret containing
+                              the database credential.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - dbName
+                    - host
+                    - passwordSecret
+                    - usernameSecret
+                    type: object
+                  hostname:
+                    description: Hostname is the public hostname configured for the
+                      identity service.
+                    example: keycloak.example.com
+                    pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  podExtraEnvVars:
+                    description: |-
+                      PodExtraEnvVars lists extra environment variables for identity pods. Entries
+                      can be plain names, such as "KC_FEATURES", or name/value pairs, such as
+                      "JAVA_OPTS_APPEND=-Djava.net.preferIPv6Addresses=true". Plain names are
+                      passed to the identity service with an empty value.
+                    items:
+                      pattern: ^[A-Za-z_][A-Za-z0-9_]*(=.*)?$
+                      type: string
+                    type: array
+                  replicas:
+                    default: 1
+                    description: Replicas is the number of identity service replicas
+                      to deploy.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                required:
+                - dbConnection
+                - hostname
+                type: object
+              internalCertificateIssuerRef:
+                description: |-
+                  InternalCertificateIssuerRef is the cert-manager Issuer name used for TLS
+                  certificates consumed by common NetEye components. The Issuer must already
+                  exist in the NetEye CR namespace and is managed by the user.
+                example: neteye-internal-issuer
+                minLength: 1
+                type: string
+              version:
+                description: |-
+                  Version is the NetEye product version string, e.g. "4.36".
+                  It is used to resolve the correct component images (Keycloak, etc.).
+                example: "4.36"
+                minLength: 1
+                type: string
+            required:
+            - gateway
+            - identity
+            - internalCertificateIssuerRef
+            - version
+            type: object
+          status:
+            description: NetEyeStatus defines the observed state of NetEyeConfig.
+            properties:
+              message:
+                description: Message is a human-readable aggregate status message.
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the generation of the most recently observed
+                  NetEye.
+                format: int64
+                type: integer
+              phase:
+                description: 'Phase is the aggregate NetEye state: Pending, Ready,
+                  or Failed.'
+                type: string
+              servicesStatus:
+                description: ServicesStatus reports observed state for each managed
+                  NetEye service.
+                properties:
+                  identity:
+                    description: Identity reports the observed state of identity services
+                      such as Keycloak.
+                    properties:
+                      message:
+                        description: Message is a human-readable status message for
+                          this service.
+                        type: string
+                      resolvedImage:
+                        description: ResolvedImage is the container image resolved
+                          for this service.
+                        type: string
+                      status:
+                        description: Status is the service state, for example Pending,
+                          Ready, or Failed.
+                        type: string
+                    type: object
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
