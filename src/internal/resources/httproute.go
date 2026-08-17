@@ -31,7 +31,7 @@ import (
 
 // EnsureHTTPRoute ensures a Gateway API HTTPRoute exists for a hostname and
 // routes traffic to a Service in the same namespace as the route.
-func EnsureHTTPRoute(ctx context.Context, client client.Client, log logr.Logger, namespace, name, gatewayRef string, hostnames []string, backendServiceName string, backendServicePort int64, owner metav1.OwnerReference) error {
+func EnsureHTTPRoute(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name, gatewayRef string, hostnames []string, backendServiceName string, backendServicePort int64, owner metav1.OwnerReference) error {
 	desiredSpec := map[string]interface{}{
 		"parentRefs": []interface{}{
 			map[string]interface{}{
@@ -56,10 +56,10 @@ func EnsureHTTPRoute(ctx context.Context, client client.Client, log logr.Logger,
 			},
 		},
 	}
-	return ensureHTTPRouteSpec(ctx, client, log, namespace, name, desiredSpec, owner, "Gateway API HTTPRoute")
+	return ensureHTTPRouteSpec(ctx, client, log, namespace, name, desiredSpec, owner)
 }
 
-func ensureHTTPRouteSpec(ctx context.Context, client client.Client, log logr.Logger, namespace, name string, desiredSpec map[string]interface{}, owner metav1.OwnerReference, logResource string) error {
+func ensureHTTPRouteSpec(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name string, desiredSpec map[string]interface{}, owner metav1.OwnerReference) error {
 	route := &unstructured.Unstructured{}
 	route.SetGroupVersionKind(httpRouteGVK())
 	key := types.NamespacedName{Name: name, Namespace: namespace}
@@ -70,6 +70,7 @@ func ensureHTTPRouteSpec(ctx context.Context, client client.Client, log logr.Log
 			return err
 		}
 		if reflect.DeepEqual(currentSpec, desiredSpec) && !ownerChanged {
+			log.V(1).Info("HttpRoute had no drift", "namespace", namespace, "name", name)
 			return nil
 		}
 		if !reflect.DeepEqual(currentSpec, desiredSpec) {
@@ -80,7 +81,7 @@ func ensureHTTPRouteSpec(ctx context.Context, client client.Client, log logr.Log
 		if err := client.Update(ctx, route); err != nil {
 			return err
 		}
-		log.Info(logResource+" reconciled", "namespace", namespace, "route", name)
+		log.V(1).Info("HTTPRoute reconciled", "namespace", namespace, "name", name)
 		return nil
 	} else if !apierrors.IsNotFound(err) {
 		return err
@@ -106,7 +107,7 @@ func ensureHTTPRouteSpec(ctx context.Context, client client.Client, log logr.Log
 	if err := client.Create(ctx, route); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	log.Info(logResource+" created", "namespace", namespace, "route", name)
+	log.Info("HTTPRoute created", "namespace", namespace, "name", name)
 	return nil
 }
 

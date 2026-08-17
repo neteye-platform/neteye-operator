@@ -160,8 +160,8 @@ func (c *Component) EnsureOperatorExtension(ctx context.Context) error {
 
 // EnsureResources reconciles the identity component resources owned by the Keycloak
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
-func (c *Component) EnsureResources(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
-	if err := resources.EnsureCertificate(ctx, c.client, c.log, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, owner); err != nil {
+func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
+	if err := resources.EnsureCertificate(ctx, c.client, &c.log, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
 	}
 	certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
@@ -174,10 +174,10 @@ func (c *Component) EnsureResources(ctx context.Context, namespace, image string
 	if err := c.EnsureInstance(ctx, namespace, image, identity, owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
-	if err := resources.EnsureHTTPRoute(ctx, c.client, c.log, namespace, HTTPRouteName, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, owner); err != nil {
+	if err := resources.EnsureHTTPRoute(ctx, c.client, &c.log, namespace, HTTPRouteName, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, owner); err != nil {
 		return false, "", fmt.Errorf("ensure http route: %w", err)
 	}
-	return true, "", nil
+	return true, "Keycloak is Ready", nil
 }
 
 // IsReady reports whether the Keycloak Operator marked the Keycloak instance

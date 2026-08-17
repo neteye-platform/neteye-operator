@@ -31,7 +31,7 @@ import (
 
 // EnsureCertificate ensures a namespaced cert-manager Certificate exists and
 // writes the requested TLS Secret using the provided issuer reference.
-func EnsureCertificate(ctx context.Context, client client.Client, log logr.Logger, namespace, name, secretName string, commonName string, dnsNames []string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
+func EnsureCertificate(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name string, secretName string, commonName string, dnsNames []string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
 	issuerRef = issuerRef.normalized()
 	if err := validateCertificateIssuerRef(issuerRef); err != nil {
 		return err
@@ -63,6 +63,7 @@ func EnsureCertificate(ctx context.Context, client client.Client, log logr.Logge
 			return err
 		}
 		if reflect.DeepEqual(currentSpec, desiredSpec) && !ownerChanged {
+			log.V(1).Info("Certificate had no drift", "namespace", namespace, "name", name, "secret", secretName)
 			return nil
 		}
 		if !reflect.DeepEqual(currentSpec, desiredSpec) {
@@ -73,7 +74,7 @@ func EnsureCertificate(ctx context.Context, client client.Client, log logr.Logge
 		if err := client.Update(ctx, certificate); err != nil {
 			return err
 		}
-		log.Info("cert-manager Certificate reconciled", "namespace", namespace, "certificate", name, "secret", secretName)
+		log.V(1).Info("Certificate reconciled", "namespace", namespace, "certificate", name, "secret", secretName)
 		return nil
 	} else if !apierrors.IsNotFound(err) {
 		return err
@@ -99,13 +100,13 @@ func EnsureCertificate(ctx context.Context, client client.Client, log logr.Logge
 	if err := client.Create(ctx, certificate); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	log.Info("cert-manager Certificate created", "namespace", namespace, "certificate", name, "secret", secretName)
+	log.Info("Certificate created", "namespace", namespace, "certificate", name, "secret", secretName)
 	return nil
 }
 
 // IsCertificateReady reports whether cert-manager marked the Certificate Ready.
 // It does not wait; callers should requeue and check again later.
-func IsCertificateReady(ctx context.Context, client client.Client, namespace, name string) (bool, string, error) {
+func IsCertificateReady(ctx context.Context, client client.Client, namespace string, name string) (bool, string, error) {
 	certificate := &unstructured.Unstructured{}
 	certificate.SetGroupVersionKind(certificateGVK())
 	key := types.NamespacedName{Name: name, Namespace: namespace}
