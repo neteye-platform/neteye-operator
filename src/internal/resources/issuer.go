@@ -45,24 +45,25 @@ func (ref CertificateIssuerRef) normalized() CertificateIssuerRef {
 // EnsureIssuerExists ensures the referenced user-managed cert-manager Issuer
 // exists in the NetEye namespace. The operator never creates or adopts Issuers
 // because Issuer configuration represents a CA/trust decision owned by the user.
-func EnsureIssuerExists(ctx context.Context, client client.Client, log logr.Logger, namespace string, ref CertificateIssuerRef) error {
+func EnsureIssuerExists(ctx context.Context, client client.Client, log *logr.Logger, namespace string, ref CertificateIssuerRef) error {
 	ref = ref.normalized()
 	if err := validateCertificateIssuerRef(ref); err != nil {
 		return err
 	}
 
 	issuer := &unstructured.Unstructured{}
-	issuer.SetGroupVersionKind(certificateIssuerGVK(ref))
+	issuer.SetGroupVersionKind(certificateIssuerGVK())
 	key := issuerObjectKey(namespace, ref)
 	if err := client.Get(ctx, key, issuer); err == nil {
-		log.Info("cert-manager Issuer found", "namespace", issuer.GetNamespace(), "issuer", ref.Name)
+		log.V(1).Info("Issuer found", "namespace", namespace, "issuer", ref.Name)
 		return nil
 	} else {
+		log.Info("Issuer not found", "namespace", namespace, "issuer", ref.Name)
 		return err
 	}
 }
 
-func certificateIssuerGVK(ref CertificateIssuerRef) schema.GroupVersionKind {
+func certificateIssuerGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{
 		Group:   CertManagerGroup,
 		Version: "v1",

@@ -38,13 +38,13 @@ const (
 
 // EnsureGatewayTLSCertificate ensures the wildcard TLS certificate used by the
 // Gateway HTTPS listener exists and writes the referenced Gateway TLS Secret.
-func EnsureGatewayTLSCertificate(ctx context.Context, client client.Client, log logr.Logger, namespace, secretName string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
+func EnsureGatewayTLSCertificate(ctx context.Context, client client.Client, log *logr.Logger, namespace string, secretName string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
 	return EnsureCertificate(ctx, client, log, namespace, secretName, secretName, GatewayWildcardDNSName, []string{GatewayWildcardDNSName}, issuerRef, owner)
 }
 
 // EnsureGateway ensures a Gateway API Gateway exists in the NetEye namespace.
 // Existing Gateways are adopted when they have no conflicting controller owner.
-func EnsureGateway(ctx context.Context, client client.Client, log logr.Logger, namespace, name, gatewayClassName string, annotations map[string]string, tlsSecretName string, owner metav1.OwnerReference) error {
+func EnsureGateway(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name string, gatewayClassName string, annotations map[string]string, tlsSecretName string, owner metav1.OwnerReference) error {
 	desiredSpec := map[string]interface{}{
 		"gatewayClassName": gatewayClassName,
 		"listeners": []interface{}{
@@ -98,6 +98,7 @@ func EnsureGateway(ctx context.Context, client client.Client, log logr.Logger, n
 			return err
 		}
 		if reflect.DeepEqual(currentSpec, desiredSpec) && !ownerChanged {
+			log.V(1).Info("Gateway had no drift", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
 			return nil
 		}
 		if !reflect.DeepEqual(currentSpec, desiredSpec) {
@@ -108,7 +109,7 @@ func EnsureGateway(ctx context.Context, client client.Client, log logr.Logger, n
 		if err := client.Update(ctx, gateway); err != nil {
 			return err
 		}
-		log.Info("Gateway API Gateway reconciled", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
+		log.V(1).Info("Gateway reconciled", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
 		return nil
 	} else if !apierrors.IsNotFound(err) {
 		return err
@@ -134,13 +135,13 @@ func EnsureGateway(ctx context.Context, client client.Client, log logr.Logger, n
 	if err := client.Create(ctx, gateway); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	log.Info("Gateway API Gateway created", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
+	log.Info("Gateway created", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
 	return nil
 }
 
 // EnsureHTTPToHTTPSRedirectRoute ensures the default Gateway HTTP listener
 // redirects cleartext traffic to HTTPS.
-func EnsureHTTPToHTTPSRedirectRoute(ctx context.Context, client client.Client, log logr.Logger, namespace, gatewayName string, owner metav1.OwnerReference) error {
+func EnsureHTTPToHTTPSRedirectRoute(ctx context.Context, client client.Client, log *logr.Logger, namespace string, gatewayName string, owner metav1.OwnerReference) error {
 	desiredSpec := map[string]interface{}{
 		"parentRefs": []interface{}{
 			map[string]interface{}{
@@ -163,7 +164,7 @@ func EnsureHTTPToHTTPSRedirectRoute(ctx context.Context, client client.Client, l
 		},
 	}
 
-	return ensureHTTPRouteSpec(ctx, client, log, namespace, HTTPToHTTPSRedirectRouteName, desiredSpec, owner, "Gateway API HTTP to HTTPS redirect route")
+	return ensureHTTPRouteSpec(ctx, client, log, namespace, HTTPToHTTPSRedirectRouteName, desiredSpec, owner)
 }
 
 func gatewayGVK() schema.GroupVersionKind {
