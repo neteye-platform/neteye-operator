@@ -214,11 +214,19 @@ spec:
                 type: string
               version:
                 description: |-
-                  Version is the NetEye product version string, e.g. "4.36".
+                  Version is the NetEye product version string, e.g. "4.50".
                   It is used to resolve the correct component images (Keycloak, etc.).
-                example: "4.36"
+                enum:
+                - "4.50"
+                example: "4.50"
                 minLength: 1
                 type: string
+                x-kubernetes-validations:
+                - message: NetEye version can only be created as 4.50 or upgraded
+                    from 4.49 to 4.50
+                  optionalOldSelf: true
+                  rule: '!oldSelf.hasValue() || oldSelf.value() == self || oldSelf.value()
+                    == ''4.49'''
             required:
             - gateway
             - identity
