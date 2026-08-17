@@ -164,14 +164,29 @@ func SupportedVersions() []string {
 	return versions
 }
 
+// IsSupportedVersion returns true if the given NetEye version is supported by this operator.
+func IsSupportedVersion(version string) bool {
+	_, ok := netEyeVersionMap[version]
+	return ok
+}
+
+// IsPreviousVersion returns true if given NetEye version is the latest supported version.
+func IsPreviousVersion(version string) bool {
+	return version == PreviousNetEyeVersion
+}
+
+// IsLatestVersion returns true if the given NetEye version is the latest supported version.
+func IsLatestVersion(version string) bool {
+	return version == CurrentNetEyeVersion
+}
+
 // NetEyeSpec defines the desired state of NetEyeConfig.
 type NetEyeSpec struct {
 	// Version is the NetEye product version string, e.g. "4.50".
 	// It is used to resolve the correct component images (Keycloak, etc.).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:Enum="4.50"
-	// +kubebuilder:validation:XValidation:rule="!oldSelf.hasValue() || oldSelf.value() == self || oldSelf.value() == '4.49'",message="NetEye version can only be created as 4.50 or upgraded from 4.49 to 4.50",optionalOldSelf=true
+	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+$`
 	// +kubebuilder:example="4.50"
 	Version string `json:"version"`
 

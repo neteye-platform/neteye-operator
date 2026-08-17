@@ -11,7 +11,7 @@ metadata:
             "name": "neteye-sample"
           },
           "spec": {
-            "version": "4.50",
+            "version": "4.51",
             "enabledModules": [
               "elastic-stack"
             ],
@@ -278,6 +278,10 @@ spec:
                   - image: 172.19.69.254:5000/neteye-operator:0.1.0
                     imagePullPolicy: Always
                     name: manager
+                    ports:
+                      - containerPort: 9443
+                        name: webhook-server
+                        protocol: TCP
                     resources:
                       limits:
                         cpu: 200m
@@ -346,3 +350,25 @@ spec:
   provider:
     name: Wuerth IT | Italy
   version: 0.1.0
+  webhookdefinitions:
+    - admissionReviewVersions:
+        - v1
+      containerPort: 9443
+      deploymentName: neteye-operator
+      failurePolicy: Fail
+      generateName: vneteye-v1alpha1.neteye.cloud
+      rules:
+        - apiGroups:
+            - neteye.cloud
+          apiVersions:
+            - v1alpha1
+          operations:
+            - CREATE
+            - UPDATE
+          resources:
+            - neteyes
+          scope: Namespaced
+      sideEffects: None
+      targetPort: 9443
+      type: ValidatingAdmissionWebhook
+      webhookPath: /validate-neteye-cloud-v1alpha1-neteye

@@ -112,6 +112,10 @@ func main() {
 		setupLog.Error(err, "unable to create NetEye controller")
 		os.Exit(1)
 	}
+	if err := neteye.SetupNetEyeWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create NetEye webhook")
+		os.Exit(1)
+	}
 
 	setupLog.Info("starting neteye-operator", "version", version, "logLevel", configuredLogName)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
