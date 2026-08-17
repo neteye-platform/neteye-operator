@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"sort"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -136,8 +138,13 @@ type NetEyeGatewaySpec struct {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	"4.50": {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.1"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.1"},
 }
+
+const (
+	CurrentNetEyeVersion  = "4.50"
+	PreviousNetEyeVersion = "4.49"
+)
 
 // ComponentsForVersion returns the component image set for the given NetEye
 // version. If the version is not found in the map the second return value is
@@ -147,13 +154,25 @@ func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	return c, ok
 }
 
+// SupportedVersions returns the NetEye versions supported by this operator.
+func SupportedVersions() []string {
+	versions := make([]string, 0, len(netEyeVersionMap))
+	for version := range netEyeVersionMap {
+		versions = append(versions, version)
+	}
+	sort.Strings(versions)
+	return versions
+}
+
 // NetEyeSpec defines the desired state of NetEyeConfig.
 type NetEyeSpec struct {
-	// Version is the NetEye product version string, e.g. "4.36".
+	// Version is the NetEye product version string, e.g. "4.50".
 	// It is used to resolve the correct component images (Keycloak, etc.).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:example="4.36"
+	// +kubebuilder:validation:Enum="4.50"
+	// +kubebuilder:validation:XValidation:rule="!oldSelf.hasValue() || oldSelf.value() == self || oldSelf.value() == '4.49'",message="NetEye version can only be created as 4.50 or upgraded from 4.49 to 4.50",optionalOldSelf=true
+	// +kubebuilder:example="4.50"
 	Version string `json:"version"`
 
 	// EnabledModules declares which NetEye feature modules are available for tenants.
