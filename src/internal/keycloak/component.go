@@ -20,7 +20,6 @@ package keycloak
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strings"
 	"time"
 
@@ -121,41 +120,20 @@ func (c *Component) EnsureOperatorExtension(ctx context.Context) error {
 		},
 	}
 
-	ext := &unstructured.Unstructured{}
-	ext.SetGroupVersionKind(clusterExtensionGVK())
-	key := types.NamespacedName{Name: extensionName}
-	if err := c.client.Get(ctx, key, ext); err == nil {
-		currentSpec, _, _ := unstructured.NestedMap(ext.Object, "spec")
-		if reflect.DeepEqual(currentSpec, desiredSpec) {
-			return nil
-		}
-		if err := unstructured.SetNestedMap(ext.Object, desiredSpec, "spec"); err != nil {
-			return err
-		}
-		if err := c.client.Update(ctx, ext); err != nil {
-			return err
-		}
-		c.log.Info("keycloak operator ClusterExtension reconciled", "extension", extensionName, "namespace", OperatorNamespace)
-		return nil
-	}
-
-	ext = &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "olm.operatorframework.io/v1",
-			"kind":       "ClusterExtension",
-			"metadata": map[string]any{
-				"name": extensionName,
-				"labels": map[string]any{
-					"app.kubernetes.io/managed-by": "neteye-operator",
-				},
-			},
-			"spec": desiredSpec,
-		},
-	}
-	if err := c.client.Create(ctx, ext); err != nil && !apierrors.IsAlreadyExists(err) {
+	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
+		GVK:  clusterExtensionGVK(),
+		Name: extensionName,
+		Spec: desiredSpec,
+	})
+	if err != nil {
 		return err
 	}
-	c.log.Info("keycloak operator ClusterExtension created", "extension", extensionName, "namespace", OperatorNamespace)
+	switch outcome {
+	case resources.Updated:
+		c.log.Info("keycloak operator ClusterExtension reconciled", "extension", extensionName, "namespace", OperatorNamespace)
+	case resources.Created:
+		c.log.Info("keycloak operator ClusterExtension created", "extension", extensionName, "namespace", OperatorNamespace)
+	}
 	return nil
 }
 
@@ -278,51 +256,22 @@ func (c *Component) EnsureInstance(ctx context.Context, namespace, image string,
 		desiredSpec["env"] = env
 	}
 
-	kc := &unstructured.Unstructured{}
-	kc.SetGroupVersionKind(keycloakGVK())
-	key := types.NamespacedName{Name: InstanceName, Namespace: namespace}
-	if err := c.client.Get(ctx, key, kc); err == nil {
-		currentSpec, _, _ := unstructured.NestedMap(kc.Object, "spec")
-		ownerChanged, err := resources.SetOwnerReference(kc, owner)
-		if err != nil {
-			return err
-		}
-		if reflect.DeepEqual(currentSpec, desiredSpec) && !ownerChanged {
-			return nil
-		}
-		if !reflect.DeepEqual(currentSpec, desiredSpec) {
-			if err := unstructured.SetNestedMap(kc.Object, desiredSpec, "spec"); err != nil {
-				return err
-			}
-		}
-		if err := c.client.Update(ctx, kc); err != nil {
-			return err
-		}
+	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
+		GVK:       keycloakGVK(),
+		Name:      InstanceName,
+		Namespace: namespace,
+		Spec:      desiredSpec,
+		Owner:     &owner,
+	})
+	if err != nil {
+		return err
+	}
+	switch outcome {
+	case resources.Updated:
 		c.log.Info("keycloak instance reconciled", "namespace", namespace, "instance", InstanceName, "image", image)
-		return nil
+	case resources.Created:
+		c.log.Info("keycloak instance created", "namespace", namespace, "instance", InstanceName, "image", image)
 	}
-
-	kc = &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "k8s.keycloak.org/v2beta1",
-			"kind":       "Keycloak",
-			"metadata": map[string]any{
-				"name":      InstanceName,
-				"namespace": namespace,
-				"labels": map[string]any{
-					"app.kubernetes.io/managed-by": "neteye-operator",
-				},
-			},
-			"spec": desiredSpec,
-		},
-	}
-	if _, err := resources.SetOwnerReference(kc, owner); err != nil {
-		return err
-	}
-	if err := c.client.Create(ctx, kc); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
-	}
-	c.log.Info("keycloak instance created", "namespace", namespace, "instance", InstanceName, "image", image)
 	return nil
 }
 

@@ -18,7 +18,6 @@ package resources
 
 import (
 	"context"
-	"reflect"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -53,55 +52,24 @@ func EnsureCertificate(ctx context.Context, client client.Client, log *logr.Logg
 		},
 	}
 
-	certificate := &unstructured.Unstructured{}
-	certificate.SetGroupVersionKind(certificateGVK())
-	key := types.NamespacedName{Name: name, Namespace: namespace}
-	if err := client.Get(ctx, key, certificate); err == nil {
-		currentSpec, _, _ := unstructured.NestedMap(certificate.Object, "spec")
-		ownerChanged, err := SetOwnerReference(certificate, owner)
-		if err != nil {
-			return err
-		}
-		if reflect.DeepEqual(currentSpec, desiredSpec) && !ownerChanged {
-			log.V(1).Info("Certificate had no drift", "namespace", namespace, "name", name, "secret", secretName)
-			return nil
-		}
-		if !reflect.DeepEqual(currentSpec, desiredSpec) {
-			if err := unstructured.SetNestedMap(certificate.Object, desiredSpec, "spec"); err != nil {
-				return err
-			}
-		}
-		if err := client.Update(ctx, certificate); err != nil {
-			return err
-		}
+	outcome, err := Apply(ctx, client, ObjectDefinition{
+		GVK:       certificateGVK(),
+		Name:      name,
+		Namespace: namespace,
+		Spec:      desiredSpec,
+		Owner:     &owner,
+	})
+	if err != nil {
+		return err
+	}
+	switch outcome {
+	case Unchanged:
+		log.V(1).Info("Certificate had no drift", "namespace", namespace, "name", name, "secret", secretName)
+	case Updated:
 		log.V(1).Info("Certificate reconciled", "namespace", namespace, "certificate", name, "secret", secretName)
-		return nil
-	} else if !apierrors.IsNotFound(err) {
-		return err
+	case Created:
+		log.Info("Certificate created", "namespace", namespace, "certificate", name, "secret", secretName)
 	}
-
-	certificate = &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "cert-manager.io/v1",
-			"kind":       "Certificate",
-			"metadata": map[string]any{
-				"name":      name,
-				"namespace": namespace,
-				"labels": map[string]any{
-					"app.kubernetes.io/managed-by": "neteye-operator",
-				},
-			},
-			"spec": desiredSpec,
-		},
-	}
-	if _, err := SetOwnerReference(certificate, owner); err != nil {
-		return err
-	}
-
-	if err := client.Create(ctx, certificate); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
-	}
-	log.Info("Certificate created", "namespace", namespace, "certificate", name, "secret", secretName)
 	return nil
 }
 

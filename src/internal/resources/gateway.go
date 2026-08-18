@@ -18,14 +18,10 @@ package resources
 
 import (
 	"context"
-	"reflect"
 
 	"github.com/go-logr/logr"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -88,54 +84,24 @@ func EnsureGateway(ctx context.Context, client client.Client, log *logr.Logger, 
 		}
 	}
 
-	gateway := &unstructured.Unstructured{}
-	gateway.SetGroupVersionKind(gatewayGVK())
-	key := types.NamespacedName{Name: name, Namespace: namespace}
-	if err := client.Get(ctx, key, gateway); err == nil {
-		currentSpec, _, _ := unstructured.NestedMap(gateway.Object, "spec")
-		ownerChanged, err := SetOwnerReference(gateway, owner)
-		if err != nil {
-			return err
-		}
-		if reflect.DeepEqual(currentSpec, desiredSpec) && !ownerChanged {
-			log.V(1).Info("Gateway had no drift", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
-			return nil
-		}
-		if !reflect.DeepEqual(currentSpec, desiredSpec) {
-			if err := unstructured.SetNestedMap(gateway.Object, desiredSpec, "spec"); err != nil {
-				return err
-			}
-		}
-		if err := client.Update(ctx, gateway); err != nil {
-			return err
-		}
+	outcome, err := Apply(ctx, client, ObjectDefinition{
+		GVK:       gatewayGVK(),
+		Name:      name,
+		Namespace: namespace,
+		Spec:      desiredSpec,
+		Owner:     &owner,
+	})
+	if err != nil {
+		return err
+	}
+	switch outcome {
+	case Unchanged:
+		log.V(1).Info("Gateway had no drift", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
+	case Updated:
 		log.V(1).Info("Gateway reconciled", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
-		return nil
-	} else if !apierrors.IsNotFound(err) {
-		return err
+	case Created:
+		log.Info("Gateway created", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
 	}
-
-	gateway = &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "gateway.networking.k8s.io/v1",
-			"kind":       "Gateway",
-			"metadata": map[string]any{
-				"name":      name,
-				"namespace": namespace,
-				"labels": map[string]any{
-					"app.kubernetes.io/managed-by": "neteye-operator",
-				},
-			},
-			"spec": desiredSpec,
-		},
-	}
-	if _, err := SetOwnerReference(gateway, owner); err != nil {
-		return err
-	}
-	if err := client.Create(ctx, gateway); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
-	}
-	log.Info("Gateway created", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
 	return nil
 }
 
