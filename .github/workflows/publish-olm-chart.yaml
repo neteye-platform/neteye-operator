@@ -1,7 +1,7 @@
 name: Publish OLM Helm Chart
 
 on:
-  pull_request:
+  push:
     branches:
       - main
     paths:
@@ -43,7 +43,7 @@ jobs:
           sed -i "s/^version:.*/version: ${CHART_VERSION}/" helm/olmv1/Chart.yaml
           sed -i "/^version:/a appVersion: \"${OLM_VERSION}\"" helm/olmv1/Chart.yaml
 
-      # The upstream chart uses the "devel" tag for the operator-controller and catalogd images. 
+      # The upstream chart uses the "devel" tag for the operator-controller and catalogd images.
       # We need to pin them to the release tag to ensure that the chart is reproducible and coherent with the OLM release.
       # This is the only modification we make to the upstream chart, and it is necessary to ensure that the chart is usable in production.
       - name: Pin container images to release tag
