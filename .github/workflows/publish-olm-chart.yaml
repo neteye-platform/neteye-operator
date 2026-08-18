@@ -1,0 +1,60 @@
+name: Publish OLM Helm Chart
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/publish-olm-chart.yaml"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  CHART_NAME: olmv1
+  OLM_VERSION: v1.11.0
+
+jobs:
+  publish-chart:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download OLM chart from upstream
+        run: |
+          UPSTREAM="https://github.com/operator-framework/operator-controller"
+          mkdir -p helm/olmv1
+          curl -sL "${UPSTREAM}/archive/refs/tags/${OLM_VERSION}.tar.gz" | \
+            tar xz --strip-components=3 -C helm/olmv1 \
+            "operator-controller-${OLM_VERSION#v}/helm/olmv1"
+
+      - name: Set chart version to match OLM release
+        run: |
+          CHART_VERSION="${OLM_VERSION#v}"
+          sed -i "s/^version:.*/version: ${CHART_VERSION}/" helm/olmv1/Chart.yaml
+          sed -i "/^version:/a appVersion: \"${OLM_VERSION}\"" helm/olmv1/Chart.yaml
+
+      - name: Set up Helm
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login "${{ env.REGISTRY }}" -u "${{ github.actor }}" --password-stdin
+
+      - name: Package chart
+        run: helm package helm/olmv1 --destination .helm-packages
+
+      - name: Push chart to GHCR
+        run: |
+          PACKAGE=$(ls .helm-packages/*.tgz)
+          helm push "${PACKAGE}" "oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts"
+
+      - name: Summary
+        run: |
+          CHART_VERSION="${OLM_VERSION#v}"
+          echo "### Published OLM Helm Chart" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Chart**: \`oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version**: \`${CHART_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **OLM Version**: \`${OLM_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
