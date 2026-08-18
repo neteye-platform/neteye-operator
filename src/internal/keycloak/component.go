@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package keycloak provides a component that manages the Keycloak Operator extension and its associated resources.
 package keycloak
 
 import (
@@ -104,15 +105,15 @@ func (c *Component) installOperator(ctx context.Context) error {
 }
 
 func (c *Component) EnsureOperatorExtension(ctx context.Context) error {
-	desiredSpec := map[string]interface{}{
+	desiredSpec := map[string]any{
 		"namespace": OperatorNamespace,
-		"source": map[string]interface{}{
+		"source": map[string]any{
 			"sourceType": "Catalog",
-			"catalog": map[string]interface{}{
+			"catalog": map[string]any{
 				"packageName": extensionName,
-				"channels":    []interface{}{channel},
-				"selector": map[string]interface{}{
-					"matchLabels": map[string]interface{}{
+				"channels":    []any{channel},
+				"selector": map[string]any{
+					"matchLabels": map[string]any{
 						"olm.operatorframework.io/metadata.name": catalogName,
 					},
 				},
@@ -139,12 +140,12 @@ func (c *Component) EnsureOperatorExtension(ctx context.Context) error {
 	}
 
 	ext = &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "olm.operatorframework.io/v1",
 			"kind":       "ClusterExtension",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name": extensionName,
-				"labels": map[string]interface{}{
+				"labels": map[string]any{
 					"app.kubernetes.io/managed-by": "neteye-operator",
 				},
 			},
@@ -209,7 +210,7 @@ func (c *Component) IsReady(ctx context.Context, namespace string) (bool, string
 	}
 
 	for _, rawCondition := range conditions {
-		condition, ok := rawCondition.(map[string]interface{})
+		condition, ok := rawCondition.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -238,35 +239,35 @@ func (c *Component) IsReady(ctx context.Context, namespace string) (bool, string
 
 func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, owner metav1.OwnerReference) error {
 	database := identity.DBConnection
-	desiredSpec := map[string]interface{}{
+	desiredSpec := map[string]any{
 		"instances": int64(identityReplicas(identity)),
 		"image":     image,
-		"db": map[string]interface{}{
+		"db": map[string]any{
 			"vendor":   "mariadb",
 			"host":     database.Host,
 			"port":     int64(externalDatabasePort(database)),
 			"database": database.DBName,
-			"usernameSecret": map[string]interface{}{
+			"usernameSecret": map[string]any{
 				"name": database.UsernameSecret.Name,
 				"key":  database.UsernameSecret.Key,
 			},
-			"passwordSecret": map[string]interface{}{
+			"passwordSecret": map[string]any{
 				"name": database.PasswordSecret.Name,
 				"key":  database.PasswordSecret.Key,
 			},
 		},
-		"http": map[string]interface{}{
+		"http": map[string]any{
 			"httpEnabled": true,
 		},
-		"hostname": map[string]interface{}{
+		"hostname": map[string]any{
 			"hostname":           resourceURI(identity.Hostname),
 			"strict":             true,
 			"backchannelDynamic": true,
 		},
-		"proxy": map[string]interface{}{
+		"proxy": map[string]any{
 			"headers": "xforwarded",
 		},
-		"additionalOptions": []interface{}{
+		"additionalOptions": []any{
 			map[string]any{
 				"name":  "http-relative-path",
 				"value": HTTPRelativePath,
@@ -302,13 +303,13 @@ func (c *Component) EnsureInstance(ctx context.Context, namespace, image string,
 	}
 
 	kc = &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "k8s.keycloak.org/v2beta1",
 			"kind":       "Keycloak",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      InstanceName,
 				"namespace": namespace,
-				"labels": map[string]interface{}{
+				"labels": map[string]any{
 					"app.kubernetes.io/managed-by": "neteye-operator",
 				},
 			},
@@ -343,11 +344,11 @@ func externalDatabasePort(database neteye.NetEyeDBConnectionSpec) int32 {
 	return database.Port
 }
 
-func podExtraEnvVars(values []string) []interface{} {
-	env := make([]interface{}, 0, len(values))
+func podExtraEnvVars(values []string) []any {
+	env := make([]any, 0, len(values))
 	for _, raw := range values {
 		name, value, hasValue := strings.Cut(raw, "=")
-		entry := map[string]interface{}{"name": name}
+		entry := map[string]any{"name": name}
 		if hasValue {
 			entry["value"] = value
 		}

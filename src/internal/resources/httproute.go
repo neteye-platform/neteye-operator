@@ -32,9 +32,9 @@ import (
 // EnsureHTTPRoute ensures a Gateway API HTTPRoute exists for a hostname and
 // routes traffic to a Service in the same namespace as the route.
 func EnsureHTTPRoute(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name, gatewayRef string, hostnames []string, backendServiceName string, backendServicePort int64, owner metav1.OwnerReference) error {
-	desiredSpec := map[string]interface{}{
-		"parentRefs": []interface{}{
-			map[string]interface{}{
+	desiredSpec := map[string]any{
+		"parentRefs": []any{
+			map[string]any{
 				"group":       "gateway.networking.k8s.io",
 				"kind":        "Gateway",
 				"namespace":   namespace,
@@ -43,10 +43,10 @@ func EnsureHTTPRoute(ctx context.Context, client client.Client, log *logr.Logger
 			},
 		},
 		"hostnames": stringSliceToInterfaces(hostnames),
-		"rules": []interface{}{
-			map[string]interface{}{
-				"backendRefs": []interface{}{
-					map[string]interface{}{
+		"rules": []any{
+			map[string]any{
+				"backendRefs": []any{
+					map[string]any{
 						"group": "",
 						"kind":  "Service",
 						"name":  backendServiceName,
@@ -59,7 +59,7 @@ func EnsureHTTPRoute(ctx context.Context, client client.Client, log *logr.Logger
 	return ensureHTTPRouteSpec(ctx, client, log, namespace, name, desiredSpec, owner)
 }
 
-func ensureHTTPRouteSpec(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name string, desiredSpec map[string]interface{}, owner metav1.OwnerReference) error {
+func ensureHTTPRouteSpec(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name string, desiredSpec map[string]any, owner metav1.OwnerReference) error {
 	route := &unstructured.Unstructured{}
 	route.SetGroupVersionKind(httpRouteGVK())
 	key := types.NamespacedName{Name: name, Namespace: namespace}
@@ -88,13 +88,13 @@ func ensureHTTPRouteSpec(ctx context.Context, client client.Client, log *logr.Lo
 	}
 
 	route = &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "gateway.networking.k8s.io/v1",
 			"kind":       "HTTPRoute",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      name,
 				"namespace": namespace,
-				"labels": map[string]interface{}{
+				"labels": map[string]any{
 					"app.kubernetes.io/managed-by": "neteye-operator",
 				},
 			},

@@ -37,16 +37,16 @@ func EnsureCertificate(ctx context.Context, client client.Client, log *logr.Logg
 		return err
 	}
 
-	desiredSpec := map[string]interface{}{
+	desiredSpec := map[string]any{
 		"secretName": secretName,
 		"dnsNames":   stringSliceToInterfaces(dnsNames),
 		"commonName": commonName,
-		"privateKey": map[string]interface{}{
+		"privateKey": map[string]any{
 			"algorithm":      "RSA",
 			"size":           int64(2048),
 			"rotationPolicy": "Always",
 		},
-		"issuerRef": map[string]interface{}{
+		"issuerRef": map[string]any{
 			"name":  issuerRef.Name,
 			"kind":  IssuerKind,
 			"group": CertManagerGroup,
@@ -81,13 +81,13 @@ func EnsureCertificate(ctx context.Context, client client.Client, log *logr.Logg
 	}
 
 	certificate = &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "cert-manager.io/v1",
 			"kind":       "Certificate",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      name,
 				"namespace": namespace,
-				"labels": map[string]interface{}{
+				"labels": map[string]any{
 					"app.kubernetes.io/managed-by": "neteye-operator",
 				},
 			},
@@ -97,6 +97,7 @@ func EnsureCertificate(ctx context.Context, client client.Client, log *logr.Logg
 	if _, err := SetOwnerReference(certificate, owner); err != nil {
 		return err
 	}
+
 	if err := client.Create(ctx, certificate); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
@@ -126,7 +127,7 @@ func IsCertificateReady(ctx context.Context, client client.Client, namespace str
 	}
 
 	for _, rawCondition := range conditions {
-		condition, ok := rawCondition.(map[string]interface{})
+		condition, ok := rawCondition.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -161,8 +162,8 @@ func certificateGVK() schema.GroupVersionKind {
 	}
 }
 
-func stringSliceToInterfaces(values []string) []interface{} {
-	items := make([]interface{}, 0, len(values))
+func stringSliceToInterfaces(values []string) []any {
+	items := make([]any, 0, len(values))
 	for _, value := range values {
 		items = append(items, value)
 	}
