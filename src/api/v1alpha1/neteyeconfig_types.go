@@ -215,10 +215,29 @@ type NetEyeSpec struct {
 	Identity NetEyeIdentitySpec `json:"identity"`
 }
 
+// ServiceState is the per-service state reported in NetEyeServiceStatus.Status.
+type ServiceState string
+
+const (
+	ServiceStateUnknown  ServiceState = "Unknown"
+	ServiceStateNotReady ServiceState = "NotReady"
+	ServiceStateReady    ServiceState = "Ready"
+	ServiceStateFailed   ServiceState = "Failed"
+)
+
+// NetEyePhase is the aggregate lifecycle state reported in NetEyeStatus.Phase.
+type NetEyePhase string
+
+const (
+	PhasePendingUpgrades NetEyePhase = "PendingUpgrades"
+	PhaseNotReady        NetEyePhase = "NotReady"
+	PhaseReady           NetEyePhase = "Ready"
+	PhaseFailed          NetEyePhase = "Failed"
+)
+
 // NetEyeServiceStatus defines the observed state of one NetEye service.
 type NetEyeServiceStatus struct {
-	// Status is the service state, for example Pending, Ready, or Failed.
-	Status string `json:"status,omitempty"`
+	Status ServiceState `json:"status,omitempty"`
 
 	// Message is a human-readable status message for this service.
 	Message string `json:"message,omitempty"`
@@ -235,8 +254,7 @@ type NetEyeServicesStatus struct {
 
 // NetEyeStatus defines the observed state of NetEyeConfig.
 type NetEyeStatus struct {
-	// Phase is the aggregate NetEye state: Pending, Ready, or Failed.
-	Phase string `json:"phase,omitempty"`
+	Phase NetEyePhase `json:"phase,omitempty"`
 
 	// Message is a human-readable aggregate status message.
 	Message string `json:"message,omitempty"`
