@@ -87,12 +87,6 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}()
 
-	issuerRef := resources.CertificateIssuerRef{
-		Name: ne.Spec.InternalCertificateIssuerRef,
-	}
-	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEye", ne)
-	gatewaySpec := ne.Spec.Gateway
-
 	if !neteye.IsLatestVersion(ne.Spec.Version) && neteye.IsPreviousVersion(ne.Spec.Version) {
 		log.Info("NetEye version is not the latest", "currentVersion", ne.Spec.Version, "latestVersion", neteye.CurrentNetEyeVersion, "requeueAfter", failureRequeueAfter)
 		setPhase(ne, neteye.PhasePendingUpgrades, fmt.Sprintf("NetEye version '%s' is not the latest; consider upgrading to '%s'. Reconciliation will be paused until the upgrade is performed.", ne.Spec.Version, neteye.CurrentNetEyeVersion))
@@ -117,11 +111,11 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	log.V(1).Info("Components loaded", "version", ne.Spec.Version)
 
-	if result, err := r.reconcileBaseResources(ctx, ne, &gatewaySpec, issuerRef, owner); shouldReturn(result, err) {
+	if result, err := r.reconcileBaseResources(ctx, ne); shouldReturn(result, err) {
 		return result, err
 	}
 
-	if result, err := r.reconcileKeycloak(ctx, ne, &components, &gatewaySpec, issuerRef, owner); shouldReturn(result, err) {
+	if result, err := r.reconcileKeycloak(ctx, ne, components.KeycloakImage); shouldReturn(result, err) {
 		return result, err
 	}
 
@@ -136,8 +130,11 @@ func shouldReturn(result ctrl.Result, err error) bool {
 	return err != nil || !result.IsZero()
 }
 
-func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *neteye.NetEye, gateway *neteye.NetEyeGatewaySpec, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (ctrl.Result, error) {
+func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *neteye.NetEye) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
+	gateway := ne.Spec.Gateway
+	issuerRef := issuerRefFor(ne)
+	owner := ownerReferenceFor(ne)
 	if err := resources.EnsureIssuerExists(ctx, r.Client, ne.Namespace, issuerRef); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.V(1).Info("required cert-manager Issuer is missing", "namespace", ne.Namespace, "issuer", issuerRef.Name, "requeueAfter", failureRequeueAfter)
@@ -177,38 +174,47 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 	return ctrl.Result{}, nil
 }
 
-func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.NetEye, components *neteye.NetEyeComponents, gatewayRef *neteye.NetEyeGatewaySpec, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (ctrl.Result, error) {
+func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.NetEye, image string) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
+	owner := ownerReferenceFor(ne)
 	log.Info("Started Keycloak reconciliation", "namespace", ne.Namespace, "name", owner.Name)
-	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, ne.Namespace, components.KeycloakImage, ne.Spec.Identity, gatewayRef.Name, issuerRef, owner)
+	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, ne.Namespace, image, ne.Spec.Identity, ne.Spec.Gateway.Name, issuerRefFor(ne), owner)
 	if err != nil {
 		log.Error(err, "failed to ensure keycloak resources", "namespace", ne.Namespace, "requeueAfter", failureRequeueAfter)
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
-		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to ensure keycloak resources in namespace %q: %v", ne.Namespace, err), components.KeycloakImage)
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to ensure keycloak resources in namespace %q: %v", ne.Namespace, err), image)
 		return ctrl.Result{RequeueAfter: failureRequeueAfter}, fmt.Errorf("ensure keycloak resources: %w", err)
 	}
 	if !keycloakResourcesReady {
 		log.V(1).Info("identity resources are not ready", "reason", keycloakResourcesMessage, "requeueAfter", waitForProgressingRequeueAfter)
 		setPhase(ne, neteye.PhaseNotReady, "Check services status for details")
-		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, keycloakResourcesMessage, components.KeycloakImage)
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, keycloakResourcesMessage, image)
 		return ctrl.Result{RequeueAfter: waitForProgressingRequeueAfter}, nil
 	}
 	keycloakReady, keycloakMessage, err := r.KeycloakComponent.IsReady(ctx, ne.Namespace)
 	if err != nil {
 		log.Error(err, "failed to check keycloak readiness", "namespace", ne.Namespace, "requeueAfter", failureRequeueAfter)
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
-		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to check keycloak readiness: %v", err), components.KeycloakImage)
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to check keycloak readiness: %v", err), image)
 		return ctrl.Result{RequeueAfter: failureRequeueAfter}, fmt.Errorf("check keycloak readiness: %w", err)
 	}
 	if !keycloakReady {
 		log.V(1).Info("identity service is not ready", "reason", keycloakMessage, "requeueAfter", waitForProgressingRequeueAfter)
 		setPhase(ne, neteye.PhaseNotReady, "Check services status for details")
-		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, keycloakMessage, components.KeycloakImage)
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, keycloakMessage, image)
 		return ctrl.Result{RequeueAfter: waitForProgressingRequeueAfter}, nil
 	}
 
 	log.Info("Keycloak reconciled and ready", "namespace", ne.Namespace, "name", owner.Name)
 	return ctrl.Result{}, nil
+}
+
+func issuerRefFor(ne *neteye.NetEye) resources.CertificateIssuerRef {
+	return resources.CertificateIssuerRef{Name: ne.Spec.InternalCertificateIssuerRef}
+}
+
+func ownerReferenceFor(ne *neteye.NetEye) metav1.OwnerReference {
+	return resources.OwnerReference(neteye.GroupVersion.String(), "NetEye", ne)
 }
 
 func setPhase(ne *neteye.NetEye, phase neteye.NetEyePhase, message string) {

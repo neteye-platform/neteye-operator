@@ -86,40 +86,7 @@ func IsCertificateReady(ctx context.Context, client client.Client, namespace str
 		return false, "", err
 	}
 
-	conditions, found, err := unstructured.NestedSlice(certificate.Object, "status", "conditions")
-	if err != nil {
-		return false, "", err
-	}
-	if !found || len(conditions) == 0 {
-		return false, "waiting for TLS Certificate status conditions", nil
-	}
-
-	for _, rawCondition := range conditions {
-		condition, ok := rawCondition.(map[string]any)
-		if !ok {
-			continue
-		}
-		conditionType, _, _ := unstructured.NestedString(condition, "type")
-		if conditionType != "Ready" {
-			continue
-		}
-		status, _, _ := unstructured.NestedString(condition, "status")
-		if status == "True" {
-			return true, "", nil
-		}
-
-		message, _, _ := unstructured.NestedString(condition, "message")
-		if message == "" {
-			reason, _, _ := unstructured.NestedString(condition, "reason")
-			message = reason
-		}
-		if message == "" {
-			message = "waiting for TLS Certificate Ready condition"
-		}
-		return false, message, nil
-	}
-
-	return false, "waiting for TLS Certificate Ready condition", nil
+	return ReadyConditionMessage(certificate, "TLS Certificate")
 }
 
 func certificateGVK() schema.GroupVersionKind {

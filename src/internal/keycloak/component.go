@@ -111,7 +111,25 @@ func (c *Component) installOperator(ctx context.Context) error {
 }
 
 func (c *Component) EnsureOperatorExtension(ctx context.Context) error {
-	desiredSpec := map[string]any{
+	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
+		GVK:  clusterExtensionGVK(),
+		Name: extensionName,
+		Spec: clusterExtensionSpec(),
+	})
+	if err != nil {
+		return err
+	}
+	switch outcome {
+	case resources.Updated:
+		c.log.Info("keycloak operator ClusterExtension reconciled", "extension", extensionName, "namespace", OperatorNamespace)
+	case resources.Created:
+		c.log.Info("keycloak operator ClusterExtension created", "extension", extensionName, "namespace", OperatorNamespace)
+	}
+	return nil
+}
+
+func clusterExtensionSpec() map[string]any {
+	return map[string]any{
 		"namespace": OperatorNamespace,
 		"source": map[string]any{
 			"sourceType": "Catalog",
@@ -126,22 +144,6 @@ func (c *Component) EnsureOperatorExtension(ctx context.Context) error {
 			},
 		},
 	}
-
-	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
-		GVK:  clusterExtensionGVK(),
-		Name: extensionName,
-		Spec: desiredSpec,
-	})
-	if err != nil {
-		return err
-	}
-	switch outcome {
-	case resources.Updated:
-		c.log.Info("keycloak operator ClusterExtension reconciled", "extension", extensionName, "namespace", OperatorNamespace)
-	case resources.Created:
-		c.log.Info("keycloak operator ClusterExtension created", "extension", extensionName, "namespace", OperatorNamespace)
-	}
-	return nil
 }
 
 // EnsureResources reconciles the identity component resources owned by the Keycloak
@@ -187,45 +189,32 @@ func (c *Component) IsReady(ctx context.Context, namespace string) (bool, string
 		return false, "waiting for Keycloak status to observe the latest generation", nil
 	}
 
-	conditions, found, err := unstructured.NestedSlice(kc.Object, "status", "conditions")
-	if err != nil {
-		return false, "", err
-	}
-	if !found || len(conditions) == 0 {
-		return false, "waiting for Keycloak status conditions", nil
-	}
-
-	for _, rawCondition := range conditions {
-		condition, ok := rawCondition.(map[string]any)
-		if !ok {
-			continue
-		}
-		conditionType, _, _ := unstructured.NestedString(condition, "type")
-		if conditionType != "Ready" {
-			continue
-		}
-		status, _, _ := unstructured.NestedString(condition, "status")
-		if status == "True" {
-			return true, "", nil
-		}
-
-		message, _, _ := unstructured.NestedString(condition, "message")
-		if message == "" {
-			reason, _, _ := unstructured.NestedString(condition, "reason")
-			message = reason
-		}
-		if message == "" {
-			message = "waiting for Keycloak Ready condition"
-		}
-		return false, message, nil
-	}
-
-	return false, "waiting for Keycloak Ready condition", nil
+	return resources.ReadyConditionMessage(kc, "Keycloak")
 }
 
 func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, owner metav1.OwnerReference) error {
+	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
+		GVK:       keycloakGVK(),
+		Name:      InstanceName,
+		Namespace: namespace,
+		Spec:      keycloakInstanceSpec(image, identity),
+		Owner:     &owner,
+	})
+	if err != nil {
+		return err
+	}
+	switch outcome {
+	case resources.Updated:
+		c.log.Info("keycloak instance reconciled", "namespace", namespace, "instance", InstanceName, "image", image)
+	case resources.Created:
+		c.log.Info("keycloak instance created", "namespace", namespace, "instance", InstanceName, "image", image)
+	}
+	return nil
+}
+
+func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[string]any {
 	database := identity.DBConnection
-	desiredSpec := map[string]any{
+	spec := map[string]any{
 		"instances": int64(identityReplicas(identity)),
 		"image":     image,
 		"db": map[string]any{
@@ -261,26 +250,9 @@ func (c *Component) EnsureInstance(ctx context.Context, namespace, image string,
 		},
 	}
 	if env := podExtraEnvVars(identity.PodExtraEnvVars); len(env) > 0 {
-		desiredSpec["env"] = env
+		spec["env"] = env
 	}
-
-	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
-		GVK:       keycloakGVK(),
-		Name:      InstanceName,
-		Namespace: namespace,
-		Spec:      desiredSpec,
-		Owner:     &owner,
-	})
-	if err != nil {
-		return err
-	}
-	switch outcome {
-	case resources.Updated:
-		c.log.Info("keycloak instance reconciled", "namespace", namespace, "instance", InstanceName, "image", image)
-	case resources.Created:
-		c.log.Info("keycloak instance created", "namespace", namespace, "instance", InstanceName, "image", image)
-	}
-	return nil
+	return spec
 }
 
 func identityReplicas(identity neteye.NetEyeIdentitySpec) int32 {
