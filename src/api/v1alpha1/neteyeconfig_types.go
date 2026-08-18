@@ -276,7 +276,3 @@ type NetEyeList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []NetEye `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&NetEye{}, &NetEyeList{})
-}

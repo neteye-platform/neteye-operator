@@ -45,34 +45,34 @@ func EnsureGatewayTLSCertificate(ctx context.Context, client client.Client, log 
 // EnsureGateway ensures a Gateway API Gateway exists in the NetEye namespace.
 // Existing Gateways are adopted when they have no conflicting controller owner.
 func EnsureGateway(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name string, gatewayClassName string, annotations map[string]string, tlsSecretName string, owner metav1.OwnerReference) error {
-	desiredSpec := map[string]interface{}{
+	desiredSpec := map[string]any{
 		"gatewayClassName": gatewayClassName,
-		"listeners": []interface{}{
-			map[string]interface{}{
+		"listeners": []any{
+			map[string]any{
 				"name":     gatewayHTTPListenerName,
 				"protocol": "HTTP",
 				"port":     int64(80),
-				"allowedRoutes": map[string]interface{}{
-					"namespaces": map[string]interface{}{
+				"allowedRoutes": map[string]any{
+					"namespaces": map[string]any{
 						"from": "Same",
 					},
 					"kinds": routeKinds(),
 				},
 			},
-			map[string]interface{}{
+			map[string]any{
 				"name":     gatewayHTTPSListenerName,
 				"protocol": "HTTPS",
 				"port":     int64(443),
-				"allowedRoutes": map[string]interface{}{
-					"namespaces": map[string]interface{}{
+				"allowedRoutes": map[string]any{
+					"namespaces": map[string]any{
 						"from": "Same",
 					},
 					"kinds": routeKinds(),
 				},
-				"tls": map[string]interface{}{
+				"tls": map[string]any{
 					"mode": "Terminate",
-					"certificateRefs": []interface{}{
-						map[string]interface{}{
+					"certificateRefs": []any{
+						map[string]any{
 							"kind":  "Secret",
 							"group": "",
 							"name":  tlsSecretName,
@@ -83,7 +83,7 @@ func EnsureGateway(ctx context.Context, client client.Client, log *logr.Logger, 
 		},
 	}
 	if len(annotations) > 0 {
-		desiredSpec["infrastructure"] = map[string]interface{}{
+		desiredSpec["infrastructure"] = map[string]any{
 			"annotations": stringMapToInterfaces(annotations),
 		}
 	}
@@ -116,13 +116,13 @@ func EnsureGateway(ctx context.Context, client client.Client, log *logr.Logger, 
 	}
 
 	gateway = &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "gateway.networking.k8s.io/v1",
 			"kind":       "Gateway",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      name,
 				"namespace": namespace,
-				"labels": map[string]interface{}{
+				"labels": map[string]any{
 					"app.kubernetes.io/managed-by": "neteye-operator",
 				},
 			},
@@ -142,19 +142,19 @@ func EnsureGateway(ctx context.Context, client client.Client, log *logr.Logger, 
 // EnsureHTTPToHTTPSRedirectRoute ensures the default Gateway HTTP listener
 // redirects cleartext traffic to HTTPS.
 func EnsureHTTPToHTTPSRedirectRoute(ctx context.Context, client client.Client, log *logr.Logger, namespace string, gatewayName string, owner metav1.OwnerReference) error {
-	desiredSpec := map[string]interface{}{
-		"parentRefs": []interface{}{
-			map[string]interface{}{
+	desiredSpec := map[string]any{
+		"parentRefs": []any{
+			map[string]any{
 				"name":        gatewayName,
 				"sectionName": gatewayHTTPListenerName,
 			},
 		},
-		"rules": []interface{}{
-			map[string]interface{}{
-				"filters": []interface{}{
-					map[string]interface{}{
+		"rules": []any{
+			map[string]any{
+				"filters": []any{
+					map[string]any{
 						"type": "RequestRedirect",
-						"requestRedirect": map[string]interface{}{
+						"requestRedirect": map[string]any{
 							"scheme":     "https",
 							"statusCode": int64(301),
 						},
@@ -175,19 +175,19 @@ func gatewayGVK() schema.GroupVersionKind {
 	}
 }
 
-func routeKinds() []interface{} {
-	return []interface{}{
-		map[string]interface{}{
+func routeKinds() []any {
+	return []any{
+		map[string]any{
 			"kind": "HTTPRoute",
 		},
-		map[string]interface{}{
+		map[string]any{
 			"kind": "GRPCRoute",
 		},
 	}
 }
 
-func stringMapToInterfaces(values map[string]string) map[string]interface{} {
-	items := make(map[string]interface{}, len(values))
+func stringMapToInterfaces(values map[string]string) map[string]any {
+	items := make(map[string]any, len(values))
 	for key, value := range values {
 		items[key] = value
 	}
