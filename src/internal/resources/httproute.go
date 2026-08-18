@@ -18,14 +18,10 @@ package resources
 
 import (
 	"context"
-	"reflect"
 
 	"github.com/go-logr/logr"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -60,54 +56,24 @@ func EnsureHTTPRoute(ctx context.Context, client client.Client, log *logr.Logger
 }
 
 func ensureHTTPRouteSpec(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name string, desiredSpec map[string]any, owner metav1.OwnerReference) error {
-	route := &unstructured.Unstructured{}
-	route.SetGroupVersionKind(httpRouteGVK())
-	key := types.NamespacedName{Name: name, Namespace: namespace}
-	if err := client.Get(ctx, key, route); err == nil {
-		currentSpec, _, _ := unstructured.NestedMap(route.Object, "spec")
-		ownerChanged, err := SetOwnerReference(route, owner)
-		if err != nil {
-			return err
-		}
-		if reflect.DeepEqual(currentSpec, desiredSpec) && !ownerChanged {
-			log.V(1).Info("HttpRoute had no drift", "namespace", namespace, "name", name)
-			return nil
-		}
-		if !reflect.DeepEqual(currentSpec, desiredSpec) {
-			if err := unstructured.SetNestedMap(route.Object, desiredSpec, "spec"); err != nil {
-				return err
-			}
-		}
-		if err := client.Update(ctx, route); err != nil {
-			return err
-		}
+	outcome, err := Apply(ctx, client, ObjectDefinition{
+		GVK:       httpRouteGVK(),
+		Name:      name,
+		Namespace: namespace,
+		Spec:      desiredSpec,
+		Owner:     &owner,
+	})
+	if err != nil {
+		return err
+	}
+	switch outcome {
+	case Unchanged:
+		log.V(1).Info("HttpRoute had no drift", "namespace", namespace, "name", name)
+	case Updated:
 		log.V(1).Info("HTTPRoute reconciled", "namespace", namespace, "name", name)
-		return nil
-	} else if !apierrors.IsNotFound(err) {
-		return err
+	case Created:
+		log.Info("HTTPRoute created", "namespace", namespace, "name", name)
 	}
-
-	route = &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "gateway.networking.k8s.io/v1",
-			"kind":       "HTTPRoute",
-			"metadata": map[string]any{
-				"name":      name,
-				"namespace": namespace,
-				"labels": map[string]any{
-					"app.kubernetes.io/managed-by": "neteye-operator",
-				},
-			},
-			"spec": desiredSpec,
-		},
-	}
-	if _, err := SetOwnerReference(route, owner); err != nil {
-		return err
-	}
-	if err := client.Create(ctx, route); err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
-	}
-	log.Info("HTTPRoute created", "namespace", namespace, "name", name)
 	return nil
 }
 
