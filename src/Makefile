@@ -10,6 +10,7 @@ LD_FLAGS ?= -X main.version=$(VERSION)
 # makes builds reproducible and avoids depending on globally installed binaries.
 LOCALBIN ?= $(shell pwd)/bin
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+GOLANGCI_LINT ?= golangci-lint
 GENERATED_CRD ?= bundle/manifests/neteye.cloud_neteyes.yaml
 NETEYE_CRD ?= bundle/manifests/neteyes.neteye.cloud.crd.yaml
 
@@ -37,6 +38,14 @@ fmt: ## Run gofmt against Go code.
 .PHONY: vet
 vet: ## Run go vet.
 	go vet ./...
+
+.PHONY: lint
+lint: ## Run golangci-lint.
+	$(GOLANGCI_LINT) run
+
+.PHONY: lint-fix
+lint-fix: ## Run golangci-lint and apply available fixes.
+	$(GOLANGCI_LINT) run --fix
 
 .PHONY: test
 test: generate fmt vet manifests ## Run tests.
