@@ -20,11 +20,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -38,29 +38,24 @@ type CertificateIssuerRef struct {
 	Name string
 }
 
-func (ref CertificateIssuerRef) normalized() CertificateIssuerRef {
-	return ref
-}
-
 // EnsureIssuerExists ensures the referenced user-managed cert-manager Issuer
 // exists in the NetEye namespace. The operator never creates or adopts Issuers
 // because Issuer configuration represents a CA/trust decision owned by the user.
-func EnsureIssuerExists(ctx context.Context, client client.Client, log *logr.Logger, namespace string, ref CertificateIssuerRef) error {
-	ref = ref.normalized()
+func EnsureIssuerExists(ctx context.Context, client client.Client, namespace string, ref CertificateIssuerRef) error {
 	if err := validateCertificateIssuerRef(ref); err != nil {
 		return err
 	}
 
+	log := logf.FromContext(ctx)
 	issuer := &unstructured.Unstructured{}
 	issuer.SetGroupVersionKind(certificateIssuerGVK())
 	key := issuerObjectKey(namespace, ref)
-	if err := client.Get(ctx, key, issuer); err == nil {
-		log.V(1).Info("Issuer found", "namespace", namespace, "issuer", ref.Name)
-		return nil
-	} else {
+	if err := client.Get(ctx, key, issuer); err != nil {
 		log.Info("Issuer not found", "namespace", namespace, "issuer", ref.Name)
 		return err
 	}
+	log.V(1).Info("Issuer found", "namespace", namespace, "issuer", ref.Name)
+	return nil
 }
 
 func certificateIssuerGVK() schema.GroupVersionKind {

@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
@@ -48,6 +49,12 @@ const (
 	extensionName = "keycloak-operator"
 	channel       = "fast"
 	catalogName   = "operatorhubio"
+)
+
+const (
+	operatorReconcileInterval = 10 * time.Minute
+	operatorRetryInterval     = 10 * time.Second
+	defaultDatabasePort       = 3306
 )
 
 // Component ensures Keycloak-related cluster and namespaced resources exist.
@@ -73,16 +80,16 @@ func (c *Component) Start(ctx context.Context) error {
 			log.Info("keycloak operator extension is installed", "extension", extensionName, "namespace", OperatorNamespace)
 			break
 		}
-		log.Error(err, "keycloak operator extension installation failed; retrying", "attempt", attempt, "retryAfter", 10*time.Second)
+		log.Error(err, "keycloak operator extension installation failed; retrying", "attempt", attempt, "retryAfter", operatorRetryInterval)
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(10 * time.Second):
+		case <-time.After(operatorRetryInterval):
 		}
 	}
 
-	ticker := time.NewTicker(600 * time.Second) // Reconcile the operator extension every 10 minutes
+	ticker := time.NewTicker(operatorReconcileInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -140,7 +147,8 @@ func (c *Component) EnsureOperatorExtension(ctx context.Context) error {
 // EnsureResources reconciles the identity component resources owned by the Keycloak
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
 func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
-	if err := resources.EnsureCertificate(ctx, c.client, &c.log, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, owner); err != nil {
+	ctx = logf.IntoContext(ctx, c.log)
+	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
 	}
 	certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
@@ -153,7 +161,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := c.EnsureInstance(ctx, namespace, image, identity, owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
-	if err := resources.EnsureHTTPRoute(ctx, c.client, &c.log, namespace, HTTPRouteName, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, owner); err != nil {
+	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, owner); err != nil {
 		return false, "", fmt.Errorf("ensure http route: %w", err)
 	}
 	return true, "Keycloak is Ready", nil
@@ -288,7 +296,7 @@ func resourceURI(hostname string) string {
 
 func externalDatabasePort(database neteye.NetEyeDBConnectionSpec) int32 {
 	if database.Port == 0 {
-		return 3306
+		return defaultDatabasePort
 	}
 	return database.Port
 }

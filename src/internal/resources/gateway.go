@@ -19,10 +19,10 @@ package resources
 import (
 	"context"
 
-	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -34,13 +34,13 @@ const (
 
 // EnsureGatewayTLSCertificate ensures the wildcard TLS certificate used by the
 // Gateway HTTPS listener exists and writes the referenced Gateway TLS Secret.
-func EnsureGatewayTLSCertificate(ctx context.Context, client client.Client, log *logr.Logger, namespace string, secretName string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
-	return EnsureCertificate(ctx, client, log, namespace, secretName, secretName, GatewayWildcardDNSName, []string{GatewayWildcardDNSName}, issuerRef, owner)
+func EnsureGatewayTLSCertificate(ctx context.Context, client client.Client, namespace string, secretName string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
+	return EnsureCertificate(ctx, client, namespace, secretName, secretName, GatewayWildcardDNSName, []string{GatewayWildcardDNSName}, issuerRef, owner)
 }
 
 // EnsureGateway ensures a Gateway API Gateway exists in the NetEye namespace.
 // Existing Gateways are adopted when they have no conflicting controller owner.
-func EnsureGateway(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name string, gatewayClassName string, annotations map[string]string, tlsSecretName string, owner metav1.OwnerReference) error {
+func EnsureGateway(ctx context.Context, client client.Client, namespace string, name string, gatewayClassName string, annotations map[string]string, tlsSecretName string, owner metav1.OwnerReference) error {
 	desiredSpec := map[string]any{
 		"gatewayClassName": gatewayClassName,
 		"listeners": []any{
@@ -94,6 +94,7 @@ func EnsureGateway(ctx context.Context, client client.Client, log *logr.Logger, 
 	if err != nil {
 		return err
 	}
+	log := logf.FromContext(ctx)
 	switch outcome {
 	case Unchanged:
 		log.V(1).Info("Gateway had no drift", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
@@ -107,7 +108,7 @@ func EnsureGateway(ctx context.Context, client client.Client, log *logr.Logger, 
 
 // EnsureHTTPToHTTPSRedirectRoute ensures the default Gateway HTTP listener
 // redirects cleartext traffic to HTTPS.
-func EnsureHTTPToHTTPSRedirectRoute(ctx context.Context, client client.Client, log *logr.Logger, namespace string, gatewayName string, owner metav1.OwnerReference) error {
+func EnsureHTTPToHTTPSRedirectRoute(ctx context.Context, client client.Client, namespace string, gatewayName string, owner metav1.OwnerReference) error {
 	desiredSpec := map[string]any{
 		"parentRefs": []any{
 			map[string]any{
@@ -130,7 +131,7 @@ func EnsureHTTPToHTTPSRedirectRoute(ctx context.Context, client client.Client, l
 		},
 	}
 
-	return ensureHTTPRouteSpec(ctx, client, log, namespace, HTTPToHTTPSRedirectRouteName, desiredSpec, owner)
+	return ensureHTTPRouteSpec(ctx, client, namespace, HTTPToHTTPSRedirectRouteName, desiredSpec, owner)
 }
 
 func gatewayGVK() schema.GroupVersionKind {

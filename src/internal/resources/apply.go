@@ -59,7 +59,7 @@ type ObjectDefinition struct {
 }
 
 // Apply creates the object when it is missing, or reconciles spec and owner
-// reference drift when it already exists. Newly created objects are labelled as
+// reference drift when it already exists. Newly created objects are labeled as
 // managed by the operator. The returned ApplyOutcome lets callers log with
 // resource-specific context.
 func Apply(ctx context.Context, c client.Client, obj ObjectDefinition) (ApplyOutcome, error) {

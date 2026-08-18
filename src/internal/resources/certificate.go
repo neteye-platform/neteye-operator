@@ -19,19 +19,18 @@ package resources
 import (
 	"context"
 
-	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // EnsureCertificate ensures a namespaced cert-manager Certificate exists and
 // writes the requested TLS Secret using the provided issuer reference.
-func EnsureCertificate(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name string, secretName string, commonName string, dnsNames []string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
-	issuerRef = issuerRef.normalized()
+func EnsureCertificate(ctx context.Context, client client.Client, namespace string, name string, secretName string, commonName string, dnsNames []string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
 	if err := validateCertificateIssuerRef(issuerRef); err != nil {
 		return err
 	}
@@ -62,6 +61,7 @@ func EnsureCertificate(ctx context.Context, client client.Client, log *logr.Logg
 	if err != nil {
 		return err
 	}
+	log := logf.FromContext(ctx)
 	switch outcome {
 	case Unchanged:
 		log.V(1).Info("Certificate had no drift", "namespace", namespace, "name", name, "secret", secretName)

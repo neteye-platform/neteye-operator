@@ -19,15 +19,15 @@ package resources
 import (
 	"context"
 
-	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // EnsureHTTPRoute ensures a Gateway API HTTPRoute exists for a hostname and
 // routes traffic to a Service in the same namespace as the route.
-func EnsureHTTPRoute(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name, gatewayRef string, hostnames []string, backendServiceName string, backendServicePort int64, owner metav1.OwnerReference) error {
+func EnsureHTTPRoute(ctx context.Context, client client.Client, namespace string, name, gatewayRef string, hostnames []string, backendServiceName string, backendServicePort int64, owner metav1.OwnerReference) error {
 	desiredSpec := map[string]any{
 		"parentRefs": []any{
 			map[string]any{
@@ -52,10 +52,10 @@ func EnsureHTTPRoute(ctx context.Context, client client.Client, log *logr.Logger
 			},
 		},
 	}
-	return ensureHTTPRouteSpec(ctx, client, log, namespace, name, desiredSpec, owner)
+	return ensureHTTPRouteSpec(ctx, client, namespace, name, desiredSpec, owner)
 }
 
-func ensureHTTPRouteSpec(ctx context.Context, client client.Client, log *logr.Logger, namespace string, name string, desiredSpec map[string]any, owner metav1.OwnerReference) error {
+func ensureHTTPRouteSpec(ctx context.Context, client client.Client, namespace string, name string, desiredSpec map[string]any, owner metav1.OwnerReference) error {
 	outcome, err := Apply(ctx, client, ObjectDefinition{
 		GVK:       httpRouteGVK(),
 		Name:      name,
@@ -66,6 +66,7 @@ func ensureHTTPRouteSpec(ctx context.Context, client client.Client, log *logr.Lo
 	if err != nil {
 		return err
 	}
+	log := logf.FromContext(ctx)
 	switch outcome {
 	case Unchanged:
 		log.V(1).Info("HttpRoute had no drift", "namespace", namespace, "name", name)
