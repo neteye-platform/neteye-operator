@@ -31,6 +31,12 @@ jobs:
             tar xz --strip-components=3 -C helm/olmv1 \
             "operator-controller-${OLM_VERSION#v}/helm/olmv1"
 
+      # To be fully compliant with the upstream license, we need to include the LICENSE file in the chart package.
+      - name: Include upstream LICENSE
+        run: |
+          UPSTREAM="https://raw.githubusercontent.com/operator-framework/operator-controller/${OLM_VERSION}/LICENSE"
+          curl -sL "${UPSTREAM}" -o helm/olmv1/LICENSE
+
       - name: Set chart version to match OLM release
         run: |
           CHART_VERSION="${OLM_VERSION#v}"
@@ -54,7 +60,9 @@ jobs:
       - name: Summary
         run: |
           CHART_VERSION="${OLM_VERSION#v}"
-          echo "### Published OLM Helm Chart" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Chart**: \`oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Version**: \`${CHART_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **OLM Version**: \`${OLM_VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Published OLM Helm Chart"
+            echo "- **Chart**: \`oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }}\`"
+            echo "- **Version**: \`${CHART_VERSION}\`"
+            echo "- **OLM Version**: \`${OLM_VERSION}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
