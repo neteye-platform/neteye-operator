@@ -1,0 +1,76 @@
+name: Publish OLM Helm Chart
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/publish-olm-chart.yaml"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  CHART_NAME: olmv1
+  OLM_VERSION: v1.11.0
+
+jobs:
+  publish-chart:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download OLM chart from upstream
+        run: |
+          UPSTREAM="https://github.com/operator-framework/operator-controller"
+          mkdir -p helm/olmv1
+          curl -sL "${UPSTREAM}/archive/refs/tags/${OLM_VERSION}.tar.gz" | \
+            tar xz --strip-components=3 -C helm/olmv1 \
+            "operator-controller-${OLM_VERSION#v}/helm/olmv1"
+
+      # To be fully compliant with the upstream license, we need to include the LICENSE file in the chart package.
+      - name: Include upstream LICENSE
+        run: |
+          UPSTREAM="https://raw.githubusercontent.com/operator-framework/operator-controller/${OLM_VERSION}/LICENSE"
+          curl -sL "${UPSTREAM}" -o helm/olmv1/LICENSE
+
+      - name: Set chart version to match OLM release
+        run: |
+          CHART_VERSION="${OLM_VERSION#v}"
+          sed -i "s/^version:.*/version: ${CHART_VERSION}/" helm/olmv1/Chart.yaml
+          sed -i "/^version:/a appVersion: \"${OLM_VERSION}\"" helm/olmv1/Chart.yaml
+
+      # The upstream chart uses the "devel" tag for the operator-controller and catalogd images.
+      # We need to pin them to the release tag to ensure that the chart is reproducible and coherent with the OLM release.
+      # This is the only modification we make to the upstream chart, and it is necessary to ensure that the chart is usable in production.
+      - name: Pin container images to release tag
+        run: |
+          sed -i "s|operator-controller:devel|operator-controller:${OLM_VERSION}|" helm/olmv1/values.yaml
+          sed -i "s|catalogd:devel|catalogd:${OLM_VERSION}|" helm/olmv1/values.yaml
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login "${{ env.REGISTRY }}" -u "${{ github.actor }}" --password-stdin
+
+      - name: Package chart
+        run: helm package helm/olmv1 --destination .helm-packages
+
+      - name: Push chart to GHCR
+        run: |
+          PACKAGE=$(ls .helm-packages/*.tgz)
+          helm push "${PACKAGE}" "oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts"
+
+      - name: Summary
+        run: |
+          CHART_VERSION="${OLM_VERSION#v}"
+          {
+            echo "### Published OLM Helm Chart"
+            echo "- **Chart**: \`oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }}\`"
+            echo "- **Version**: \`${CHART_VERSION}\`"
+            echo "- **OLM Version**: \`${OLM_VERSION}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
