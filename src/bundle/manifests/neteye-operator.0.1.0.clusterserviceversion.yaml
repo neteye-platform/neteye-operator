@@ -279,7 +279,7 @@ spec:
                   seccompProfile:
                     type: RuntimeDefault
                 containers:
-                  - image: 172.19.69.254:5000/neteye-operator:0.1.0
+                  - image: ghcr.io/neteye-platform/neteye-operator:0.1.0
                     imagePullPolicy: Always
                     name: manager
                     securityContext:

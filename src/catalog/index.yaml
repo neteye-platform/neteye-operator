@@ -11,7 +11,7 @@ entries:
 schema: olm.bundle
 name: neteye-operator.0.1.0
 package: neteye-operator
-image: 172.19.69.254:5000/neteye-operator-bundle:0.1.0
+image: ghcr.io/neteye-platform/neteye-operator-bundle:0.1.0
 properties:
   - type: olm.gvk
     value:

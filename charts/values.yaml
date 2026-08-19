@@ -9,7 +9,7 @@
 operator:
   packageName: neteye-operator
   catalogName: neteye-catalog
-  catalogImage: 172.19.69.254:5000/neteye-operator-catalog:0.1.0
+  catalogImage: ghcr.io/neteye-platform/neteye-operator-catalog:0.1.0
   versionRange: ">=0.1.0"
   channel: stable
   pollIntervalMinutes: 10
