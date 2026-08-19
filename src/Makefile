@@ -11,6 +11,9 @@ LD_FLAGS ?= -X main.version=$(VERSION)
 LOCALBIN ?= $(shell pwd)/bin
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 GOLANGCI_LINT ?= golangci-lint
+ENVTEST ?= $(LOCALBIN)/setup-envtest
+ENVTEST_VERSION ?= release-0.24
+ENVTEST_K8S_VERSION ?= 1.36.2
 GENERATED_CRD ?= bundle/manifests/neteye.cloud_neteyes.yaml
 NETEYE_CRD ?= bundle/manifests/neteyes.neteye.cloud.crd.yaml
 
@@ -48,8 +51,8 @@ lint-fix: ## Run golangci-lint and apply available fixes.
 	$(GOLANGCI_LINT) run --fix
 
 .PHONY: test
-test: generate fmt vet manifests ## Run tests.
-	go test ./...
+test: generate fmt vet manifests envtest ## Run tests.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./...
 
 .PHONY: build
 build: generate fmt vet ## Build the manager binary.
@@ -71,6 +74,13 @@ controller-gen: ## Download controller-gen locally if needed.
 $(CONTROLLER_GEN):
 	mkdir -p $(LOCALBIN)
 	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+
+.PHONY: envtest
+envtest: $(ENVTEST) ## Install setup-envtest (downloads apiserver/etcd on first test run).
+
+$(ENVTEST):
+	mkdir -p $(LOCALBIN)
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
 
 .PHONY: help
 help: ## Display this help.
