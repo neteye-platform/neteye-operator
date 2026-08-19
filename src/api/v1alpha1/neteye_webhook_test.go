@@ -69,6 +69,13 @@ func TestNetEyeValidatorValidateUpdate(t *testing.T) {
 	}
 }
 
+func TestNetEyeValidatorValidateDelete(t *testing.T) {
+	validator := &NetEyeValidator{}
+	if _, err := validator.ValidateDelete(context.Background(), netEyeWithVersion(CurrentNetEyeVersion)); err != nil {
+		t.Errorf("ValidateDelete() error = %v, want nil", err)
+	}
+}
+
 func netEyeWithVersion(version string) *NetEye {
 	return &NetEye{
 		Spec: NetEyeSpec{Version: version},
