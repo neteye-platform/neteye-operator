@@ -5,25 +5,25 @@ ARG VERSION=dev
 
 WORKDIR /workspace
 
+# Install git and ca-certificates for module downloads
+# hadolint ignore=DL3018
+RUN apk add --no-cache git ca-certificates
+
+# Download modules first so this layer is cached unless go.mod/go.sum change
+COPY go.mod go.sum ./
+RUN go mod download
+
 # Copy source files
-COPY go.mod go.mod
 COPY main.go main.go
 COPY api/ api/
 COPY controllers/ controllers/
 COPY internal/ internal/
 
-# Install git and ca-certificates for module downloads
-RUN apk add --no-cache git ca-certificates
-
-# Set Go module replace directives directly in the build
 RUN go build \
-    -mod=mod \
     -buildvcs=false \
     -ldflags="-w -s -X main.version=${VERSION}" \
     -o manager \
-    -work \
-    main.go 2>&1 || \
-    (go get -d ./... && go build -a -ldflags="-w -s -X main.version=${VERSION}" -o manager main.go)
+    main.go
 
 # Final stage
 FROM alpine:3.18
@@ -31,6 +31,7 @@ FROM alpine:3.18
 WORKDIR /
 
 # Install CA certificates for HTTPS
+# hadolint ignore=DL3018
 RUN apk --no-cache add ca-certificates openssl
 
 COPY --from=builder /workspace/manager .
