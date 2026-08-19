@@ -26,6 +26,13 @@ jobs:
           go-version-file: src/go.mod
           cache-dependency-path: src/go.sum
 
+      - name: Set up envtest
+        working-directory: src
+        run: |
+          GOBIN="$(pwd)/bin" go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.24
+          ASSETS="$(./bin/setup-envtest use 1.36.2 --bin-dir "$(pwd)/bin" -p path)"
+          echo "KUBEBUILDER_ASSETS=$ASSETS" >> "$GITHUB_ENV"
+
       - name: Run tests
         working-directory: src
         run: go test ./...
