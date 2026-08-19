@@ -34,7 +34,7 @@ jobs:
         run: go test ./...
 
   integration:
-    name: Integration tests (envtest)
+    name: Integration tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
