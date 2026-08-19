@@ -274,10 +274,19 @@ spec:
                 labels:
                   app.kubernetes.io/name: neteye-operator
               spec:
+                securityContext:
+                  runAsNonRoot: true
+                  seccompProfile:
+                    type: RuntimeDefault
                 containers:
                   - image: 172.19.69.254:5000/neteye-operator:0.1.0
                     imagePullPolicy: Always
                     name: manager
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop:
+                          - ALL
                     ports:
                       - containerPort: 9443
                         name: webhook-server
