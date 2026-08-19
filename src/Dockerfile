@@ -41,7 +41,7 @@ USER 65532:65532
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8081/healthz || exit 1
+    CMD ["/bin/sh", "-c", "wget --no-verbose --tries=1 --spider http://localhost:8081/healthz || exit 1"]
 
 EXPOSE 8080 8081 9443
 
