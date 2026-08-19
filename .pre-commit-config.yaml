@@ -86,12 +86,13 @@ repos:
       - id: renovate-config-validator
         args: [--strict]
 
-  # Requires golangci-lint on PATH; runs against the Go module in src/.
   - repo: local
     hooks:
       - id: golangci-lint
         name: golangci-lint
-        entry: bash -c 'cd src && exec golangci-lint run'
-        language: system
+        entry: bash -c 'cd src && golangci-lint run'
+        language: golang
+        additional_dependencies:
+          - github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.3
         types: [go]
         pass_filenames: false
