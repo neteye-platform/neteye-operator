@@ -63,9 +63,19 @@ spec:
                   The field is part of the desired API contract; module-specific reconcilers
                   will consume it as they are implemented.
                 items:
+                  enum:
+                  - asset
+                  - alyvix
+                  - cmd
+                  - ntopng
+                  - elastic-stack
+                  - slm
+                  - vmd
+                  - satayo
                   minLength: 1
                   type: string
                 type: array
+                x-kubernetes-list-type: set
               gateway:
                 description: |-
                   Gateway configures the Gateway API Gateway and default routes managed by
@@ -89,7 +99,7 @@ spec:
                     type: string
                   name:
                     description: |-
-                      Name is the Gateway name in the NetEye CR namespace. If it already exists,
+                      Name is the Gateway name in the shared NetEye namespace. If it already exists,
                       the operator adopts and reconciles it; otherwise the operator creates it.
                     example: neteye
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
@@ -208,7 +218,7 @@ spec:
                 description: |-
                   InternalCertificateIssuerRef is the cert-manager Issuer name used for TLS
                   certificates consumed by common NetEye components. The Issuer must already
-                  exist in the NetEye CR namespace and is managed by the user.
+                  exist in the shared NetEye namespace and is managed by the user.
                 example: neteye-internal-issuer
                 minLength: 1
                 type: string

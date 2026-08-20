@@ -39,6 +39,9 @@ func (v *NetEyeValidator) ValidateCreate(ctx context.Context, obj *NetEye) (admi
 	if err := validateNamespace(obj); err != nil {
 		return nil, err
 	}
+	if err := validateEnabledModules(obj); err != nil {
+		return nil, err
+	}
 	if obj.Spec.Version == CurrentNetEyeVersion {
 		return nil, v.validateSingleAuthority(ctx, obj)
 	}
@@ -52,6 +55,9 @@ func (v *NetEyeValidator) ValidateCreate(ctx context.Context, obj *NetEye) (admi
 // ValidateUpdate validates NetEye version transitions on update.
 func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *NetEye) (admission.Warnings, error) {
 	if err := validateNamespace(newObj); err != nil {
+		return nil, err
+	}
+	if err := validateEnabledModules(newObj); err != nil {
 		return nil, err
 	}
 	oldVersion := oldObj.Spec.Version
@@ -79,6 +85,29 @@ func validateNamespace(neteye *NetEye) error {
 		neteye.Name,
 		field.ErrorList{field.Forbidden(field.NewPath("metadata", "namespace"), fmt.Sprintf("NetEye resources must be created in namespace %q", NetEyeNamespace))},
 	)
+}
+
+func validateEnabledModules(neteye *NetEye) error {
+	seen := make(map[string]struct{}, len(neteye.Spec.EnabledModules))
+	for index, module := range neteye.Spec.EnabledModules {
+		path := field.NewPath("spec", "enabledModules").Index(index)
+		if !IsSupportedFeatureModule(module) {
+			return apierrors.NewInvalid(
+				GroupVersion.WithKind("NetEye").GroupKind(),
+				neteye.Name,
+				field.ErrorList{field.NotSupported(path, module, SupportedFeatureModules)},
+			)
+		}
+		if _, exists := seen[module]; exists {
+			return apierrors.NewInvalid(
+				GroupVersion.WithKind("NetEye").GroupKind(),
+				neteye.Name,
+				field.ErrorList{field.Duplicate(path, module)},
+			)
+		}
+		seen[module] = struct{}{}
+	}
+	return nil
 }
 
 func (v *NetEyeValidator) validateSingleAuthority(ctx context.Context, obj *NetEye) error {

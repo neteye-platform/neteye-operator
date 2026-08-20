@@ -79,6 +79,29 @@ func TestNetEyeValidatorRejectsWrongNamespace(t *testing.T) {
 	}
 }
 
+func TestNetEyeValidatorValidatesFeatureModules(t *testing.T) {
+	tests := []struct {
+		name    string
+		modules []string
+		wantErr bool
+	}{
+		{name: "all supported modules", modules: SupportedFeatureModules},
+		{name: "unsupported module", modules: []string{"asset", "unknown"}, wantErr: true},
+		{name: "duplicate module", modules: []string{"asset", "asset"}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := netEyeWithVersion(CurrentNetEyeVersion)
+			obj.Spec.EnabledModules = tt.modules
+			_, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestNetEyeValidatorRejectsSecondAuthority(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := AddToScheme(scheme); err != nil {

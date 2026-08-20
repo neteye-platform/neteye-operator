@@ -94,7 +94,7 @@ type NetEyeIdentitySpec struct {
 
 // NetEyeGatewaySpec defines the Gateway API resources managed by NetEye.
 type NetEyeGatewaySpec struct {
-	// Name is the Gateway name in the NetEye CR namespace. If it already exists,
+	// Name is the Gateway name in the shared NetEye namespace. If it already exists,
 	// the operator adopts and reconciles it; otherwise the operator creates it.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
@@ -192,6 +192,8 @@ type NetEyeSpec struct {
 	// will consume it as they are implemented.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:Enum=asset;alyvix;cmd;ntopng;elastic-stack;slm;vmd;satayo
+	// +listType=set
 	EnabledModules []string `json:"enabledModules,omitempty"`
 
 	// Gateway configures the Gateway API Gateway and default routes managed by
@@ -201,7 +203,7 @@ type NetEyeSpec struct {
 
 	// InternalCertificateIssuerRef is the cert-manager Issuer name used for TLS
 	// certificates consumed by common NetEye components. The Issuer must already
-	// exist in the NetEye CR namespace and is managed by the user.
+	// exist in the shared NetEye namespace and is managed by the user.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:example="neteye-internal-issuer"
@@ -210,6 +212,29 @@ type NetEyeSpec struct {
 	// Identity configures identity services such as Keycloak.
 	// +kubebuilder:validation:Required
 	Identity NetEyeIdentitySpec `json:"identity"`
+}
+
+// SupportedFeatureModules is the canonical set of feature modules accepted by
+// the NetEye API and available to future component reconcilers.
+var SupportedFeatureModules = []string{
+	"asset",
+	"alyvix",
+	"cmd",
+	"ntopng",
+	"elastic-stack",
+	"slm",
+	"vmd",
+	"satayo",
+}
+
+// IsSupportedFeatureModule reports whether name is a valid feature module.
+func IsSupportedFeatureModule(name string) bool {
+	for _, supported := range SupportedFeatureModules {
+		if name == supported {
+			return true
+		}
+	}
+	return false
 }
 
 // ServiceState is the per-service state reported in NetEyeServiceStatus.Status.
