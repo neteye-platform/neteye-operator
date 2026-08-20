@@ -11,7 +11,7 @@ metadata:
             "name": "neteye-sample"
           },
           "spec": {
-            "version": "4.51",
+            "version": "4.50",
             "enabledModules": [
               "elastic-stack"
             ],
@@ -79,6 +79,10 @@ spec:
       - displayName: Gateway API Gateway
         kind: Gateway
         name: gateways.gateway.networking.k8s.io
+        version: v1
+      - displayName: Kubernetes NetworkPolicy
+        kind: NetworkPolicy
+        name: networkpolicies.networking.k8s.io
         version: v1
   description: NetEye Operator for managing cloud-native infrastructure
   displayName: NetEye Operator
@@ -229,6 +233,16 @@ spec:
               resources:
                 - gateways
                 - httproutes
+              verbs:
+                - create
+                - get
+                - list
+                - update
+                - watch
+            - apiGroups:
+                - networking.k8s.io
+              resources:
+                - networkpolicies
               verbs:
                 - create
                 - get

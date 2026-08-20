@@ -43,6 +43,12 @@ installing. Once the operator is running, create a `NetEye` resource to
 describe your deployment — see the API types in `src/api/v1alpha1/` and the
 generated CRD under `src/bundle/manifests/`.
 
+The chart creates `keycloak-system` for the Keycloak Operator and
+`neteye-tenant-shared` for tenant `NetEye` resources by default; pre-existing
+namespaces are left untouched. The Keycloak instance always remains in the
+namespace of its `NetEye` resource, so a `NetEye` in `neteye-tenant-shared`
+owns its Keycloak resources there.
+
 ## Development
 
 The Go module lives in `src/` (Go 1.26,

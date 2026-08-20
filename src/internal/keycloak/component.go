@@ -7,10 +7,13 @@ package keycloak
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -24,14 +27,16 @@ import (
 )
 
 const (
-	OperatorNamespace  = "neteye-system"
-	HTTPRouteName      = "keycloak"
-	TLSCertificateName = "keycloak-tls"
-	TLSSecretName      = "keycloak-tls-secret"
-	InstanceName       = "neteye-kc"
-	ServiceName        = "neteye-kc-service"
-	HTTPPort           = int64(8080)
-	HTTPRelativePath   = "/auth"
+	OperatorNamespace   = "keycloak-system"
+	HTTPRouteName       = "keycloak"
+	TLSCertificateName  = "keycloak-tls"
+	TLSSecretName       = "keycloak-tls-secret"
+	InstanceName        = "neteye-kc"
+	ServiceName         = "neteye-kc-service"
+	EgressPolicyName    = "neteye-kc-egress"
+	HTTPPort            = int64(8080)
+	HTTPRelativePath    = "/auth"
+	KubeSystemNamespace = "kube-system"
 
 	extensionName = "keycloak-operator"
 	channel       = "fast"
@@ -137,8 +142,15 @@ func clusterExtensionSpec() map[string]any {
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
 func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
 	ctx = logf.IntoContext(ctx, c.log)
+	managementSourceCIDRs, err := c.managementSourceCIDRs(ctx)
+	if err != nil {
+		return false, "", fmt.Errorf("derive keycloak management source CIDRs: %w", err)
+	}
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
+	}
+	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), owner); err != nil {
+		return false, "", fmt.Errorf("ensure keycloak workload network policy: %w", err)
 	}
 	certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
 	if err != nil {
@@ -147,7 +159,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if !certificateReady {
 		return false, certificateMessage, nil
 	}
-	if err := c.EnsureInstance(ctx, namespace, image, identity, owner); err != nil {
+	if err := c.EnsureInstance(ctx, namespace, image, identity, managementSourceCIDRs, owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
 	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, owner); err != nil {
@@ -179,12 +191,12 @@ func (c *Component) IsReady(ctx context.Context, namespace string) (bool, string
 	return resources.ReadyConditionMessage(kc, "Keycloak")
 }
 
-func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, owner metav1.OwnerReference) error {
+func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, managementSourceCIDRs []string, owner metav1.OwnerReference) error {
 	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:       keycloakGVK(),
 		Name:      InstanceName,
 		Namespace: namespace,
-		Spec:      keycloakInstanceSpec(image, identity),
+		Spec:      keycloakInstanceSpec(image, identity, managementSourceCIDRs),
 		Owner:     &owner,
 	})
 	if err != nil {
@@ -199,7 +211,7 @@ func (c *Component) EnsureInstance(ctx context.Context, namespace, image string,
 	return nil
 }
 
-func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[string]any {
+func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec, managementSourceCIDRs []string) map[string]any {
 	database := identity.DBConnection
 	spec := map[string]any{
 		"instances": int64(identityReplicas(identity)),
@@ -221,6 +233,10 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 		"http": map[string]any{
 			"httpEnabled": true,
 		},
+		"ingress": map[string]any{
+			"enabled": false,
+		},
+		"networkPolicy": keycloakNativeNetworkPolicy(managementSourceCIDRs),
 		"hostname": map[string]any{
 			"hostname":           resourceURI(identity.Hostname),
 			"strict":             true,
@@ -240,6 +256,102 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 		spec["env"] = env
 	}
 	return spec
+}
+
+// EnsureWorkloadNetworkPolicy creates the egress policy. Ingress is delegated
+// to Keycloak's native networkPolicy.
+func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, databasePort int32, owner metav1.OwnerReference) error {
+	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
+		GVK:  schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"},
+		Name: EgressPolicyName, Namespace: namespace, Owner: &owner,
+		Spec: keycloakEgressNetworkPolicySpec(databasePort),
+	})
+	return err
+}
+
+func keycloakNativeNetworkPolicy(managementSourceCIDRs []string) map[string]any {
+	return map[string]any{
+		"enabled": true,
+		"http": []any{map[string]any{
+			"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": KubeSystemNamespace}},
+			"podSelector":       map[string]any{"matchLabels": map[string]any{"k8s-app": "cilium-envoy"}},
+		}},
+		"management": ipBlockSources(managementSourceCIDRs),
+	}
+}
+
+func keycloakEgressNetworkPolicySpec(databasePort int32) map[string]any {
+	return map[string]any{
+		"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()},
+		"policyTypes": []any{"Egress"},
+		"egress": []any{
+			// Standard NetworkPolicy cannot select an external database by DNS name.
+			// Restrict the interim rule to the configured database TCP port only.
+			map[string]any{"ports": []any{networkPort(databasePort, "TCP")}},
+			map[string]any{"to": []any{namespaceAndPodSelector(KubeSystemNamespace, map[string]any{"k8s-app": "kube-dns"})}, "ports": []any{networkPort(53, "TCP"), networkPort(53, "UDP")}},
+			map[string]any{"to": []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}}, "ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}},
+		},
+	}
+}
+
+func ipBlockSources(cidrs []string) []any {
+	sources := make([]any, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		sources = append(sources, map[string]any{"ipBlock": map[string]any{"cidr": cidr}})
+	}
+	return sources
+}
+
+func networkPort(port int32, protocol string) map[string]any {
+	return map[string]any{"protocol": protocol, "port": int64(port)}
+}
+
+func keycloakWorkloadLabels() map[string]any {
+	return map[string]any{
+		"app":                          "keycloak",
+		"app.kubernetes.io/instance":   InstanceName,
+		"app.kubernetes.io/managed-by": "keycloak-operator",
+	}
+}
+
+func namespaceAndPodSelector(namespace string, podLabels map[string]any) map[string]any {
+	return map[string]any{
+		"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": namespace}},
+		"podSelector":       map[string]any{"matchLabels": podLabels},
+	}
+}
+
+func (c *Component) managementSourceCIDRs(ctx context.Context) ([]string, error) {
+	nodes := &corev1.NodeList{}
+	if err := c.client.List(ctx, nodes); err != nil {
+		return nil, fmt.Errorf("list Kubernetes nodes: %w", err)
+	}
+
+	prefixes := make(map[string]struct{})
+	for _, node := range nodes.Items {
+		for _, address := range node.Status.Addresses {
+			if address.Type != corev1.NodeInternalIP {
+				continue
+			}
+			ip, err := netip.ParseAddr(address.Address)
+			if err != nil || !ip.IsValid() {
+				continue
+			}
+			ip = ip.Unmap()
+			prefix := netip.PrefixFrom(ip, ip.BitLen()).String()
+			prefixes[prefix] = struct{}{}
+		}
+	}
+	if len(prefixes) == 0 {
+		return nil, fmt.Errorf("no valid InternalIP addresses found on Kubernetes nodes")
+	}
+
+	result := make([]string, 0, len(prefixes))
+	for prefix := range prefixes {
+		result = append(result, prefix)
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 func identityReplicas(identity neteye.NetEyeIdentitySpec) int32 {
