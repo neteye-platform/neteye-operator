@@ -5,7 +5,15 @@ metadata:
   namespace: keycloak
 spec:
   instances: 2
-  image: quay.io/keycloak/keycloak:26.7.1
+  image: ghcr.io/neteye-platform/neteye-keycloak:1.0.2
+  # ghcr.io/neteye-platform/neteye-keycloak:1.0.2 was built with KC_DB=mariadb baked
+  # in (verified via `kc.sh show-config`: "kc.db = mariadb (Persisted)"), which
+  # conflicts with our postgres deployment under --optimized. Re-augment at startup
+  # instead until a build with KC_DB=postgres is published.
+  startOptimized: false
+  additionalOptions:
+    - name: http-relative-path
+      value: /auth
   db:
     vendor: postgres
     host: postgresql-db

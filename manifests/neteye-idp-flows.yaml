@@ -1,0 +1,115 @@
+apiVersion: v1.edp.epam.com/v1
+kind: Keycloak
+metadata:
+  name: keycloak-connection
+  namespace: keycloak
+spec:
+  url: https://keycloak-cluster-service:8443/auth
+  insecureSkipVerify: true
+  auth:
+    passwordGrant:
+      username:
+        secretKeyRef:
+          name: keycloak-admin-secret
+          key: username
+      passwordRef:
+        name: keycloak-admin-secret
+        key: password
+
+---
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakRealm
+metadata:
+  name: keycloakrealm-master
+  namespace: keycloak
+spec:
+  realmName: master
+  keycloakRef:
+    name: keycloak-connection
+    kind: Keycloak
+
+---
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakAuthFlow
+metadata:
+  name: keycloakauthflow-neteye-first-broker-login-flow
+  namespace: keycloak
+spec:
+  realmRef:
+    name: keycloakrealm-master
+    kind: KeycloakRealm
+  alias: "neteye-first-broker-login-flow"
+  description: "Neteye First Broker Login Flow"
+  providerId: basic-flow
+  topLevel: true
+  builtIn: false
+  authenticationExecutions:
+    - authenticator: "idp-detect-existing-broker-user"
+      priority: 0
+      requirement: "REQUIRED"
+    - authenticator: "idp-auto-link"
+      priority: 1
+      requirement: "REQUIRED"
+
+---
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakAuthFlow
+metadata:
+  name: keycloakauthflow-neteye-idp-discovery-flow
+  namespace: keycloak
+spec:
+  realmRef:
+    name: keycloakrealm-master
+    kind: KeycloakRealm
+  alias: "neteye-idp-discovery-flow"
+  description: "Login with binded idp"
+  providerId: basic-flow
+  topLevel: true
+  builtIn: false
+  authenticationExecutions:
+    - authenticator: "auth-cookie"
+      priority: 0
+      requirement: "ALTERNATIVE"
+    - authenticator: "identity-provider-redirector"
+      priority: 1
+      requirement: "DISABLED"
+    - authenticator: "home-idp-discovery"
+      priority: 2
+      requirement: "ALTERNATIVE"
+      authenticatorConfig:
+        alias: home-idp-discovery
+        config:
+          "default.reference.value": ""
+          "default.reference.maxAge": ""
+          "bypassLoginPage": "true"
+          "forwardToFirstMatch": "true"
+          "userAttribute": "email"
+          "forwardUnverifiedEmail": "true"
+          "forwardToLinkedIdp": "false"
+    - alias: "username-password"
+      authenticatorFlow: true
+      priority: 3
+      requirement: "ALTERNATIVE"
+
+---
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakAuthFlow
+metadata:
+  name: keycloakauthflow-neteye-idp-discovery-username-password
+  namespace: keycloak
+spec:
+  realmRef:
+    name: keycloakrealm-master
+    kind: KeycloakRealm
+  alias: "username-password"
+  description: "Local user login"
+  providerId: "registration-page-form"
+  topLevel: false
+  parentName: "neteye-idp-discovery-flow"
+  childType: basic-flow
+  childRequirement: ALTERNATIVE
+  builtIn: false
+  authenticationExecutions:
+    - authenticator: "auth-username-password-form"
+      priority: 0
+      requirement: "DISABLED"
