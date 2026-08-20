@@ -239,8 +239,8 @@ spec:
                 format: int64
                 type: integer
               phase:
-                description: 'Phase is the aggregate NetEye state: Pending, Ready,
-                  or Failed.'
+                description: NetEyePhase is the aggregate lifecycle state reported
+                  in NetEyeStatus.Phase.
                 type: string
               servicesStatus:
                 description: ServicesStatus reports observed state for each managed
@@ -259,8 +259,8 @@ spec:
                           for this service.
                         type: string
                       status:
-                        description: Status is the service state, for example Pending,
-                          Ready, or Failed.
+                        description: ServiceState is the per-service state reported
+                          in NetEyeServiceStatus.Status.
                         type: string
                     type: object
                 type: object

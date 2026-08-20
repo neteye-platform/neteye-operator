@@ -31,6 +31,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		GroupVersion,
 
 		&NetEye{},
+		&NetEyeList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, GroupVersion)
