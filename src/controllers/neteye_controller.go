@@ -36,7 +36,7 @@ const (
 	DefaultWaitForProgressingRequeueAfter = 30 * time.Second
 	DefaultFailureRequeueAfter            = 2 * time.Minute
 	DefaultReconciliationRequeueAfter     = 10 * time.Minute
-	keycloakAuthorityLeaseName            = "neteye-keycloak-authority"
+	clusterAuthorityLeaseName             = "neteye-keycloak-authority"
 )
 
 // NetEyeReconciler reconciles NetEye CRs and drives per-CR component deployment.
@@ -213,7 +213,7 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 	log := ctrl.LoggerFrom(ctx)
 	owner := ownerReferenceFor(ne)
 	log.Info("Started Keycloak reconciliation", "namespace", ne.Namespace, "name", owner.Name)
-	if err := r.ensureKeycloakAuthority(ctx, ne); err != nil {
+	if err := r.ensureClusterAuthority(ctx, ne); err != nil {
 		setPhase(ne, neteye.PhaseFailed, err.Error())
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
@@ -257,29 +257,29 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 	return ctrl.Result{}, nil
 }
 
-func (r *NetEyeReconciler) ensureKeycloakAuthority(ctx context.Context, ne *neteye.NetEye) error {
-	key := client.ObjectKey{Namespace: keycloak.WorkloadNamespace, Name: keycloakAuthorityLeaseName}
+func (r *NetEyeReconciler) ensureClusterAuthority(ctx context.Context, ne *neteye.NetEye) error {
+	key := client.ObjectKey{Namespace: keycloak.WorkloadNamespace, Name: clusterAuthorityLeaseName}
 	lease := &coordinationv1.Lease{}
 	if err := r.Get(ctx, key, lease); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("get Keycloak authority lease: %w", err)
+			return fmt.Errorf("get NetEye cluster authority lease: %w", err)
 		}
 		lease = &coordinationv1.Lease{
-			ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: keycloakAuthorityLeaseName},
+			ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: clusterAuthorityLeaseName},
 			Spec:       coordinationv1.LeaseSpec{HolderIdentity: ptr.To(string(ne.UID))},
 		}
 		createErr := r.Create(ctx, lease)
 		if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-			return fmt.Errorf("create Keycloak authority lease: %w", createErr)
+			return fmt.Errorf("create NetEye cluster authority lease: %w", createErr)
 		}
 		if apierrors.IsAlreadyExists(createErr) {
 			if err := r.Get(ctx, key, lease); err != nil {
-				return fmt.Errorf("get Keycloak authority lease after create race: %w", err)
+				return fmt.Errorf("get NetEye cluster authority lease after create race: %w", err)
 			}
 		}
 	}
 	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != string(ne.UID) {
-		return fmt.Errorf("shared Keycloak installation is managed by another NetEye resource")
+		return fmt.Errorf("shared NetEye platform components are managed by another NetEye resource")
 	}
 	return nil
 }

@@ -97,7 +97,7 @@ func (v *NetEyeValidator) validateSingleAuthority(ctx context.Context, obj *NetE
 		return apierrors.NewInvalid(
 			GroupVersion.WithKind("NetEye").GroupKind(),
 			obj.Name,
-			field.ErrorList{field.Forbidden(field.NewPath("metadata", "name"), "only one NetEye resource may manage the shared Keycloak installation")},
+			field.ErrorList{field.Forbidden(field.NewPath("metadata", "name"), "only one NetEye resource may manage shared NetEye platform components in this cluster")},
 		)
 	}
 	return nil
