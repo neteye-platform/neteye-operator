@@ -6,6 +6,10 @@ package v1alpha1
 import (
 	"context"
 	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestNetEyeValidatorValidateCreate(t *testing.T) {
@@ -63,8 +67,37 @@ func TestNetEyeValidatorValidateDelete(t *testing.T) {
 	}
 }
 
+func TestNetEyeValidatorRejectsWrongNamespace(t *testing.T) {
+	validator := &NetEyeValidator{}
+	foreign := netEyeWithVersion(CurrentNetEyeVersion)
+	foreign.Namespace = "tenant-a"
+	if _, err := validator.ValidateCreate(context.Background(), foreign); err == nil {
+		t.Fatal("ValidateCreate() accepted a NetEye outside neteye-system")
+	}
+	if _, err := validator.ValidateUpdate(context.Background(), netEyeWithVersion(CurrentNetEyeVersion), foreign); err == nil {
+		t.Fatal("ValidateUpdate() accepted a NetEye outside neteye-system")
+	}
+}
+
+func TestNetEyeValidatorRejectsSecondAuthority(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	existing := netEyeWithVersion(CurrentNetEyeVersion)
+	existing.Name = "existing"
+	validator := &NetEyeValidator{reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()}
+	candidate := netEyeWithVersion(CurrentNetEyeVersion)
+	candidate.ObjectMeta = metav1.ObjectMeta{Name: "candidate", Namespace: NetEyeNamespace}
+
+	if _, err := validator.ValidateCreate(context.Background(), candidate); err == nil {
+		t.Fatal("ValidateCreate() accepted a second NetEye authority")
+	}
+}
+
 func netEyeWithVersion(version string) *NetEye {
 	return &NetEye{
-		Spec: NetEyeSpec{Version: version},
+		ObjectMeta: metav1.ObjectMeta{Namespace: NetEyeNamespace},
+		Spec:       NetEyeSpec{Version: version},
 	}
 }

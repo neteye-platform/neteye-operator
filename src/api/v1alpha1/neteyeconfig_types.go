@@ -52,12 +52,12 @@ type NetEyeDBConnectionSpec struct {
 	DBName string `json:"dbName"`
 
 	// UsernameSecret references the Secret key containing the database username.
-	// The Secret must exist in the NetEye CR namespace.
+	// The Secret must exist in the shared Keycloak workload namespace.
 	// +kubebuilder:validation:Required
 	UsernameSecret NetEyeSecretKeySelector `json:"usernameSecret"`
 
 	// PasswordSecret references the Secret key containing the database password.
-	// The Secret must exist in the NetEye CR namespace.
+	// The Secret must exist in the shared Keycloak workload namespace.
 	// +kubebuilder:validation:Required
 	PasswordSecret NetEyeSecretKeySelector `json:"passwordSecret"`
 }
@@ -85,7 +85,7 @@ type NetEyeIdentitySpec struct {
 	PodExtraEnvVars []string `json:"podExtraEnvVars,omitempty"`
 
 	// DBConnection configures the MariaDB database used by identity services.
-	// Credential Secrets must exist in the NetEye CR namespace.
+	// Credential Secrets must exist in the shared Keycloak workload namespace.
 	// +kubebuilder:validation:Required
 	DBConnection NetEyeDBConnectionSpec `json:"dbConnection"`
 }

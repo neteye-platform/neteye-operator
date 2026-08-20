@@ -44,10 +44,11 @@ describe your deployment — see the API types in `src/api/v1alpha1/` and the
 generated CRD under `src/bundle/manifests/`.
 
 The chart creates `keycloak-system` for the Keycloak Operator and
-`neteye-tenant-shared` for tenant `NetEye` resources by default; pre-existing
-namespaces are left untouched. The Keycloak instance always remains in the
-namespace of its `NetEye` resource, so a `NetEye` in `neteye-tenant-shared`
-owns its Keycloak resources there.
+`neteye-tenant-shared` for the shared Keycloak workload; pre-existing
+namespaces are left untouched. The Keycloak instance, its TLS Certificate,
+HTTPRoute, and NetworkPolicy always run in `neteye-tenant-shared`, regardless
+of the `NetEye` resource namespace. Its database credential Secrets and
+cert-manager Issuer must therefore exist in `neteye-tenant-shared`.
 
 ## Development
 

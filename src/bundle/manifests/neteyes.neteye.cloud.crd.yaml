@@ -113,7 +113,7 @@ spec:
                   dbConnection:
                     description: |-
                       DBConnection configures the MariaDB database used by identity services.
-                      Credential Secrets must exist in the NetEye CR namespace.
+                      Credential Secrets must exist in the shared Keycloak workload namespace.
                     properties:
                       dbName:
                         description: DBName is the database name used by Keycloak.
@@ -129,7 +129,7 @@ spec:
                       passwordSecret:
                         description: |-
                           PasswordSecret references the Secret key containing the database password.
-                          The Secret must exist in the NetEye CR namespace.
+                          The Secret must exist in the shared Keycloak workload namespace.
                         properties:
                           key:
                             description: Key is the key inside the Secret containing
@@ -155,7 +155,7 @@ spec:
                       usernameSecret:
                         description: |-
                           UsernameSecret references the Secret key containing the database username.
-                          The Secret must exist in the NetEye CR namespace.
+                          The Secret must exist in the shared Keycloak workload namespace.
                         properties:
                           key:
                             description: Key is the key inside the Secret containing
