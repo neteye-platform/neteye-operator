@@ -1,0 +1,43 @@
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakRealm
+metadata:
+  name: keycloakrealm-neteye
+  namespace: keycloak
+spec:
+  realmName: neteye
+  keycloakRef:
+    name: keycloak-connection
+    kind: Keycloak
+
+  # --- from "Setup realm" task ---
+  realmEventConfig:
+    eventsEnabled: true
+    eventsExpiration: 15552000
+    adminEventsEnabled: true
+    adminEventsDetailsEnabled: true
+    adminEventsExpiration: 15552000
+
+  bruteForceDetection:
+    bruteForceProtected: true
+    permanentLockout: false
+    maxDeltaTimeSeconds: 43200
+    maxFailureWaitSeconds: 900
+    minimumQuickLoginWaitSeconds: 60
+    quickLoginCheckMilliSeconds: 1000
+    failureFactor: 30
+    waitIncrementSeconds: 60
+
+  # --- from "Setup Login theme for Realm" task ---
+  themes:
+    loginTheme: keycloak.v2
+    adminConsoleTheme: keycloak.v2
+    accountTheme: keycloak.v3
+    emailTheme: keycloak
+
+  # --- from "Change meta title" task ---
+  displayName: "NetEye"
+  displayHtmlName: ""
+
+  # --- from "Setup Login form" task ---
+  login:
+    rememberMe: true

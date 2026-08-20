@@ -1,0 +1,26 @@
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: keycloak-cluster
+  namespace: keycloak
+spec:
+  instances: 2
+  image: quay.io/keycloak/keycloak:26.7.1
+  db:
+    vendor: postgres
+    host: postgresql-db
+    usernameSecret:
+      name: keycloak-db-secret
+      key: username
+    passwordSecret:
+      name: keycloak-db-secret
+      key: password
+  bootstrapAdmin:
+    user:
+      secret: keycloak-admin-secret
+  http:
+    tlsSecret: keycloak-tls-secret
+  hostname:
+    hostname: keycloak.test.local
+  ingress:
+    enabled: false
