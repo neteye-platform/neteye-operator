@@ -97,11 +97,17 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
 		t.Fatalf("create namespace: %v", err)
 	}
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: keycloak.WorkloadNamespace}}); err != nil {
+		t.Fatalf("create shared Keycloak namespace: %v", err)
+	}
 	if err := c.Create(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "neteye-node"}, Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "192.0.2.1"}}}}); err != nil {
 		t.Fatalf("create node: %v", err)
 	}
 	if err := c.Create(ctx, newUnstructured(issuerGVK, ns, "internal-issuer")); err != nil {
 		t.Fatalf("create issuer: %v", err)
+	}
+	if err := c.Create(ctx, newUnstructured(issuerGVK, keycloak.WorkloadNamespace, "internal-issuer")); err != nil {
+		t.Fatalf("create shared Keycloak issuer: %v", err)
 	}
 
 	ne := &neteye.NetEye{
@@ -151,7 +157,22 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if owner := cert.GetOwnerReferences(); len(owner) != 1 || owner[0].Name != "platform" {
 		t.Errorf("gateway certificate owner references = %v", owner)
 	}
-	requireExists(ctx, t, c, gatewayGVK, ns, "neteye-gw")
+	if dnsNames, _, _ := unstructured.NestedSlice(cert.Object, "spec", "dnsNames"); len(dnsNames) != 2 || dnsNames[1] != ne.Spec.Identity.Hostname {
+		t.Errorf("gateway certificate dnsNames = %v", dnsNames)
+	}
+	gateway := requireExists(ctx, t, c, gatewayGVK, ns, "neteye-gw")
+	listeners, _, _ := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
+	for _, listener := range listeners {
+		listenerSpec := listener.(map[string]any)
+		namespaces, _, _ := unstructured.NestedMap(listenerSpec, "allowedRoutes", "namespaces")
+		if namespaces["from"] != "Selector" {
+			t.Errorf("allowedRoutes.namespaces.from = %v, want Selector", namespaces["from"])
+		}
+		matchLabels, _, _ := unstructured.NestedMap(namespaces, "selector", "matchLabels")
+		if matchLabels["kubernetes.io/metadata.name"] != keycloak.WorkloadNamespace {
+			t.Errorf("allowedRoutes namespace selector = %v, want %q", matchLabels, keycloak.WorkloadNamespace)
+		}
+	}
 	requireExists(ctx, t, c, httpRouteGVK, ns, resources.HTTPToHTTPSRedirectRouteName)
 
 	got := &neteye.NetEye{}
@@ -176,5 +197,27 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
-	requireExists(ctx, t, c, certificateGVK, ns, keycloak.TLSCertificateName)
+	keycloakCertificate := requireExists(ctx, t, c, certificateGVK, keycloak.WorkloadNamespace, keycloak.TLSCertificateName)
+	if owner := keycloakCertificate.GetOwnerReferences(); len(owner) != 0 {
+		t.Errorf("shared Keycloak certificate owner references = %v, want none", owner)
+	}
+	if err := unstructured.SetNestedSlice(keycloakCertificate.Object, []any{map[string]any{"type": "Ready", "status": "True"}}, "status", "conditions"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Status().Update(ctx, keycloakCertificate); err != nil {
+		t.Fatalf("update shared Keycloak certificate status: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("third reconcile: %v", err)
+	}
+	route := requireExists(ctx, t, c, httpRouteGVK, keycloak.WorkloadNamespace, keycloak.HTTPRouteName)
+	parentRefs, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs")
+	parentRef := parentRefs[0].(map[string]any)
+	if parentRef["namespace"] != ns {
+		t.Errorf("route parent namespace = %v, want %q", parentRef["namespace"], ns)
+	}
+	hostnames, _, _ := unstructured.NestedSlice(route.Object, "spec", "hostnames")
+	if len(hostnames) != 1 || hostnames[0] != ne.Spec.Identity.Hostname {
+		t.Errorf("route hostnames = %v", hostnames)
+	}
 }

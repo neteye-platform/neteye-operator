@@ -17,7 +17,7 @@ import (
 
 // EnsureCertificate ensures a namespaced cert-manager Certificate exists and
 // writes the requested TLS Secret using the provided issuer reference.
-func EnsureCertificate(ctx context.Context, client client.Client, namespace string, name string, secretName string, commonName string, dnsNames []string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
+func EnsureCertificate(ctx context.Context, client client.Client, namespace string, name string, secretName string, commonName string, dnsNames []string, issuerRef CertificateIssuerRef, owner *metav1.OwnerReference) error {
 	if err := validateCertificateIssuerRef(issuerRef); err != nil {
 		return err
 	}
@@ -43,7 +43,7 @@ func EnsureCertificate(ctx context.Context, client client.Client, namespace stri
 		Name:      name,
 		Namespace: namespace,
 		Spec:      desiredSpec,
-		Owner:     &owner,
+		Owner:     owner,
 	})
 	if err != nil {
 		return err

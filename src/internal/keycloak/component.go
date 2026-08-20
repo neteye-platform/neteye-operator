@@ -28,6 +28,7 @@ import (
 
 const (
 	OperatorNamespace   = "keycloak-system"
+	WorkloadNamespace   = "neteye-tenant-shared"
 	HTTPRouteName       = "keycloak"
 	TLSCertificateName  = "keycloak-tls"
 	TLSSecretName       = "keycloak-tls-secret"
@@ -140,16 +141,16 @@ func clusterExtensionSpec() map[string]any {
 
 // EnsureResources reconciles the identity component resources owned by the Keycloak
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
-func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
+func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef) (bool, string, error) {
 	ctx = logf.IntoContext(ctx, c.log)
 	managementSourceCIDRs, err := c.managementSourceCIDRs(ctx)
 	if err != nil {
 		return false, "", fmt.Errorf("derive keycloak management source CIDRs: %w", err)
 	}
-	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, owner); err != nil {
+	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, nil); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
 	}
-	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), owner); err != nil {
+	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), nil); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak workload network policy: %w", err)
 	}
 	certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
@@ -159,10 +160,10 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if !certificateReady {
 		return false, certificateMessage, nil
 	}
-	if err := c.EnsureInstance(ctx, namespace, image, identity, managementSourceCIDRs, owner); err != nil {
+	if err := c.EnsureInstance(ctx, namespace, image, identity, managementSourceCIDRs, nil); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
-	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, owner); err != nil {
+	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayRef, []string{identity.Hostname}, ServiceName, HTTPPort, nil); err != nil {
 		return false, "", fmt.Errorf("ensure http route: %w", err)
 	}
 	return true, "Keycloak is Ready", nil
@@ -191,13 +192,13 @@ func (c *Component) IsReady(ctx context.Context, namespace string) (bool, string
 	return resources.ReadyConditionMessage(kc, "Keycloak")
 }
 
-func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, managementSourceCIDRs []string, owner metav1.OwnerReference) error {
+func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, managementSourceCIDRs []string, owner *metav1.OwnerReference) error {
 	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:       keycloakGVK(),
 		Name:      InstanceName,
 		Namespace: namespace,
 		Spec:      keycloakInstanceSpec(image, identity, managementSourceCIDRs),
-		Owner:     &owner,
+		Owner:     owner,
 	})
 	if err != nil {
 		return err
@@ -260,10 +261,10 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec, mana
 
 // EnsureWorkloadNetworkPolicy creates the egress policy. Ingress is delegated
 // to Keycloak's native networkPolicy.
-func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, databasePort int32, owner metav1.OwnerReference) error {
+func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, databasePort int32, owner *metav1.OwnerReference) error {
 	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:  schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"},
-		Name: EgressPolicyName, Namespace: namespace, Owner: &owner,
+		Name: EgressPolicyName, Namespace: namespace, Owner: owner,
 		Spec: keycloakEgressNetworkPolicySpec(databasePort),
 	})
 	return err

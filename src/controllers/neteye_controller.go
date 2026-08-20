@@ -10,10 +10,15 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -31,6 +36,7 @@ const (
 	DefaultWaitForProgressingRequeueAfter = 30 * time.Second
 	DefaultFailureRequeueAfter            = 2 * time.Minute
 	DefaultReconciliationRequeueAfter     = 10 * time.Minute
+	keycloakAuthorityLeaseName            = "neteye-keycloak-authority"
 )
 
 // NetEyeReconciler reconciles NetEye CRs and drives per-CR component deployment.
@@ -55,6 +61,7 @@ type NetEyeReconciler struct {
 // +kubebuilder:rbac:groups=k8s.keycloak.org,resources=keycloaks,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=olm.operatorframework.io,resources=clusterextensions,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update
 
 // Reconcile reconciles a NetEye resource with the desired cluster state.
@@ -78,7 +85,7 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		Identity: identityStatus(neteye.ServiceStateUnknown, "", ""),
 	}
 	defer func() {
-		if err := r.Status().Update(ctx, ne); err != nil {
+		if err := r.updateStatus(ctx, req.NamespacedName, ne.Status); err != nil {
 			log.Error(err, "unable to update NetEye status")
 		}
 	}()
@@ -122,6 +129,17 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{RequeueAfter: r.reconciliationRequeue()}, nil
 }
 
+func (r *NetEyeReconciler) updateStatus(ctx context.Context, key client.ObjectKey, status neteye.NetEyeStatus) error {
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		current := &neteye.NetEye{}
+		if err := r.Get(ctx, key, current); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		current.Status = status
+		return r.Status().Update(ctx, current)
+	})
+}
+
 func shouldReturn(result ctrl.Result, err error) bool {
 	return err != nil || !result.IsZero()
 }
@@ -162,7 +180,7 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure cert-manager Issuer '%q' exists in namespace %q: %v", issuerRef.Name, ne.Namespace, err))
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure issuer exists: %w", err)
 	}
-	if err := resources.EnsureGatewayTLSCertificate(ctx, r.Client, ne.Namespace, gateway.TLSSecretName, issuerRef, owner); err != nil {
+	if err := resources.EnsureGatewayTLSCertificate(ctx, r.Client, ne.Namespace, gateway.TLSSecretName, ne.Spec.Identity.Hostname, issuerRef, owner); err != nil {
 		log.Error(err, "failed to ensure gateway TLS certificate exists", "namespace", ne.Namespace, "tlsSecretName", gateway.TLSSecretName, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure gateway TLS certificate '%q' exists in namespace %q: %v", gateway.TLSSecretName, ne.Namespace, err))
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure gateway tls certificate: %w", err)
@@ -195,11 +213,24 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 	log := ctrl.LoggerFrom(ctx)
 	owner := ownerReferenceFor(ne)
 	log.Info("Started Keycloak reconciliation", "namespace", ne.Namespace, "name", owner.Name)
-	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, ne.Namespace, image, ne.Spec.Identity, ne.Spec.Gateway.Name, issuerRefFor(ne), owner)
+	if err := r.ensureKeycloakAuthority(ctx, ne); err != nil {
+		setPhase(ne, neteye.PhaseFailed, err.Error())
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+	}
+	issuerRef := issuerRefFor(ne)
+	if err := resources.EnsureIssuerExists(ctx, r.Client, keycloak.WorkloadNamespace, issuerRef); err != nil {
+		if apierrors.IsNotFound(err) {
+			setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("cert-manager Issuer '%q' was not found in namespace %q; create it before creating or reconciling this NetEye resource", issuerRef.Name, keycloak.WorkloadNamespace))
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
+		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure cert-manager Issuer '%q' exists in namespace %q: %v", issuerRef.Name, keycloak.WorkloadNamespace, err))
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared Keycloak issuer exists: %w", err)
+	}
+	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, ne.Spec.Identity, ne.Namespace, ne.Spec.Gateway.Name, issuerRef)
 	if err != nil {
-		log.Error(err, "failed to ensure keycloak resources", "namespace", ne.Namespace, "requeueAfter", r.failureRequeue())
+		log.Error(err, "failed to ensure keycloak resources", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
-		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to ensure keycloak resources in namespace %q: %v", ne.Namespace, err), image)
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to ensure keycloak resources in namespace %q: %v", keycloak.WorkloadNamespace, err), image)
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure keycloak resources: %w", err)
 	}
 	if !keycloakResourcesReady {
@@ -208,7 +239,7 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, keycloakResourcesMessage, image)
 		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
 	}
-	keycloakReady, keycloakMessage, err := r.KeycloakComponent.IsReady(ctx, ne.Namespace)
+	keycloakReady, keycloakMessage, err := r.KeycloakComponent.IsReady(ctx, keycloak.WorkloadNamespace)
 	if err != nil {
 		log.Error(err, "failed to check keycloak readiness", "namespace", ne.Namespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
@@ -224,6 +255,33 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 
 	log.Info("Keycloak reconciled and ready", "namespace", ne.Namespace, "name", owner.Name)
 	return ctrl.Result{}, nil
+}
+
+func (r *NetEyeReconciler) ensureKeycloakAuthority(ctx context.Context, ne *neteye.NetEye) error {
+	key := client.ObjectKey{Namespace: keycloak.WorkloadNamespace, Name: keycloakAuthorityLeaseName}
+	lease := &coordinationv1.Lease{}
+	if err := r.Get(ctx, key, lease); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("get Keycloak authority lease: %w", err)
+		}
+		lease = &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: keycloakAuthorityLeaseName},
+			Spec:       coordinationv1.LeaseSpec{HolderIdentity: ptr.To(string(ne.UID))},
+		}
+		createErr := r.Create(ctx, lease)
+		if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return fmt.Errorf("create Keycloak authority lease: %w", createErr)
+		}
+		if apierrors.IsAlreadyExists(createErr) {
+			if err := r.Get(ctx, key, lease); err != nil {
+				return fmt.Errorf("get Keycloak authority lease after create race: %w", err)
+			}
+		}
+	}
+	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != string(ne.UID) {
+		return fmt.Errorf("shared Keycloak installation is managed by another NetEye resource")
+	}
+	return nil
 }
 
 func issuerRefFor(ne *neteye.NetEye) resources.CertificateIssuerRef {
@@ -249,6 +307,6 @@ func identityStatus(state neteye.ServiceState, message, image string) *neteye.Ne
 
 func (r *NetEyeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&neteye.NetEye{}).
+		For(&neteye.NetEye{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }
