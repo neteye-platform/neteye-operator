@@ -4,7 +4,9 @@
 package v1alpha1
 
 import (
+	"os"
 	"sort"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -129,8 +131,10 @@ var netEyeVersionMap = map[string]NetEyeComponents{
 }
 
 const (
-	CurrentNetEyeVersion  = "4.50"
-	PreviousNetEyeVersion = "4.49"
+	// RelatedImageKeycloakEnv overrides the Keycloak image packaged with the operator.
+	RelatedImageKeycloakEnv = "RELATED_IMAGE_KEYCLOAK"
+	CurrentNetEyeVersion    = "4.50"
+	PreviousNetEyeVersion   = "4.49"
 )
 
 // ComponentsForVersion returns the component image set for the given NetEye
@@ -138,6 +142,12 @@ const (
 // false.
 func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	c, ok := netEyeVersionMap[version]
+	if !ok {
+		return NetEyeComponents{}, false
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageKeycloakEnv)); image != "" {
+		c.KeycloakImage = image
+	}
 	return c, ok
 }
 
