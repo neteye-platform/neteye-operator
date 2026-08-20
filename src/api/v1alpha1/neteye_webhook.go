@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	NetEyeNamespace             = "neteye-system"
+	NetEyeNamespace             = "neteye-tenant-shared"
 	NetEyeValidationWebhookPath = "/validate-neteye-cloud-v1alpha1-neteye"
 )
 

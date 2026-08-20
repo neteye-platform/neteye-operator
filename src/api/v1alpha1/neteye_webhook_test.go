@@ -72,10 +72,10 @@ func TestNetEyeValidatorRejectsWrongNamespace(t *testing.T) {
 	foreign := netEyeWithVersion(CurrentNetEyeVersion)
 	foreign.Namespace = "tenant-a"
 	if _, err := validator.ValidateCreate(context.Background(), foreign); err == nil {
-		t.Fatal("ValidateCreate() accepted a NetEye outside neteye-system")
+		t.Fatal("ValidateCreate() accepted a NetEye outside neteye-tenant-shared")
 	}
 	if _, err := validator.ValidateUpdate(context.Background(), netEyeWithVersion(CurrentNetEyeVersion), foreign); err == nil {
-		t.Fatal("ValidateUpdate() accepted a NetEye outside neteye-system")
+		t.Fatal("ValidateUpdate() accepted a NetEye outside neteye-tenant-shared")
 	}
 }
 
