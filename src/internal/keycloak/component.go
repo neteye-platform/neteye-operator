@@ -167,7 +167,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := c.EnsureInstance(ctx, namespace, image, identity, managementSourceCIDRs, nil); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
-	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayRef, []string{identity.Hostname}, ServiceName, HTTPPort, nil); err != nil {
+	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, nil); err != nil {
 		return false, "", fmt.Errorf("ensure http route: %w", err)
 	}
 	return true, "Keycloak is Ready", nil
