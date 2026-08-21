@@ -27,10 +27,11 @@ import (
 )
 
 var (
-	certificateGVK = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
-	issuerGVK      = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"}
-	gatewayGVK     = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway"}
-	httpRouteGVK   = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}
+	certificateGVK   = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
+	issuerGVK        = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"}
+	gatewayGVK       = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway"}
+	httpRouteGVK     = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}
+	networkPolicyGVK = schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"}
 )
 
 // startEnvtest boots a real API server via envtest. It skips the test when the
@@ -159,6 +160,13 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	}
 	if dnsNames, _, _ := unstructured.NestedSlice(cert.Object, "spec", "dnsNames"); len(dnsNames) != 2 || dnsNames[1] != ne.Spec.Identity.Hostname {
 		t.Errorf("gateway certificate dnsNames = %v", dnsNames)
+	}
+	defaultDeny := requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.DefaultDenyPolicyName)
+	if podSelector, _, _ := unstructured.NestedMap(defaultDeny.Object, "spec", "podSelector"); len(podSelector) != 0 {
+		t.Errorf("default deny pod selector = %v, want empty", podSelector)
+	}
+	if policyTypes, _, _ := unstructured.NestedStringSlice(defaultDeny.Object, "spec", "policyTypes"); len(policyTypes) != 2 || policyTypes[0] != "Ingress" || policyTypes[1] != "Egress" {
+		t.Errorf("default deny policy types = %v, want [Ingress Egress]", policyTypes)
 	}
 	gateway := requireExists(ctx, t, c, gatewayGVK, ns, "neteye-gw")
 	listeners, _, _ := unstructured.NestedSlice(gateway.Object, "spec", "listeners")

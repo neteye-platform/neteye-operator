@@ -152,6 +152,14 @@ func TestKeycloakInstanceSpecOmitsEnvWhenEmpty(t *testing.T) {
 }
 
 func TestKeycloakNetworkPolicies(t *testing.T) {
+	defaultDeny := defaultDenyNetworkPolicySpec()
+	if !reflect.DeepEqual(defaultDeny["podSelector"], map[string]any{}) {
+		t.Errorf("default deny pod selector = %#v", defaultDeny["podSelector"])
+	}
+	if !reflect.DeepEqual(defaultDeny["policyTypes"], []any{"Ingress", "Egress"}) {
+		t.Errorf("default deny policy types = %#v", defaultDeny["policyTypes"])
+	}
+
 	native := keycloakNativeNetworkPolicy([]string{"192.0.2.1/32", "2001:db8::1/128"})
 	if native["enabled"] != true {
 		t.Fatal("native Keycloak network policy is not enabled")

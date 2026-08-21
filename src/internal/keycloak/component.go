@@ -27,17 +27,18 @@ import (
 )
 
 const (
-	OperatorNamespace   = "keycloak-system"
-	WorkloadNamespace   = "neteye-tenant-shared"
-	HTTPRouteName       = "keycloak"
-	TLSCertificateName  = "keycloak-tls"
-	TLSSecretName       = "keycloak-tls-secret"
-	InstanceName        = "neteye-kc"
-	ServiceName         = "neteye-kc-service"
-	EgressPolicyName    = "neteye-kc-egress"
-	HTTPPort            = int64(8080)
-	HTTPRelativePath    = "/auth"
-	KubeSystemNamespace = "kube-system"
+	OperatorNamespace     = "keycloak-system"
+	WorkloadNamespace     = "neteye-tenant-shared"
+	HTTPRouteName         = "keycloak"
+	TLSCertificateName    = "keycloak-tls"
+	TLSSecretName         = "keycloak-tls-secret"
+	InstanceName          = "neteye-kc"
+	ServiceName           = "neteye-kc-service"
+	EgressPolicyName      = "neteye-kc-egress"
+	DefaultDenyPolicyName = "neteye-default-deny"
+	HTTPPort              = int64(8080)
+	HTTPRelativePath      = "/auth"
+	KubeSystemNamespace   = "kube-system"
 
 	extensionName = "keycloak-operator"
 	channel       = "fast"
@@ -150,6 +151,9 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, nil); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
 	}
+	if err := c.EnsureDefaultDenyNetworkPolicy(ctx, namespace); err != nil {
+		return false, "", fmt.Errorf("ensure default deny network policy: %w", err)
+	}
 	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), nil); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak workload network policy: %w", err)
 	}
@@ -167,6 +171,24 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 		return false, "", fmt.Errorf("ensure http route: %w", err)
 	}
 	return true, "Keycloak is Ready", nil
+}
+
+// EnsureDefaultDenyNetworkPolicy isolates every pod in the shared namespace.
+// Component-specific policies add back only the traffic required by managed workloads.
+func (c *Component) EnsureDefaultDenyNetworkPolicy(ctx context.Context, namespace string) error {
+	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
+		GVK:  schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"},
+		Name: DefaultDenyPolicyName, Namespace: namespace,
+		Spec: defaultDenyNetworkPolicySpec(),
+	})
+	return err
+}
+
+func defaultDenyNetworkPolicySpec() map[string]any {
+	return map[string]any{
+		"podSelector": map[string]any{},
+		"policyTypes": []any{"Ingress", "Egress"},
+	}
 }
 
 // IsReady reports whether the Keycloak Operator marked the Keycloak instance
