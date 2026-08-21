@@ -4,16 +4,10 @@
 package keycloak
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
-	"github.com/go-logr/logr"
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestIdentityReplicas(t *testing.T) {
@@ -104,7 +98,7 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 			PasswordSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
 		},
 	}
-	spec := keycloakInstanceSpec("ghcr.io/example/keycloak:1.0.0", identity, []string{"192.0.2.1/32"})
+	spec := keycloakInstanceSpec("ghcr.io/example/keycloak:1.0.0", identity)
 
 	if spec["image"] != "ghcr.io/example/keycloak:1.0.0" {
 		t.Errorf("image = %v", spec["image"])
@@ -145,7 +139,7 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 }
 
 func TestKeycloakInstanceSpecOmitsEnvWhenEmpty(t *testing.T) {
-	spec := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "h"}, []string{"192.0.2.1/32"})
+	spec := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "h"})
 	if _, ok := spec["env"]; ok {
 		t.Errorf("env should not be set when PodExtraEnvVars is empty")
 	}
@@ -160,19 +154,30 @@ func TestKeycloakNetworkPolicies(t *testing.T) {
 		t.Errorf("default deny policy types = %#v", defaultDeny["policyTypes"])
 	}
 
-	native := keycloakNativeNetworkPolicy([]string{"192.0.2.1/32", "2001:db8::1/128"})
-	if native["enabled"] != true {
-		t.Fatal("native Keycloak network policy is not enabled")
+	instance := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "h"})
+	if !reflect.DeepEqual(instance["networkPolicy"], map[string]any{"enabled": false}) {
+		t.Errorf("native network policy = %#v, want disabled", instance["networkPolicy"])
 	}
-	httpSources := native["http"].([]any)
-	if !reflect.DeepEqual(httpSources, []any{map[string]any{
-		"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": KubeSystemNamespace}},
-		"podSelector":       map[string]any{"matchLabels": map[string]any{"k8s-app": "cilium-envoy"}},
-	}}) {
-		t.Errorf("HTTP ingress sources = %#v", httpSources)
+	ingress := keycloakIngressNetworkPolicySpec()
+	if !reflect.DeepEqual(ingress["podSelector"], map[string]any{"matchLabels": keycloakWorkloadLabels()}) {
+		t.Errorf("ingress selector = %#v", ingress["podSelector"])
 	}
-	if _, ok := native["management"]; !ok {
-		t.Fatal("native Keycloak network policy does not configure management ingress")
+	if !reflect.DeepEqual(ingress["policyTypes"], []any{"Ingress"}) {
+		t.Errorf("ingress policy types = %#v", ingress["policyTypes"])
+	}
+	if len(ingress["ingress"].([]any)) != 1 {
+		t.Fatalf("ingress rule count = %d, want 1", len(ingress["ingress"].([]any)))
+	}
+	host := keycloakHostManagementPolicySpec()
+	if !reflect.DeepEqual(host["endpointSelector"], map[string]any{"matchLabels": keycloakWorkloadLabels()}) {
+		t.Errorf("host endpoint selector = %#v", host["endpointSelector"])
+	}
+	hostRules := host["ingress"].([]any)
+	if !reflect.DeepEqual(hostRules[0].(map[string]any)["fromEntities"], []any{"ingress"}) {
+		t.Errorf("gateway entities = %#v", hostRules[0].(map[string]any)["fromEntities"])
+	}
+	if !reflect.DeepEqual(hostRules[1].(map[string]any)["fromEntities"], []any{"host", "remote-node"}) {
+		t.Errorf("host entities = %#v", hostRules[1].(map[string]any)["fromEntities"])
 	}
 	egress := keycloakEgressNetworkPolicySpec(3306)
 	if got := egress["policyTypes"]; !reflect.DeepEqual(got, []any{"Egress"}) {
@@ -190,38 +195,5 @@ func TestKeycloakNetworkPolicies(t *testing.T) {
 	}
 	if !reflect.DeepEqual(rules[2].(map[string]any)["ports"], []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}) {
 		t.Errorf("intra-cluster ports = %#v", rules[2].(map[string]any)["ports"])
-	}
-}
-
-func TestManagementSourceCIDRs(t *testing.T) {
-	scheme := runtime.NewScheme()
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	component := NewComponent(fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "first"}, Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
-			{Type: corev1.NodeInternalIP, Address: "192.0.2.2"},
-			{Type: corev1.NodeInternalIP, Address: "2001:db8::2"},
-			{Type: corev1.NodeHostName, Address: "ignored"},
-		}}},
-		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "second"}, Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
-			{Type: corev1.NodeInternalIP, Address: "192.0.2.2"},
-			{Type: corev1.NodeInternalIP, Address: "not-an-address"},
-			{Type: corev1.NodeInternalIP, Address: "192.0.2.1"},
-		}}},
-	).Build(), logr.Discard())
-
-	got, err := component.managementSourceCIDRs(context.Background())
-	if err != nil {
-		t.Fatalf("managementSourceCIDRs() error = %v", err)
-	}
-	want := []string{"192.0.2.1/32", "192.0.2.2/32", "2001:db8::2/128"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("managementSourceCIDRs() = %v, want %v", got, want)
-	}
-
-	empty := NewComponent(fake.NewClientBuilder().WithScheme(scheme).Build(), logr.Discard())
-	if _, err := empty.managementSourceCIDRs(context.Background()); err == nil {
-		t.Fatal("managementSourceCIDRs() accepted a node list without InternalIPs")
 	}
 }

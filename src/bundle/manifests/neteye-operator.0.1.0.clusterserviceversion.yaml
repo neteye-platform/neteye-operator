@@ -84,6 +84,10 @@ spec:
         kind: NetworkPolicy
         name: networkpolicies.networking.k8s.io
         version: v1
+      - displayName: Cilium NetworkPolicy
+        kind: CiliumNetworkPolicy
+        name: ciliumnetworkpolicies.cilium.io
+        version: v2
   description: NetEye Operator for managing cloud-native infrastructure
   displayName: NetEye Operator
   icon:
@@ -113,14 +117,6 @@ spec:
               resources:
                 - pods
                 - pods/log
-              verbs:
-                - get
-                - list
-                - watch
-            - apiGroups:
-                - ""
-              resources:
-                - nodes
               verbs:
                 - get
                 - list
@@ -233,6 +229,16 @@ spec:
               resources:
                 - gateways
                 - httproutes
+              verbs:
+                - create
+                - get
+                - list
+                - update
+                - watch
+            - apiGroups:
+                - cilium.io
+              resources:
+                - ciliumnetworkpolicies
               verbs:
                 - create
                 - get
