@@ -36,7 +36,7 @@ const (
 	DefaultWaitForProgressingRequeueAfter = 30 * time.Second
 	DefaultFailureRequeueAfter            = 2 * time.Minute
 	DefaultReconciliationRequeueAfter     = 10 * time.Minute
-	clusterAuthorityLeaseName             = "neteye-keycloak-authority"
+	clusterAuthorityLeaseName             = "neteye-cluster-authority"
 )
 
 // NetEyeReconciler reconciles NetEye CRs and drives per-CR component deployment.
