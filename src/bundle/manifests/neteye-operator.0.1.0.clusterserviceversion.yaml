@@ -131,6 +131,7 @@ spec:
                 - namespaces
               verbs:
                 - create
+                - delete
                 - get
                 - list
                 - watch
@@ -236,6 +237,7 @@ spec:
                 - grpcroutes
               verbs:
                 - create
+                - delete
                 - get
                 - list
                 - update
@@ -246,6 +248,7 @@ spec:
                 - ciliumnetworkpolicies
               verbs:
                 - create
+                - delete
                 - get
                 - list
                 - update
