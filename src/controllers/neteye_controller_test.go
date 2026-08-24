@@ -214,7 +214,7 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 			name:             "ready",
 			config:           &neteye.NetEyeElasticStackSpec{Enabled: true},
 			component:        &elasticStackResources{ready: true},
-			wantServiceState: neteye.ServiceStateReady, wantServiceMessage: "Elastic Stack OpenTelemetry Collector is ready",
+			wantServiceState: neteye.ServiceStateReady, wantServiceMessage: "Elastic Stack feature module is ready",
 			wantPhase: neteye.PhaseReady, wantPhaseMessage: "previous phase",
 		},
 		{
@@ -234,7 +234,7 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 		{
 			name:             "disabled cleans up",
 			component:        &elasticStackResources{},
-			wantServiceState: neteye.ServiceStateUnknown, wantServiceMessage: "Elastic Stack OpenTelemetry Collector is disabled",
+			wantServiceState: neteye.ServiceStateUnknown, wantServiceMessage: "Elastic Stack feature module is disabled",
 			wantPhase: neteye.PhaseReady, wantPhaseMessage: "previous phase", wantDeletes: 1,
 		},
 	}

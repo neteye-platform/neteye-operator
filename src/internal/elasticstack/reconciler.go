@@ -12,7 +12,7 @@ import (
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 )
 
-// ResourceReconciler manages the Elastic Stack collector resources.
+// ResourceReconciler manages Elastic Stack feature module resources.
 type ResourceReconciler interface {
 	EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, metav1.OwnerReference) (bool, string, error)
 	DeleteResources(context.Context, string, metav1.OwnerReference) error
@@ -63,10 +63,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, request Request) Outcome {
 				return failedOutcome(err)
 			}
 		}
-		return Outcome{Service: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown, Message: "Elastic Stack OpenTelemetry Collector is disabled"}}
+		return Outcome{Service: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown, Message: "Elastic Stack feature module is disabled"}}
 	}
 	if r.component == nil {
-		return failedOutcome(fmt.Errorf("elastic-stack component is not initialized"))
+		return failedOutcome(fmt.Errorf("elastic stack feature module component is not initialized"))
 	}
 
 	ready, message, err := r.component.EnsureResources(ctx, request.Namespace, *request.Config, request.IdentityHostname, request.GatewayNamespace, request.GatewayName, request.Owner)
@@ -81,7 +81,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request Request) Outcome {
 			Requeue:      RequeueProgressing,
 		}
 	}
-	return Outcome{Service: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateReady, Message: "Elastic Stack OpenTelemetry Collector is ready"}}
+	return Outcome{Service: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateReady, Message: "Elastic Stack feature module is ready"}}
 }
 
 func failedOutcome(err error) Outcome {
