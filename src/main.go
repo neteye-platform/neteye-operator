@@ -21,6 +21,7 @@ import (
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/controllers"
+	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
 )
 
@@ -105,6 +106,8 @@ func main() {
 	setupLog.Info("health and readiness checks configured")
 
 	keycloakComponent := keycloak.NewComponent(mgr.GetClient(), ctrl.Log.WithName("keycloak-component"))
+	elasticStackComponent := elasticstack.NewComponent(mgr.GetClient(), ctrl.Log.WithName("elastic-stack-component"))
+	elasticStackReconciler := elasticstack.NewReconciler(elasticStackComponent)
 	if err := mgr.Add(keycloakComponent); err != nil {
 		setupLog.Error(err, "unable to add keycloak component")
 		os.Exit(1)
@@ -115,6 +118,7 @@ func main() {
 		Log:                            ctrl.Log.WithName("neteye-reconciler"),
 		Scheme:                         mgr.GetScheme(),
 		KeycloakComponent:              keycloakComponent,
+		ElasticStackReconciler:         elasticStackReconciler,
 		WaitForProgressingRequeueAfter: waitForProgressingRequeue,
 		FailureRequeueAfter:            failureRequeue,
 		ReconciliationRequeueAfter:     reconciliationRequeue,

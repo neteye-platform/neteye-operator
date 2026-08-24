@@ -23,6 +23,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
@@ -42,9 +43,10 @@ const (
 // NetEyeReconciler reconciles NetEye CRs and drives per-CR component deployment.
 type NetEyeReconciler struct {
 	client.Client
-	Log               logr.Logger
-	Scheme            *runtime.Scheme
-	KeycloakComponent *keycloak.Component
+	Log                    logr.Logger
+	Scheme                 *runtime.Scheme
+	KeycloakComponent      *keycloak.Component
+	ElasticStackReconciler *elasticstack.Reconciler
 
 	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
 	WaitForProgressingRequeueAfter time.Duration
@@ -58,6 +60,10 @@ type NetEyeReconciler struct {
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;httproutes,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=grpcroutes,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups="",resources=configmaps;services,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=k8s.keycloak.org,resources=keycloaks,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=olm.operatorframework.io,resources=clusterextensions,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create
@@ -82,7 +88,8 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	ne.Status.ObservedGeneration = ne.GetGeneration()
 	ne.Status.ServicesStatus = neteye.NetEyeServicesStatus{
-		Identity: identityStatus(neteye.ServiceStateUnknown, "", ""),
+		Identity:     identityStatus(neteye.ServiceStateUnknown, "", ""),
+		ElasticStack: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown},
 	}
 	defer func() {
 		if err := r.updateStatus(ctx, req.NamespacedName, ne.Status); err != nil {
@@ -121,12 +128,41 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if result, err := r.reconcileKeycloak(ctx, ne, components.KeycloakImage); shouldReturn(result, err) {
 		return result, err
 	}
+	if result, err := r.reconcileElasticStack(ctx, ne); shouldReturn(result, err) {
+		return result, err
+	}
 
 	setPhase(ne, neteye.PhaseReady, "All components are ready")
 	ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateReady, "Identity service is ready", components.KeycloakImage)
 
 	log.Info("NetEye is ready", "namespace", ne.Namespace, "name", ne.Name, "requeueAfter", r.reconciliationRequeue())
 	return ctrl.Result{RequeueAfter: r.reconciliationRequeue()}, nil
+}
+
+func (r *NetEyeReconciler) reconcileElasticStack(ctx context.Context, ne *neteye.NetEye) (ctrl.Result, error) {
+	if r.ElasticStackReconciler == nil {
+		r.ElasticStackReconciler = elasticstack.NewReconciler(nil)
+	}
+	outcome := r.ElasticStackReconciler.Reconcile(ctx, elasticstack.Request{
+		Namespace: keycloak.WorkloadNamespace, Config: ne.Spec.ElasticStack, IdentityHostname: ne.Spec.Identity.Hostname,
+		GatewayNamespace: ne.Namespace, GatewayName: ne.Spec.Gateway.Name, Owner: ownerReferenceFor(ne),
+	})
+	ne.Status.ServicesStatus.ElasticStack = &outcome.Service
+	if outcome.Phase != "" {
+		setPhase(ne, outcome.Phase, outcome.PhaseMessage)
+	}
+	return r.resultForRequeue(outcome.Requeue), outcome.Err
+}
+
+func (r *NetEyeReconciler) resultForRequeue(reason elasticstack.RequeueReason) ctrl.Result {
+	switch reason {
+	case elasticstack.RequeueProgressing:
+		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}
+	case elasticstack.RequeueFailure:
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}
+	default:
+		return ctrl.Result{}
+	}
 }
 
 func (r *NetEyeReconciler) updateStatus(ctx context.Context, key client.ObjectKey, status neteye.NetEyeStatus) error {

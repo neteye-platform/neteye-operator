@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -195,3 +196,95 @@ func TestRequeueIntervals(t *testing.T) {
 		t.Errorf("reconciliationRequeue() default = %v, want %v", got, DefaultReconciliationRequeueAfter)
 	}
 }
+
+func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
+	tests := []struct {
+		name               string
+		config             *neteye.NetEyeElasticStackSpec
+		component          *elasticStackResources
+		wantServiceState   neteye.ServiceState
+		wantServiceMessage string
+		wantPhase          neteye.NetEyePhase
+		wantPhaseMessage   string
+		wantRequeue        time.Duration
+		wantErr            bool
+		wantDeletes        int
+	}{
+		{
+			name:             "ready",
+			config:           &neteye.NetEyeElasticStackSpec{Enabled: true},
+			component:        &elasticStackResources{ready: true},
+			wantServiceState: neteye.ServiceStateReady, wantServiceMessage: "Elastic Stack OpenTelemetry Collector is ready",
+			wantPhase: neteye.PhaseReady, wantPhaseMessage: "previous phase",
+		},
+		{
+			name:             "not ready uses progressing override",
+			config:           &neteye.NetEyeElasticStackSpec{Enabled: true},
+			component:        &elasticStackResources{message: "required user-managed Secret is missing"},
+			wantServiceState: neteye.ServiceStateNotReady, wantServiceMessage: "required user-managed Secret is missing",
+			wantPhase: neteye.PhaseNotReady, wantPhaseMessage: "Check services status for details", wantRequeue: 7 * time.Second,
+		},
+		{
+			name:             "failed uses failure override",
+			config:           &neteye.NetEyeElasticStackSpec{Enabled: true},
+			component:        &elasticStackResources{err: errors.New("ensure failed")},
+			wantServiceState: neteye.ServiceStateFailed, wantServiceMessage: "ensure failed",
+			wantPhase: neteye.PhaseFailed, wantPhaseMessage: "Check services status for details", wantRequeue: 11 * time.Second, wantErr: true,
+		},
+		{
+			name:             "disabled cleans up",
+			component:        &elasticStackResources{},
+			wantServiceState: neteye.ServiceStateUnknown, wantServiceMessage: "Elastic Stack OpenTelemetry Collector is disabled",
+			wantPhase: neteye.PhaseReady, wantPhaseMessage: "previous phase", wantDeletes: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ne := newNetEye(neteye.CurrentNetEyeVersion)
+			ne.Spec.ElasticStack = tt.config
+			ne.Status.Phase = neteye.PhaseReady
+			ne.Status.Message = "previous phase"
+			r := &NetEyeReconciler{
+				ElasticStackReconciler:         elasticstack.NewReconciler(tt.component),
+				WaitForProgressingRequeueAfter: 7 * time.Second,
+				FailureRequeueAfter:            11 * time.Second,
+			}
+
+			result, err := r.reconcileElasticStack(context.Background(), ne)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, want error=%t", err, tt.wantErr)
+			}
+			if result.RequeueAfter != tt.wantRequeue {
+				t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, tt.wantRequeue)
+			}
+			if ne.Status.ServicesStatus.ElasticStack.Status != tt.wantServiceState || ne.Status.ServicesStatus.ElasticStack.Message != tt.wantServiceMessage {
+				t.Errorf("ElasticStack status = %+v, want state=%q message=%q", ne.Status.ServicesStatus.ElasticStack, tt.wantServiceState, tt.wantServiceMessage)
+			}
+			if ne.Status.Phase != tt.wantPhase || ne.Status.Message != tt.wantPhaseMessage {
+				t.Errorf("phase = %q/%q, want %q/%q", ne.Status.Phase, ne.Status.Message, tt.wantPhase, tt.wantPhaseMessage)
+			}
+			if tt.component.deletes != tt.wantDeletes {
+				t.Errorf("delete calls = %d, want %d", tt.component.deletes, tt.wantDeletes)
+			}
+		})
+	}
+}
+
+type elasticStackResources struct {
+	ready   bool
+	message string
+	err     error
+	deletes int
+}
+
+func (r *elasticStackResources) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, metav1.OwnerReference) (bool, string, error) {
+	return r.ready, r.message, r.err
+}
+
+func (r *elasticStackResources) DeleteResources(context.Context, string, metav1.OwnerReference) error {
+	r.deletes++
+	return r.err
+}
+
+var _ elasticstack.ResourceReconciler = (*elasticStackResources)(nil)
