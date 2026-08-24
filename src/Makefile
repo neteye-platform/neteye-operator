@@ -58,7 +58,7 @@ verify-generated: generate manifests ## Regenerate code/manifests and fail if ge
 .PHONY: fmt
 fmt: ## Run gofmt against Go code.
 	gofmt -w main.go api/v1alpha1/*.go
-	gofmt -w controllers/*.go internal/keycloak/*.go
+	gofmt -w controllers/*.go internal/keycloak/*.go internal/elasticstack/*.go internal/resources/*.go
 
 .PHONY: vet
 vet: ## Run go vet.
