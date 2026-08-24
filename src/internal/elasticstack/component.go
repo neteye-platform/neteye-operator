@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
@@ -26,12 +27,18 @@ import (
 )
 
 const (
-	ConfigMapName          = "otel-collector-config"
-	VariablesConfigMapName = "otel-collector-variables"
-	DeploymentName         = "otel-collector"
-	ServiceName            = "otel-collector-service"
-	GRPCRouteName          = "otel-collector-route"
-	HTTPRouteName          = "otel-collector-crosstenant-route"
+	ConfigMapName              = "otel-collector-config"
+	VariablesConfigMapName     = "otel-collector-variables"
+	DeploymentName             = "otel-collector"
+	ServiceName                = "otel-collector-service"
+	GRPCRouteName              = "otel-collector-route"
+	HTTPRouteName              = "otel-collector-crosstenant-route"
+	GRPCRouteHostname          = "otel-collector.rke2.neteyelocal"
+	CrossTenantRouteHostname   = "otel-collector-crosstenant.rke2.neteyelocal"
+	DefaultAPIKeySecretName    = "otel-collector-api-key"
+	DefaultAPIKeySecretKey     = "api_key"
+	DefaultBasicAuthSecretName = "otel-collector-basicauth"
+	DefaultRootCAConfigMapName = "neteye-root-ca"
 )
 
 type Component struct {
@@ -43,26 +50,27 @@ func NewComponent(c client.Client, log logr.Logger) *Component {
 	return &Component{client: c, log: log}
 }
 
-// EnsureResources checks user-managed credentials first, then creates all collector resources.
+// EnsureResources checks user-managed prerequisites first, then creates Elastic Stack feature module resources.
 func (c *Component) EnsureResources(ctx context.Context, namespace string, config neteye.NetEyeElasticStackSpec, identityHostname, gatewayNamespace, gatewayName string, owner metav1.OwnerReference) (bool, string, error) {
+	references := resolvedReferences(config)
 	apiKey := &corev1.Secret{}
-	if ready, message, err := c.requireSecret(ctx, namespace, config.APIKeySecret.Name, apiKey); err != nil || !ready {
+	if ready, message, err := c.requireSecret(ctx, namespace, references.apiKeySecret.Name, apiKey); err != nil || !ready {
 		return ready, message, err
 	}
-	if len(apiKey.Data[config.APIKeySecret.Key]) == 0 {
-		return false, fmt.Sprintf("required user-managed Secret %q is missing non-empty key %q in namespace %q", config.APIKeySecret.Name, config.APIKeySecret.Key, namespace), nil
+	if len(apiKey.Data[references.apiKeySecret.Key]) == 0 {
+		return false, fmt.Sprintf("required user-managed Secret %q is missing non-empty key %q in namespace %q", references.apiKeySecret.Name, references.apiKeySecret.Key, namespace), nil
 	}
 	basicAuth := &corev1.Secret{}
-	if ready, message, err := c.requireSecret(ctx, namespace, config.BasicAuthSecretName, basicAuth); err != nil || !ready {
+	if ready, message, err := c.requireSecret(ctx, namespace, references.basicAuthSecretName, basicAuth); err != nil || !ready {
 		return ready, message, err
 	}
 	if len(basicAuth.Data["htpasswd"]) == 0 {
-		return false, fmt.Sprintf("required user-managed Secret %q is missing non-empty key %q in namespace %q", config.BasicAuthSecretName, "htpasswd", namespace), nil
+		return false, fmt.Sprintf("required user-managed Secret %q is missing non-empty key %q in namespace %q", references.basicAuthSecretName, "htpasswd", namespace), nil
 	}
 	rootCA := &corev1.ConfigMap{}
-	if err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: config.RootCAConfigMapName}, rootCA); err != nil {
+	if err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: references.rootCAConfigMapName}, rootCA); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, fmt.Sprintf("required user-managed ConfigMap %q is missing in namespace %q", config.RootCAConfigMapName, namespace), nil
+			return false, fmt.Sprintf("required user-managed ConfigMap %q is missing in namespace %q", references.rootCAConfigMapName, namespace), nil
 		}
 		return false, "", err
 	}
@@ -80,19 +88,19 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, confi
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, VariablesConfigMapName, map[string]string{"ELASTICSEARCH_ENDPOINTS": string(endpoints), "OIDC_ISSUER": issuer}, owner); err != nil {
 		return false, "", err
 	}
-	if err := resources.EnsureDeployment(ctx, c.client, deployment(namespace, config), owner); err != nil {
+	if err := resources.EnsureDeployment(ctx, c.client, deployment(namespace, config, references), owner); err != nil {
 		return false, "", err
 	}
 	if err := resources.EnsureService(ctx, c.client, service(namespace), owner); err != nil {
 		return false, "", err
 	}
-	if err := resources.EnsureGRPCRoute(ctx, c.client, namespace, GRPCRouteName, gatewayNamespace, gatewayName, config.GRPCRouteHostname, ServiceName, 4317, &owner); err != nil {
+	if err := resources.EnsureGRPCRoute(ctx, c.client, namespace, GRPCRouteName, gatewayNamespace, gatewayName, GRPCRouteHostname, ServiceName, 4317, &owner); err != nil {
 		return false, "", err
 	}
-	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayName, []string{config.CrossTenantRouteHostname}, ServiceName, 4318, &owner); err != nil {
+	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayName, []string{CrossTenantRouteHostname}, ServiceName, 4318, &owner); err != nil {
 		return false, "", err
 	}
-	return true, "Elastic Stack OpenTelemetry Collector resources are ready", nil
+	return true, "Elastic Stack feature module resources are ready", nil
 }
 
 func (c *Component) requireSecret(ctx context.Context, namespace, name string, secret *corev1.Secret) (bool, string, error) {
@@ -105,7 +113,7 @@ func (c *Component) requireSecret(ctx context.Context, namespace, name string, s
 	return true, "", nil
 }
 
-// DeleteResources deletes only collector objects controlled by owner. User-managed
+// DeleteResources deletes only Elastic Stack feature module objects controlled by owner. User-managed
 // prerequisite resources are deliberately not included.
 func (c *Component) DeleteResources(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
 	for _, resource := range []struct {
@@ -141,13 +149,38 @@ func controlledBy(object client.Object, owner metav1.OwnerReference) bool {
 	return false
 }
 
-func deployment(namespace string, config neteye.NetEyeElasticStackSpec) *appsv1.Deployment {
+type references struct {
+	apiKeySecret        neteye.NetEyeSecretKeySelector
+	basicAuthSecretName string
+	rootCAConfigMapName string
+}
+
+func resolvedReferences(config neteye.NetEyeElasticStackSpec) references {
+	resolved := references{apiKeySecret: neteye.NetEyeSecretKeySelector{Name: DefaultAPIKeySecretName, Key: DefaultAPIKeySecretKey}, basicAuthSecretName: DefaultBasicAuthSecretName, rootCAConfigMapName: DefaultRootCAConfigMapName}
+	if config.APIKeySecret != nil {
+		resolved.apiKeySecret.Name = config.APIKeySecret.Name
+		resolved.apiKeySecret.Key = config.APIKeySecret.Key
+	}
+	if strings.TrimSpace(config.BasicAuthSecretName) != "" {
+		resolved.basicAuthSecretName = config.BasicAuthSecretName
+	}
+	if strings.TrimSpace(config.RootCAConfigMapName) != "" {
+		resolved.rootCAConfigMapName = config.RootCAConfigMapName
+	}
+	return resolved
+}
+
+func deployment(namespace string, config neteye.NetEyeElasticStackSpec, references references) *appsv1.Deployment {
 	labels := map[string]string{"app": "otel-collector"}
 	mode := int32(0440)
-	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: DeploymentName, Namespace: namespace}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(1)), Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: corev1.PodSpec{
+	replicas := config.Replicas
+	if replicas == 0 {
+		replicas = 1
+	}
+	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: DeploymentName, Namespace: namespace}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To(replicas), Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: corev1.PodSpec{
 		InitContainers: []corev1.Container{{Name: "otel-collector-ca-bundle", Image: "docker.io/alpine:3.23.5", Command: []string{"/bin/sh", "-ec", caBundleCommand}, VolumeMounts: []corev1.VolumeMount{{Name: "otel-trusted-ca-bundle", MountPath: "/work"}, {Name: "host-trusted-ca-bundle", MountPath: "/input/system/tls-ca-bundle.pem", ReadOnly: true}, {Name: "neteye-root-ca", MountPath: "/input/neteye", ReadOnly: true}}}},
-		Containers:     []corev1.Container{{Name: "otel-collector", Image: "docker.io/otel/opentelemetry-collector-contrib:0.156.0", Args: []string{"--config", "/etc/otel-collector-config/otel-collector-config.yaml"}, Ports: []corev1.ContainerPort{{Name: "health", ContainerPort: 13133}, {Name: "otlp-grpc", ContainerPort: 4317}, {Name: "otlp-http", ContainerPort: 4318}}, EnvFrom: []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: VariablesConfigMapName}}}}, Env: []corev1.EnvVar{{Name: "ELASTICSEARCH_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: config.APIKeySecret.Name}, Key: config.APIKeySecret.Key}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "otel-config", MountPath: "/etc/otel-collector-config", ReadOnly: true}, {Name: "otel-trusted-ca-bundle", MountPath: "/etc/pki/tls/certs/ca-bundle.crt", SubPath: "ca-bundle.pem", ReadOnly: true}, {Name: "otel-basicauth", MountPath: "/etc/otel-collector-basicauth", ReadOnly: true}}, StartupProbe: probe(5, 30), ReadinessProbe: probe(10, 3), LivenessProbe: probe(10, 3)}},
-		Volumes:        []corev1.Volume{{Name: "otel-config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName}}}}, {Name: "otel-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, {Name: "host-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", Type: ptr.To(corev1.HostPathFile)}}}, {Name: "neteye-root-ca", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: config.RootCAConfigMapName}}}}, {Name: "otel-basicauth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: config.BasicAuthSecretName, DefaultMode: &mode}}}},
+		Containers:     []corev1.Container{{Name: "otel-collector", Image: "docker.io/otel/opentelemetry-collector-contrib:0.156.0", Args: []string{"--config", "/etc/otel-collector-config/otel-collector-config.yaml"}, Ports: []corev1.ContainerPort{{Name: "health", ContainerPort: 13133}, {Name: "otlp-grpc", ContainerPort: 4317}, {Name: "otlp-http", ContainerPort: 4318}}, EnvFrom: []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: VariablesConfigMapName}}}}, Env: []corev1.EnvVar{{Name: "ELASTICSEARCH_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: references.apiKeySecret.Name}, Key: references.apiKeySecret.Key}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "otel-config", MountPath: "/etc/otel-collector-config", ReadOnly: true}, {Name: "otel-trusted-ca-bundle", MountPath: "/etc/pki/tls/certs/ca-bundle.crt", SubPath: "ca-bundle.pem", ReadOnly: true}, {Name: "otel-basicauth", MountPath: "/etc/otel-collector-basicauth", ReadOnly: true}}, StartupProbe: probe(5, 30), ReadinessProbe: probe(10, 3), LivenessProbe: probe(10, 3)}},
+		Volumes:        []corev1.Volume{{Name: "otel-config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName}}}}, {Name: "otel-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, {Name: "host-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", Type: ptr.To(corev1.HostPathFile)}}}, {Name: "neteye-root-ca", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: references.rootCAConfigMapName}}}}, {Name: "otel-basicauth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: references.basicAuthSecretName, DefaultMode: &mode}}}},
 	}}}}
 }
 func probe(period, failures int32) *corev1.Probe {

@@ -94,22 +94,7 @@ func validateElasticStack(neteye *NetEye) error {
 			errors = append(errors, err)
 		}
 	}
-	for _, value := range []struct {
-		path  *field.Path
-		value string
-	}{{path.Child("apiKeySecret", "name"), config.APIKeySecret.Name}, {path.Child("apiKeySecret", "key"), config.APIKeySecret.Key}, {path.Child("basicAuthSecretName"), config.BasicAuthSecretName}, {path.Child("rootCAConfigMapName"), config.RootCAConfigMapName}} {
-		if strings.TrimSpace(value.value) == "" {
-			errors = append(errors, field.Required(value.path, "is required when elasticStack is enabled"))
-		}
-	}
-	for _, value := range []struct {
-		path  *field.Path
-		value string
-	}{{path.Child("grpcRouteHostname"), config.GRPCRouteHostname}, {path.Child("crossTenantRouteHostname"), config.CrossTenantRouteHostname}} {
-		if err := validateDNSHostname(value.path, value.value); err != nil {
-			errors = append(errors, err)
-		}
-	}
+	errors = append(errors, validateElasticStackReferenceOverrides(path, config)...)
 	if config.OIDCIssuerURL != "" {
 		if err := validateHTTPSURL(path.Child("oidcIssuerURL"), config.OIDCIssuerURL); err != nil {
 			errors = append(errors, err)
@@ -119,6 +104,38 @@ func validateElasticStack(neteye *NetEye) error {
 		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, errors)
 	}
 	return nil
+}
+
+func validateElasticStackReferenceOverrides(path *field.Path, config *NetEyeElasticStackSpec) field.ErrorList {
+	var errors field.ErrorList
+	apiKeyPath := path.Child("apiKeySecret")
+	if config.APIKeySecret != nil {
+		name := strings.TrimSpace(config.APIKeySecret.Name)
+		key := strings.TrimSpace(config.APIKeySecret.Key)
+		if name == "" {
+			errors = append(errors, field.Required(apiKeyPath.Child("name"), "must be set when apiKeySecret overrides are used"))
+		} else if err := validateDNSHostname(apiKeyPath.Child("name"), config.APIKeySecret.Name); err != nil {
+			errors = append(errors, err)
+		}
+		if key == "" {
+			errors = append(errors, field.Required(apiKeyPath.Child("key"), "must be set when apiKeySecret overrides are used"))
+		} else if config.APIKeySecret.Key != key {
+			errors = append(errors, field.Invalid(apiKeyPath.Child("key"), config.APIKeySecret.Key, "must not contain surrounding whitespace"))
+		} else if issues := validation.IsConfigMapKey(key); len(issues) > 0 {
+			errors = append(errors, field.Invalid(apiKeyPath.Child("key"), key, strings.Join(issues, ", ")))
+		}
+	}
+	for _, override := range []struct {
+		path  *field.Path
+		value string
+	}{{path.Child("basicAuthSecretName"), config.BasicAuthSecretName}, {path.Child("rootCAConfigMapName"), config.RootCAConfigMapName}} {
+		if override.value != "" {
+			if err := validateDNSHostname(override.path, override.value); err != nil {
+				errors = append(errors, err)
+			}
+		}
+	}
+	return errors
 }
 
 func validateHTTPSURL(path *field.Path, value string) *field.Error {

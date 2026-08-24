@@ -80,7 +80,7 @@ func TestNetEyeValidatorRejectsWrongNamespace(t *testing.T) {
 }
 
 func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
-	valid := &NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}, APIKeySecret: NetEyeSecretKeySelector{Name: "api-key", Key: "api_key"}, BasicAuthSecretName: "basic-auth", RootCAConfigMapName: "root-ca", GRPCRouteHostname: "otel.example.com", CrossTenantRouteHostname: "otel-cross.example.com"}
+	valid := &NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}
 	tests := []struct {
 		name    string
 		config  *NetEyeElasticStackSpec
@@ -89,13 +89,17 @@ func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
 		{name: "absent is disabled"}, {name: "disabled incomplete config", config: &NetEyeElasticStackSpec{}}, {name: "enabled valid", config: valid},
 		{name: "endpoints must not be empty", config: &NetEyeElasticStackSpec{Enabled: true}, wantErr: true},
 		{name: "endpoint must be HTTPS absolute", config: &NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"/_bulk"}}, wantErr: true},
-		{name: "required values must be set", config: &NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://elastic.example.com"}}, wantErr: true},
+		{name: "default references are valid", config: valid},
+		{name: "empty api key override rejected", config: withAPIKey(valid, NetEyeSecretKeySelector{}), wantErr: true},
+		{name: "partial api key override rejected", config: withAPIKey(valid, NetEyeSecretKeySelector{Name: "api-key"}), wantErr: true},
+		{name: "malformed api key override rejected", config: withAPIKey(valid, NetEyeSecretKeySelector{Name: "bad_name", Key: "api_key"}), wantErr: true},
+		{name: "malformed basic auth override rejected", config: withBasicAuthSecret(valid, " bad_name "), wantErr: true},
+		{name: "whitespace-only basic auth override rejected", config: withBasicAuthSecret(valid, " "), wantErr: true},
+		{name: "malformed root CA override rejected", config: withRootCAConfigMap(valid, "bad_name"), wantErr: true},
+		{name: "whitespace-only root CA override rejected", config: withRootCAConfigMap(valid, " \t"), wantErr: true},
 		{name: "oidc issuer must be HTTPS", config: withOIDC(valid, " http://issuer.example.com "), wantErr: true},
 		{name: "oidc issuer whitespace rejected", config: withOIDC(valid, " "), wantErr: true},
 		{name: "oidc issuer surrounding whitespace rejected", config: withOIDC(valid, " https://issuer.example.com "), wantErr: true},
-		{name: "route hostnames must be DNS", config: withGRPCHost(valid, " bad_host "), wantErr: true},
-		{name: "route hostname surrounding whitespace rejected", config: withGRPCHost(valid, " otel.example.com "), wantErr: true},
-		{name: "cross tenant hostname whitespace rejected", config: withCrossTenantHost(valid, " "), wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -114,14 +118,19 @@ func withOIDC(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackS
 	copy.OIDCIssuerURL = value
 	return &copy
 }
-func withGRPCHost(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
+func withAPIKey(config *NetEyeElasticStackSpec, value NetEyeSecretKeySelector) *NetEyeElasticStackSpec {
 	copy := *config
-	copy.GRPCRouteHostname = value
+	copy.APIKeySecret = &value
 	return &copy
 }
-func withCrossTenantHost(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
+func withBasicAuthSecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
 	copy := *config
-	copy.CrossTenantRouteHostname = value
+	copy.BasicAuthSecretName = value
+	return &copy
+}
+func withRootCAConfigMap(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
+	copy := *config
+	copy.RootCAConfigMapName = value
 	return &copy
 }
 

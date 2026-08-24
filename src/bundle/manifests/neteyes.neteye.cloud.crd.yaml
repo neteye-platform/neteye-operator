@@ -62,7 +62,9 @@ spec:
                   Collector.
                 properties:
                   apiKeySecret:
-                    description: APIKeySecret identifies the API key used by the collector.
+                    description: |-
+                      APIKeySecret optionally overrides the Secret key used by the Elastic Stack
+                      feature module. When omitted, it uses otel-collector-api-key/api_key.
                     properties:
                       key:
                         description: Key is the key inside the Secret containing the
@@ -79,14 +81,9 @@ spec:
                     - name
                     type: object
                   basicAuthSecretName:
-                    default: otel-collector-basicauth
-                    description: BasicAuthSecretName is the Secret containing the
-                      htpasswd key.
-                    type: string
-                  crossTenantRouteHostname:
-                    default: otel-collector-crosstenant.rke2.neteyelocal
-                    description: CrossTenantRouteHostname is the public cross-tenant
-                      OTLP HTTP hostname.
+                    description: |-
+                      BasicAuthSecretName optionally overrides the Secret containing the htpasswd
+                      key. When omitted, the feature module uses otel-collector-basicauth.
                     type: string
                   elasticsearchEndpoints:
                     description: ElasticsearchEndpoints is the explicitly configured
@@ -96,19 +93,22 @@ spec:
                     type: array
                   enabled:
                     default: false
-                    description: Enabled deploys the shared OpenTelemetry Collector.
+                    description: Enabled enables the Elastic Stack feature module.
                     type: boolean
-                  grpcRouteHostname:
-                    default: otel-collector.rke2.neteyelocal
-                    description: GRPCRouteHostname is the public OTLP gRPC hostname.
-                    type: string
                   oidcIssuerURL:
                     description: OIDCIssuerURL overrides the issuer derived from identity.hostname.
                     type: string
+                  replicas:
+                    default: 1
+                    description: Replicas is the number of stateless Elastic Stack
+                      feature module replicas to deploy.
+                    format: int32
+                    minimum: 1
+                    type: integer
                   rootCAConfigMapName:
-                    default: neteye-root-ca
-                    description: RootCAConfigMapName is the ConfigMap containing NetEye
-                      root CAs.
+                    description: |-
+                      RootCAConfigMapName optionally overrides the ConfigMap containing NetEye root
+                      CAs. When omitted, the feature module uses neteye-root-ca.
                     type: string
                 required:
                 - enabled

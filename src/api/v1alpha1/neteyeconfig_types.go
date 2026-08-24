@@ -92,33 +92,36 @@ type NetEyeIdentitySpec struct {
 	DBConnection NetEyeDBConnectionSpec `json:"dbConnection"`
 }
 
-// NetEyeElasticStackSpec configures the shared OpenTelemetry Collector.
+// NetEyeElasticStackSpec configures the Elastic Stack feature module.
 type NetEyeElasticStackSpec struct {
-	// Enabled deploys the shared OpenTelemetry Collector.
+	// Enabled enables the Elastic Stack feature module.
 	// +kubebuilder:default=false
 	Enabled bool `json:"enabled"`
+
+	// Replicas is the number of stateless Elastic Stack feature module replicas to deploy.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=1
+	Replicas int32 `json:"replicas,omitempty"`
 
 	// ElasticsearchEndpoints is the explicitly configured list of HTTPS Elasticsearch endpoints.
 	// +kubebuilder:validation:Optional
 	ElasticsearchEndpoints []string `json:"elasticsearchEndpoints,omitempty"`
-	// APIKeySecret identifies the API key used by the collector.
+	// APIKeySecret optionally overrides the Secret key used by the Elastic Stack
+	// feature module. When omitted, it uses otel-collector-api-key/api_key.
 	// +kubebuilder:validation:Optional
-	APIKeySecret NetEyeSecretKeySelector `json:"apiKeySecret,omitempty"`
-	// BasicAuthSecretName is the Secret containing the htpasswd key.
-	// +kubebuilder:default="otel-collector-basicauth"
+	APIKeySecret *NetEyeSecretKeySelector `json:"apiKeySecret,omitempty"`
+	// BasicAuthSecretName optionally overrides the Secret containing the htpasswd
+	// key. When omitted, the feature module uses otel-collector-basicauth.
+	// +kubebuilder:validation:Optional
 	BasicAuthSecretName string `json:"basicAuthSecretName,omitempty"`
-	// RootCAConfigMapName is the ConfigMap containing NetEye root CAs.
-	// +kubebuilder:default="neteye-root-ca"
+	// RootCAConfigMapName optionally overrides the ConfigMap containing NetEye root
+	// CAs. When omitted, the feature module uses neteye-root-ca.
+	// +kubebuilder:validation:Optional
 	RootCAConfigMapName string `json:"rootCAConfigMapName,omitempty"`
 	// OIDCIssuerURL overrides the issuer derived from identity.hostname.
 	// +kubebuilder:validation:Optional
 	OIDCIssuerURL string `json:"oidcIssuerURL,omitempty"`
-	// GRPCRouteHostname is the public OTLP gRPC hostname.
-	// +kubebuilder:default="otel-collector.rke2.neteyelocal"
-	GRPCRouteHostname string `json:"grpcRouteHostname,omitempty"`
-	// CrossTenantRouteHostname is the public cross-tenant OTLP HTTP hostname.
-	// +kubebuilder:default="otel-collector-crosstenant.rke2.neteyelocal"
-	CrossTenantRouteHostname string `json:"crossTenantRouteHostname,omitempty"`
 }
 
 // NetEyeGatewaySpec defines the Gateway API resources managed by NetEye.

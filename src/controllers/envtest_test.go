@@ -82,26 +82,22 @@ func TestReconcileElasticStackDisabledDoesNotCreateCollector(t *testing.T) {
 		t.Fatalf("reconcile ready platform: %v", err)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DeploymentName}, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("collector deployment exists or lookup failed while elastic-stack disabled: %v", err)
+		t.Fatalf("Elastic Stack feature module deployment exists or lookup failed while disabled: %v", err)
 	}
 	_ = s
 }
 
 func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	config := &neteye.NetEyeElasticStackSpec{
-		Enabled:                  true,
-		ElasticsearchEndpoints:   []string{"https://elasticsearch.example.com:9200"},
-		APIKeySecret:             neteye.NetEyeSecretKeySelector{Name: "otel-api-key", Key: "api_key"},
-		BasicAuthSecretName:      "otel-basicauth",
-		RootCAConfigMapName:      "neteye-root-ca",
-		GRPCRouteHostname:        "otel.example.com",
-		CrossTenantRouteHostname: "otel-cross.example.com",
+		Enabled:                true,
+		Replicas:               3,
+		ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"},
 	}
 	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
 	prerequisites := []client.Object{
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: config.APIKeySecret.Name}, Data: map[string][]byte{config.APIKeySecret.Key: []byte("key")}},
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: config.BasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("user:hash")}},
-		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: config.RootCAConfigMapName}, Data: map[string]string{"ca.crt": "certificate"}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultAPIKeySecretName}, Data: map[string][]byte{elasticstack.DefaultAPIKeySecretKey: []byte("key")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultBasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("user:hash")}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultRootCAConfigMapName}, Data: map[string]string{"ca.crt": "certificate"}},
 	}
 	for _, prerequisite := range prerequisites {
 		if err := c.Create(ctx, prerequisite); err != nil {
@@ -123,6 +119,13 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	}
 	if variables.Data["ELASTICSEARCH_ENDPOINTS"] != `["https://elasticsearch.example.com:9200"]` || variables.Data["OIDC_ISSUER"] != "https://keycloak.example.com/auth/realms/master" {
 		t.Errorf("variables = %#v", variables.Data)
+	}
+	deployment := &appsv1.Deployment{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DeploymentName}, deployment); err != nil {
+		t.Fatal(err)
+	}
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 3 {
+		t.Errorf("replicas = %v, want 3", deployment.Spec.Replicas)
 	}
 	for _, route := range []struct {
 		gvk  schema.GroupVersionKind
