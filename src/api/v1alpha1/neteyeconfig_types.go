@@ -257,6 +257,7 @@ const (
 	ServiceStateNotReady ServiceState = "NotReady"
 	ServiceStateReady    ServiceState = "Ready"
 	ServiceStateFailed   ServiceState = "Failed"
+	ServiceStateDisabled ServiceState = "Disabled"
 )
 
 // NetEyePhase is the aggregate lifecycle state reported in NetEyeStatus.Phase.

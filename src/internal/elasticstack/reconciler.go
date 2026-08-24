@@ -63,7 +63,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request Request) Outcome {
 				return failedOutcome(err)
 			}
 		}
-		return Outcome{Service: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown, Message: "Elastic Stack feature module is disabled"}}
+		return Outcome{Service: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateDisabled, Message: "Elastic Stack feature module is disabled"}}
 	}
 	if r.component == nil {
 		return failedOutcome(fmt.Errorf("elastic stack feature module component is not initialized"))

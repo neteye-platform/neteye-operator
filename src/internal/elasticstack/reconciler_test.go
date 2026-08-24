@@ -22,7 +22,7 @@ func TestReconcilerDisabledDeletesManagedResources(t *testing.T) {
 	if component.deletes != 1 || outcome.Err != nil || outcome.Requeue != RequeueNone {
 		t.Fatalf("deletes=%d outcome=%+v", component.deletes, outcome)
 	}
-	if outcome.Service.Status != neteye.ServiceStateUnknown {
+	if outcome.Service.Status != neteye.ServiceStateDisabled {
 		t.Errorf("service state = %q", outcome.Service.Status)
 	}
 }
