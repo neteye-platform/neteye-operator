@@ -98,6 +98,14 @@ type NetEyeElasticStackSpec struct {
 	// +kubebuilder:default=false
 	Enabled bool `json:"enabled"`
 
+	// OTelCollector configures the shared OpenTelemetry Collector. It is required
+	// when Enabled is true.
+	// +kubebuilder:validation:Optional
+	OTelCollector *NetEyeOtelCollectorSpec `json:"otelCollector,omitempty"`
+}
+
+// NetEyeOtelCollectorSpec configures the shared Elastic Stack OpenTelemetry Collector.
+type NetEyeOtelCollectorSpec struct {
 	// Replicas is the number of stateless Elastic Stack feature module replicas to deploy.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Minimum=1

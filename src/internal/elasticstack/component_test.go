@@ -59,7 +59,7 @@ func TestEnsureResourcesRendersWorkloadAndVariables(t *testing.T) {
 	namespace := "neteye-tenant-shared"
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(defaultPrerequisites(namespace)...).Build()
 	ready, _, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", owner())
-	if err != nil || !ready {
+	if err != nil || ready {
 		t.Fatalf("ensure resources: ready %t err %v", ready, err)
 	}
 	variables := &corev1.ConfigMap{}
@@ -107,16 +107,16 @@ func TestEnsureResourcesUsesConfiguredReferencesAndReplicas(t *testing.T) {
 	s := elasticScheme(t)
 	namespace := "neteye-tenant-shared"
 	config := elasticConfig()
-	config.Replicas = 3
-	config.APIKeySecret = &neteye.NetEyeSecretKeySelector{Name: "debug-api-key", Key: "debug_key"}
-	config.BasicAuthSecretName = "debug-basicauth"
-	config.RootCAConfigMapName = "debug-root-ca"
+	config.OTelCollector.Replicas = 3
+	config.OTelCollector.APIKeySecret = &neteye.NetEyeSecretKeySelector{Name: "debug-api-key", Key: "debug_key"}
+	config.OTelCollector.BasicAuthSecretName = "debug-basicauth"
+	config.OTelCollector.RootCAConfigMapName = "debug-root-ca"
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.APIKeySecret.Name}, Data: map[string][]byte{config.APIKeySecret.Key: []byte("key")}},
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.BasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("hash")}},
-		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.RootCAConfigMapName}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.OTelCollector.APIKeySecret.Name}, Data: map[string][]byte{config.OTelCollector.APIKeySecret.Key: []byte("key")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.OTelCollector.BasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("hash")}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.OTelCollector.RootCAConfigMapName}},
 	).Build()
-	if ready, message, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, config, "identity.example.com", namespace, "neteye", owner()); err != nil || !ready {
+	if ready, message, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, config, "identity.example.com", namespace, "neteye", owner()); err != nil || ready {
 		t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
 	}
 	deployment := &appsv1.Deployment{}
@@ -128,12 +128,75 @@ func TestEnsureResourcesUsesConfiguredReferencesAndReplicas(t *testing.T) {
 	}
 }
 
+func TestEnsureResourcesReportsReadyAfterDeploymentStatus(t *testing.T) {
+	namespace := "neteye-tenant-shared"
+	s := elasticScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&appsv1.Deployment{}).WithObjects(defaultPrerequisites(namespace)...).Build()
+	component := NewComponent(c, logr.Discard())
+	if ready, _, err := component.EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", owner()); err != nil || ready {
+		t.Fatalf("before status: ready=%t err=%v", ready, err)
+	}
+	deployment := &appsv1.Deployment{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: DeploymentName}, deployment); err != nil {
+		t.Fatal(err)
+	}
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.ReadyReplicas = *deployment.Spec.Replicas
+	deployment.Status.UpdatedReplicas = *deployment.Spec.Replicas
+	if err := c.Status().Update(context.Background(), deployment); err != nil {
+		t.Fatal(err)
+	}
+	if ready, message, err := component.EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", owner()); err != nil || !ready {
+		t.Fatalf("after status: ready=%t message=%q err=%v", ready, message, err)
+	}
+}
+
+func TestEnsureResourcesCreatesOwnedCiliumPolicies(t *testing.T) {
+	namespace := "neteye-tenant-shared"
+	s := elasticScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(defaultPrerequisites(namespace)...).Build()
+	config := elasticConfig()
+	config.OTelCollector.ElasticsearchEndpoints = []string{"https://elastic.example.com", "https://logs.example.com:9243"}
+	config.OTelCollector.OIDCIssuerURL = "https://issuer.example.com:8443/auth/realms/master"
+	if _, _, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, config, "identity.example.com", namespace, "neteye", owner()); err != nil {
+		t.Fatal(err)
+	}
+	for _, policy := range []struct {
+		name    string
+		ingress bool
+	}{{IngressPolicyName, true}, {EgressPolicyName, false}} {
+		object := &unstructured.Unstructured{}
+		object.SetGroupVersionKind(schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"})
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: policy.name}, object); err != nil {
+			t.Fatal(err)
+		}
+		if len(object.GetOwnerReferences()) != 1 || object.GetOwnerReferences()[0].Name != "platform" {
+			t.Errorf("%s owner refs=%v", policy.name, object.GetOwnerReferences())
+		}
+		if policy.ingress {
+			rules, _, _ := unstructured.NestedSlice(object.Object, "spec", "ingress")
+			if rules[0].(map[string]any)["fromEntities"].([]any)[0] != "ingress" {
+				t.Errorf("ingress rules=%#v", rules)
+			}
+		} else {
+			rules, _, _ := unstructured.NestedSlice(object.Object, "spec", "egress")
+			if len(rules) != 4 {
+				t.Errorf("egress rules=%#v", rules)
+			}
+			labels := rules[0].(map[string]any)["toEndpoints"].([]any)[0].(map[string]any)["matchLabels"].(map[string]any)
+			if labels["k8s:io.kubernetes.pod.namespace"] != "kube-system" || labels["k8s:k8s-app"] != "kube-dns" || len(labels) != 2 {
+				t.Errorf("DNS endpoint labels=%#v", labels)
+			}
+		}
+	}
+}
+
 func TestEnsureResourcesUsesConfiguredOIDCIssuer(t *testing.T) {
 	s := elasticScheme(t)
 	namespace := "neteye-tenant-shared"
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(defaultPrerequisites(namespace)...).Build()
 	config := elasticConfig()
-	config.OIDCIssuerURL = "https://issuer.example.com/auth/realms/custom"
+	config.OTelCollector.OIDCIssuerURL = "https://issuer.example.com/auth/realms/custom"
 	if _, _, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, config, "identity.example.com", namespace, "neteye", owner()); err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +204,8 @@ func TestEnsureResourcesUsesConfiguredOIDCIssuer(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: VariablesConfigMapName}, variables); err != nil {
 		t.Fatal(err)
 	}
-	if variables.Data["OIDC_ISSUER"] != config.OIDCIssuerURL {
-		t.Errorf("OIDC_ISSUER = %q, want %q", variables.Data["OIDC_ISSUER"], config.OIDCIssuerURL)
+	if variables.Data["OIDC_ISSUER"] != config.OTelCollector.OIDCIssuerURL {
+		t.Errorf("OIDC_ISSUER = %q, want %q", variables.Data["OIDC_ISSUER"], config.OTelCollector.OIDCIssuerURL)
 	}
 }
 
@@ -155,7 +218,7 @@ func elasticScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 func elasticConfig() neteye.NetEyeElasticStackSpec {
-	return neteye.NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://elastic.example.com:9200"}}
+	return neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{ElasticsearchEndpoints: []string{"https://elastic.example.com:9200"}}}
 }
 func defaultPrerequisites(namespace string) []client.Object {
 	return []client.Object{

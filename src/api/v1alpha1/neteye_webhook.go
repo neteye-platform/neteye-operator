@@ -6,6 +6,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -84,19 +85,22 @@ func validateElasticStack(neteye *NetEye) error {
 	if neteye.Spec.ElasticStack == nil || !neteye.Spec.ElasticStack.Enabled {
 		return nil
 	}
-	config := neteye.Spec.ElasticStack
+	config := neteye.Spec.ElasticStack.OTelCollector
+	if config == nil {
+		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("otelCollector"), "must be set when elasticStack.enabled is true")})
+	}
 	if len(config.ElasticsearchEndpoints) == 0 {
-		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("elasticsearchEndpoints"), "at least one HTTPS endpoint is required")})
+		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("otelCollector", "elasticsearchEndpoints"), "at least one HTTPS endpoint is required")})
 	}
 	var errors field.ErrorList
 	for i, endpoint := range config.ElasticsearchEndpoints {
-		if err := validateHTTPSURL(path.Child("elasticsearchEndpoints").Index(i), endpoint); err != nil {
+		if err := validateHTTPSURL(path.Child("otelCollector", "elasticsearchEndpoints").Index(i), endpoint); err != nil {
 			errors = append(errors, err)
 		}
 	}
-	errors = append(errors, validateElasticStackReferenceOverrides(path, config)...)
+	errors = append(errors, validateElasticStackReferenceOverrides(path.Child("otelCollector"), config)...)
 	if config.OIDCIssuerURL != "" {
-		if err := validateHTTPSURL(path.Child("oidcIssuerURL"), config.OIDCIssuerURL); err != nil {
+		if err := validateHTTPSURL(path.Child("otelCollector", "oidcIssuerURL"), config.OIDCIssuerURL); err != nil {
 			errors = append(errors, err)
 		}
 	}
@@ -106,7 +110,7 @@ func validateElasticStack(neteye *NetEye) error {
 	return nil
 }
 
-func validateElasticStackReferenceOverrides(path *field.Path, config *NetEyeElasticStackSpec) field.ErrorList {
+func validateElasticStackReferenceOverrides(path *field.Path, config *NetEyeOtelCollectorSpec) field.ErrorList {
 	var errors field.ErrorList
 	apiKeyPath := path.Child("apiKeySecret")
 	if config.APIKeySecret != nil {
@@ -143,6 +147,9 @@ func validateHTTPSURL(path *field.Path, value string) *field.Error {
 	u, err := url.ParseRequestURI(value)
 	if value != trimmed || err != nil || value == "" || !u.IsAbs() || u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return field.Invalid(path, value, "must be an absolute HTTPS URL")
+	}
+	if net.ParseIP(u.Hostname()) != nil {
+		return field.Invalid(path, value, "host must be a DNS name because Cilium toFQDNs rules do not support IP literals")
 	}
 	return nil
 }

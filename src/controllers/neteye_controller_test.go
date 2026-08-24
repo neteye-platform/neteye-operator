@@ -212,21 +212,21 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 	}{
 		{
 			name:             "ready",
-			config:           &neteye.NetEyeElasticStackSpec{Enabled: true},
+			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{ready: true},
 			wantServiceState: neteye.ServiceStateReady, wantServiceMessage: "Elastic Stack feature module is ready",
 			wantPhase: neteye.PhaseReady, wantPhaseMessage: "previous phase",
 		},
 		{
 			name:             "not ready uses progressing override",
-			config:           &neteye.NetEyeElasticStackSpec{Enabled: true},
+			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{message: "required user-managed Secret is missing"},
 			wantServiceState: neteye.ServiceStateNotReady, wantServiceMessage: "required user-managed Secret is missing",
 			wantPhase: neteye.PhaseNotReady, wantPhaseMessage: "Check services status for details", wantRequeue: 7 * time.Second,
 		},
 		{
 			name:             "failed uses failure override",
-			config:           &neteye.NetEyeElasticStackSpec{Enabled: true},
+			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{err: errors.New("ensure failed")},
 			wantServiceState: neteye.ServiceStateFailed, wantServiceMessage: "ensure failed",
 			wantPhase: neteye.PhaseFailed, wantPhaseMessage: "Check services status for details", wantRequeue: 11 * time.Second, wantErr: true,

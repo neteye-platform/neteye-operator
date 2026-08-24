@@ -68,6 +68,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, request Request) Outcome {
 	if r.component == nil {
 		return failedOutcome(fmt.Errorf("elastic stack feature module component is not initialized"))
 	}
+	if request.Config.OTelCollector == nil {
+		return Outcome{Phase: neteye.PhaseNotReady, PhaseMessage: "Check services status for details", Service: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateNotReady, Message: "Elastic Stack feature module configuration is incomplete: otelCollector is required when enabled"}, Requeue: RequeueProgressing}
+	}
 
 	ready, message, err := r.component.EnsureResources(ctx, request.Namespace, *request.Config, request.IdentityHostname, request.GatewayNamespace, request.GatewayName, request.Owner)
 	if err != nil {

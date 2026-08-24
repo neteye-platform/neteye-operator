@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -33,6 +35,8 @@ const (
 	ServiceName                = "otel-collector-service"
 	GRPCRouteName              = "otel-collector-route"
 	HTTPRouteName              = "otel-collector-crosstenant-route"
+	IngressPolicyName          = "neteye-otel-collector-ingress"
+	EgressPolicyName           = "neteye-otel-collector-egress"
 	GRPCRouteHostname          = "otel-collector.rke2.neteyelocal"
 	CrossTenantRouteHostname   = "otel-collector-crosstenant.rke2.neteyelocal"
 	DefaultAPIKeySecretName    = "otel-collector-api-key"
@@ -52,7 +56,11 @@ func NewComponent(c client.Client, log logr.Logger) *Component {
 
 // EnsureResources checks user-managed prerequisites first, then creates Elastic Stack feature module resources.
 func (c *Component) EnsureResources(ctx context.Context, namespace string, config neteye.NetEyeElasticStackSpec, identityHostname, gatewayNamespace, gatewayName string, owner metav1.OwnerReference) (bool, string, error) {
-	references := resolvedReferences(config)
+	if config.OTelCollector == nil {
+		return false, "Elastic Stack feature module configuration is incomplete: otelCollector is required when enabled", nil
+	}
+	collector := config.OTelCollector
+	references := resolvedReferences(collector)
 	apiKey := &corev1.Secret{}
 	if ready, message, err := c.requireSecret(ctx, namespace, references.apiKeySecret.Name, apiKey); err != nil || !ready {
 		return ready, message, err
@@ -77,18 +85,18 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, confi
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, ConfigMapName, map[string]string{"otel-collector-config.yaml": collectorConfig}, owner); err != nil {
 		return false, "", err
 	}
-	endpoints, err := json.Marshal(config.ElasticsearchEndpoints)
+	endpoints, err := json.Marshal(collector.ElasticsearchEndpoints)
 	if err != nil {
 		return false, "", err
 	}
-	issuer := config.OIDCIssuerURL
+	issuer := collector.OIDCIssuerURL
 	if issuer == "" {
 		issuer = "https://" + identityHostname + "/auth/realms/master"
 	}
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, VariablesConfigMapName, map[string]string{"ELASTICSEARCH_ENDPOINTS": string(endpoints), "OIDC_ISSUER": issuer}, owner); err != nil {
 		return false, "", err
 	}
-	if err := resources.EnsureDeployment(ctx, c.client, deployment(namespace, config, references), owner); err != nil {
+	if err := resources.EnsureDeployment(ctx, c.client, deployment(namespace, *collector, references), owner); err != nil {
 		return false, "", err
 	}
 	if err := resources.EnsureService(ctx, c.client, service(namespace), owner); err != nil {
@@ -99,6 +107,16 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, confi
 	}
 	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayName, []string{CrossTenantRouteHostname}, ServiceName, 4318, &owner); err != nil {
 		return false, "", err
+	}
+	if err := c.ensureNetworkPolicies(ctx, namespace, collector.ElasticsearchEndpoints, issuer, owner); err != nil {
+		return false, "", err
+	}
+	ready, message, err := resources.IsDeploymentReady(ctx, c.client, namespace, DeploymentName)
+	if err != nil {
+		return false, "", err
+	}
+	if !ready {
+		return false, message, nil
 	}
 	return true, "Elastic Stack feature module resources are ready", nil
 }
@@ -120,7 +138,7 @@ func (c *Component) DeleteResources(ctx context.Context, namespace string, owner
 		gvk  schema.GroupVersionKind
 		name string
 	}{
-		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, ServiceName}, {schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "GRPCRoute"}, GRPCRouteName}, {schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}, HTTPRouteName},
+		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, ServiceName}, {schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "GRPCRoute"}, GRPCRouteName}, {schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}, HTTPRouteName}, {schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, IngressPolicyName}, {schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, EgressPolicyName},
 	} {
 		object := &unstructured.Unstructured{}
 		object.SetGroupVersionKind(resource.gvk)
@@ -155,7 +173,7 @@ type references struct {
 	rootCAConfigMapName string
 }
 
-func resolvedReferences(config neteye.NetEyeElasticStackSpec) references {
+func resolvedReferences(config *neteye.NetEyeOtelCollectorSpec) references {
 	resolved := references{apiKeySecret: neteye.NetEyeSecretKeySelector{Name: DefaultAPIKeySecretName, Key: DefaultAPIKeySecretKey}, basicAuthSecretName: DefaultBasicAuthSecretName, rootCAConfigMapName: DefaultRootCAConfigMapName}
 	if config.APIKeySecret != nil {
 		resolved.apiKeySecret.Name = config.APIKeySecret.Name
@@ -170,7 +188,7 @@ func resolvedReferences(config neteye.NetEyeElasticStackSpec) references {
 	return resolved
 }
 
-func deployment(namespace string, config neteye.NetEyeElasticStackSpec, references references) *appsv1.Deployment {
+func deployment(namespace string, config neteye.NetEyeOtelCollectorSpec, references references) *appsv1.Deployment {
 	labels := map[string]string{"app": "otel-collector"}
 	mode := int32(0440)
 	replicas := config.Replicas
@@ -182,6 +200,75 @@ func deployment(namespace string, config neteye.NetEyeElasticStackSpec, referenc
 		Containers:     []corev1.Container{{Name: "otel-collector", Image: "docker.io/otel/opentelemetry-collector-contrib:0.156.0", Args: []string{"--config", "/etc/otel-collector-config/otel-collector-config.yaml"}, Ports: []corev1.ContainerPort{{Name: "health", ContainerPort: 13133}, {Name: "otlp-grpc", ContainerPort: 4317}, {Name: "otlp-http", ContainerPort: 4318}}, EnvFrom: []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: VariablesConfigMapName}}}}, Env: []corev1.EnvVar{{Name: "ELASTICSEARCH_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: references.apiKeySecret.Name}, Key: references.apiKeySecret.Key}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "otel-config", MountPath: "/etc/otel-collector-config", ReadOnly: true}, {Name: "otel-trusted-ca-bundle", MountPath: "/etc/pki/tls/certs/ca-bundle.crt", SubPath: "ca-bundle.pem", ReadOnly: true}, {Name: "otel-basicauth", MountPath: "/etc/otel-collector-basicauth", ReadOnly: true}}, StartupProbe: probe(5, 30), ReadinessProbe: probe(10, 3), LivenessProbe: probe(10, 3)}},
 		Volumes:        []corev1.Volume{{Name: "otel-config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName}}}}, {Name: "otel-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, {Name: "host-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", Type: ptr.To(corev1.HostPathFile)}}}, {Name: "neteye-root-ca", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: references.rootCAConfigMapName}}}}, {Name: "otel-basicauth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: references.basicAuthSecretName, DefaultMode: &mode}}}},
 	}}}}
+}
+
+func (c *Component) ensureNetworkPolicies(ctx context.Context, namespace string, endpoints []string, issuer string, owner metav1.OwnerReference) error {
+	if _, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, Namespace: namespace, Name: IngressPolicyName, Owner: &owner, Spec: ingressPolicySpec()}); err != nil {
+		return err
+	}
+	targets, err := egressTargets(endpoints, issuer)
+	if err != nil {
+		return err
+	}
+	_, err = resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, Namespace: namespace, Name: EgressPolicyName, Owner: &owner, Spec: egressPolicySpec(targets)})
+	return err
+}
+
+type egressTarget struct{ host, port string }
+
+func egressTargets(endpoints []string, issuer string) ([]egressTarget, error) {
+	byTarget := map[string]egressTarget{}
+	for _, value := range append(append([]string{}, endpoints...), issuer) {
+		u, err := url.Parse(value)
+		if err != nil || u.Hostname() == "" {
+			return nil, fmt.Errorf("parse Elastic Stack egress target %q", value)
+		}
+		port := u.Port()
+		if port == "" {
+			port = "443"
+		}
+		byTarget[u.Hostname()+":"+port] = egressTarget{host: u.Hostname(), port: port}
+	}
+	targets := make([]egressTarget, 0, len(byTarget))
+	for _, target := range byTarget {
+		targets = append(targets, target)
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].host+":"+targets[i].port < targets[j].host+":"+targets[j].port })
+	return targets, nil
+}
+
+func ingressPolicySpec() map[string]any {
+	return map[string]any{"endpointSelector": map[string]any{"matchLabels": map[string]any{"app": "otel-collector"}}, "ingress": []any{
+		map[string]any{"fromEntities": []any{"ingress"}, "toPorts": []any{tcpPorts("4317", "4318")}},
+		map[string]any{"fromEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("13133")}},
+	}}
+}
+
+func egressPolicySpec(targets []egressTarget) map[string]any {
+	dnsRules := make([]any, 0, len(targets))
+	byPort := map[string][]any{}
+	for _, target := range targets {
+		dnsRules = append(dnsRules, map[string]any{"matchName": target.host})
+		byPort[target.port] = append(byPort[target.port], map[string]any{"matchName": target.host})
+	}
+	ports := make([]string, 0, len(byPort))
+	for port := range byPort {
+		ports = append(ports, port)
+	}
+	sort.Strings(ports)
+	egress := []any{map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}}, "toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "53", "protocol": "TCP"}, map[string]any{"port": "53", "protocol": "UDP"}}, "rules": map[string]any{"dns": dnsRules}}}}}
+	for _, port := range ports {
+		egress = append(egress, map[string]any{"toFQDNs": byPort[port], "toPorts": []any{tcpPorts(port)}})
+	}
+	return map[string]any{"endpointSelector": map[string]any{"matchLabels": map[string]any{"app": "otel-collector"}}, "egress": egress}
+}
+
+func tcpPorts(ports ...string) map[string]any {
+	values := make([]any, 0, len(ports))
+	for _, port := range ports {
+		values = append(values, map[string]any{"port": port, "protocol": "TCP"})
+	}
+	return map[string]any{"ports": values}
 }
 func probe(period, failures int32) *corev1.Probe {
 	return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/", Port: intstr.FromString("health")}}, PeriodSeconds: period, FailureThreshold: failures, TimeoutSeconds: 2}

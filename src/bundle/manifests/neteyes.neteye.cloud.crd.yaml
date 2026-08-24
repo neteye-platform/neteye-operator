@@ -61,55 +61,62 @@ spec:
                 description: ElasticStack configures the optional shared OpenTelemetry
                   Collector.
                 properties:
-                  apiKeySecret:
-                    description: |-
-                      APIKeySecret optionally overrides the Secret key used by the Elastic Stack
-                      feature module. When omitted, it uses otel-collector-api-key/api_key.
-                    properties:
-                      key:
-                        description: Key is the key inside the Secret containing the
-                          database credential value.
-                        minLength: 1
-                        type: string
-                      name:
-                        description: Name is the name of the Secret containing the
-                          database credential.
-                        minLength: 1
-                        type: string
-                    required:
-                    - key
-                    - name
-                    type: object
-                  basicAuthSecretName:
-                    description: |-
-                      BasicAuthSecretName optionally overrides the Secret containing the htpasswd
-                      key. When omitted, the feature module uses otel-collector-basicauth.
-                    type: string
-                  elasticsearchEndpoints:
-                    description: ElasticsearchEndpoints is the explicitly configured
-                      list of HTTPS Elasticsearch endpoints.
-                    items:
-                      type: string
-                    type: array
                   enabled:
                     default: false
                     description: Enabled enables the Elastic Stack feature module.
                     type: boolean
-                  oidcIssuerURL:
-                    description: OIDCIssuerURL overrides the issuer derived from identity.hostname.
-                    type: string
-                  replicas:
-                    default: 1
-                    description: Replicas is the number of stateless Elastic Stack
-                      feature module replicas to deploy.
-                    format: int32
-                    minimum: 1
-                    type: integer
-                  rootCAConfigMapName:
+                  otelCollector:
                     description: |-
-                      RootCAConfigMapName optionally overrides the ConfigMap containing NetEye root
-                      CAs. When omitted, the feature module uses neteye-root-ca.
-                    type: string
+                      OTelCollector configures the shared OpenTelemetry Collector. It is required
+                      when Enabled is true.
+                    properties:
+                      apiKeySecret:
+                        description: |-
+                          APIKeySecret optionally overrides the Secret key used by the Elastic Stack
+                          feature module. When omitted, it uses otel-collector-api-key/api_key.
+                        properties:
+                          key:
+                            description: Key is the key inside the Secret containing
+                              the database credential value.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the name of the Secret containing
+                              the database credential.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      basicAuthSecretName:
+                        description: |-
+                          BasicAuthSecretName optionally overrides the Secret containing the htpasswd
+                          key. When omitted, the feature module uses otel-collector-basicauth.
+                        type: string
+                      elasticsearchEndpoints:
+                        description: ElasticsearchEndpoints is the explicitly configured
+                          list of HTTPS Elasticsearch endpoints.
+                        items:
+                          type: string
+                        type: array
+                      oidcIssuerURL:
+                        description: OIDCIssuerURL overrides the issuer derived from
+                          identity.hostname.
+                        type: string
+                      replicas:
+                        default: 1
+                        description: Replicas is the number of stateless Elastic Stack
+                          feature module replicas to deploy.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      rootCAConfigMapName:
+                        description: |-
+                          RootCAConfigMapName optionally overrides the ConfigMap containing NetEye root
+                          CAs. When omitted, the feature module uses neteye-root-ca.
+                        type: string
+                    type: object
                 required:
                 - enabled
                 type: object

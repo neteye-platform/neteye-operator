@@ -36,6 +36,7 @@ var (
 	httpRouteGVK     = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}
 	grpcRouteGVK     = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "GRPCRoute"}
 	networkPolicyGVK = schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"}
+	ciliumPolicyGVK  = schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}
 )
 
 // startEnvtest boots a real API server via envtest. It skips the test when the
@@ -89,9 +90,8 @@ func TestReconcileElasticStackDisabledDoesNotCreateCollector(t *testing.T) {
 
 func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	config := &neteye.NetEyeElasticStackSpec{
-		Enabled:                true,
-		Replicas:               3,
-		ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"},
+		Enabled:       true,
+		OTelCollector: &neteye.NetEyeOtelCollectorSpec{Replicas: 3, ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}},
 	}
 	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
 	prerequisites := []client.Object{
@@ -110,7 +110,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	for _, resource := range []struct {
 		gvk  schema.GroupVersionKind
 		name string
-	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}} {
+	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
 		requireExists(ctx, t, c, resource.gvk, keycloak.WorkloadNamespace, resource.name)
 	}
 	variables := &corev1.ConfigMap{}
@@ -126,6 +126,29 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	}
 	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 3 {
 		t.Errorf("replicas = %v, want 3", deployment.Spec.Replicas)
+	}
+	current := &neteye.NetEye{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.ServicesStatus.ElasticStack.Status != neteye.ServiceStateNotReady {
+		t.Errorf("Elastic Stack status before deployment readiness = %q", current.Status.ServicesStatus.ElasticStack.Status)
+	}
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = *deployment.Spec.Replicas
+	deployment.Status.ReadyReplicas = *deployment.Spec.Replicas
+	deployment.Status.UpdatedReplicas = *deployment.Spec.Replicas
+	if err := c.Status().Update(ctx, deployment); err != nil {
+		t.Fatalf("mark collector deployment ready: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}); err != nil {
+		t.Fatalf("reconcile ready collector deployment: %v", err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.ServicesStatus.ElasticStack.Status != neteye.ServiceStateReady {
+		t.Errorf("Elastic Stack status after deployment readiness = %q", current.Status.ServicesStatus.ElasticStack.Status)
 	}
 	for _, route := range []struct {
 		gvk  schema.GroupVersionKind
@@ -146,7 +169,6 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 			t.Errorf("prerequisite %s owner refs = %#v", current.GetName(), current.GetOwnerReferences())
 		}
 	}
-	current := &neteye.NetEye{}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +182,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	for _, resource := range []struct {
 		gvk  schema.GroupVersionKind
 		name string
-	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}} {
+	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
 		object := newUnstructured(resource.gvk, keycloak.WorkloadNamespace, resource.name)
 		if err := c.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
 			t.Errorf("%s %s still exists or lookup failed: %v", resource.gvk.Kind, resource.name, err)
@@ -189,7 +211,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	for _, resource := range []struct {
 		gvk  schema.GroupVersionKind
 		name string
-	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}} {
+	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
 		object := newUnstructured(resource.gvk, keycloak.WorkloadNamespace, resource.name)
 		if err := c.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
 			t.Errorf("%s %s still exists after block removal or lookup failed: %v", resource.gvk.Kind, resource.name, err)

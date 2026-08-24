@@ -80,15 +80,17 @@ func TestNetEyeValidatorRejectsWrongNamespace(t *testing.T) {
 }
 
 func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
-	valid := &NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}
+	valid := &NetEyeElasticStackSpec{Enabled: true, OTelCollector: &NetEyeOtelCollectorSpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}}
 	tests := []struct {
 		name    string
 		config  *NetEyeElasticStackSpec
 		wantErr bool
 	}{
 		{name: "absent is disabled"}, {name: "disabled incomplete config", config: &NetEyeElasticStackSpec{}}, {name: "enabled valid", config: valid},
-		{name: "endpoints must not be empty", config: &NetEyeElasticStackSpec{Enabled: true}, wantErr: true},
-		{name: "endpoint must be HTTPS absolute", config: &NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"/_bulk"}}, wantErr: true},
+		{name: "enabled requires collector configuration", config: &NetEyeElasticStackSpec{Enabled: true}, wantErr: true},
+		{name: "endpoints must not be empty", config: &NetEyeElasticStackSpec{Enabled: true, OTelCollector: &NetEyeOtelCollectorSpec{}}, wantErr: true},
+		{name: "endpoint must be HTTPS absolute", config: &NetEyeElasticStackSpec{Enabled: true, OTelCollector: &NetEyeOtelCollectorSpec{ElasticsearchEndpoints: []string{"/_bulk"}}}, wantErr: true},
+		{name: "endpoint host must not be an IP literal", config: &NetEyeElasticStackSpec{Enabled: true, OTelCollector: &NetEyeOtelCollectorSpec{ElasticsearchEndpoints: []string{"https://192.0.2.1:9200"}}}, wantErr: true},
 		{name: "default references are valid", config: valid},
 		{name: "empty api key override rejected", config: withAPIKey(valid, NetEyeSecretKeySelector{}), wantErr: true},
 		{name: "partial api key override rejected", config: withAPIKey(valid, NetEyeSecretKeySelector{Name: "api-key"}), wantErr: true},
@@ -98,6 +100,7 @@ func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
 		{name: "malformed root CA override rejected", config: withRootCAConfigMap(valid, "bad_name"), wantErr: true},
 		{name: "whitespace-only root CA override rejected", config: withRootCAConfigMap(valid, " \t"), wantErr: true},
 		{name: "oidc issuer must be HTTPS", config: withOIDC(valid, " http://issuer.example.com "), wantErr: true},
+		{name: "oidc issuer host must not be an IP literal", config: withOIDC(valid, "https://[2001:db8::1]/auth/realms/master"), wantErr: true},
 		{name: "oidc issuer whitespace rejected", config: withOIDC(valid, " "), wantErr: true},
 		{name: "oidc issuer surrounding whitespace rejected", config: withOIDC(valid, " https://issuer.example.com "), wantErr: true},
 	}
@@ -114,24 +117,24 @@ func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
 }
 
 func withOIDC(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
-	copy := *config
-	copy.OIDCIssuerURL = value
-	return &copy
+	copy := config.DeepCopy()
+	copy.OTelCollector.OIDCIssuerURL = value
+	return copy
 }
 func withAPIKey(config *NetEyeElasticStackSpec, value NetEyeSecretKeySelector) *NetEyeElasticStackSpec {
-	copy := *config
-	copy.APIKeySecret = &value
-	return &copy
+	copy := config.DeepCopy()
+	copy.OTelCollector.APIKeySecret = &value
+	return copy
 }
 func withBasicAuthSecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
-	copy := *config
-	copy.BasicAuthSecretName = value
-	return &copy
+	copy := config.DeepCopy()
+	copy.OTelCollector.BasicAuthSecretName = value
+	return copy
 }
 func withRootCAConfigMap(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
-	copy := *config
-	copy.RootCAConfigMapName = value
-	return &copy
+	copy := config.DeepCopy()
+	copy.OTelCollector.RootCAConfigMapName = value
+	return copy
 }
 
 func TestNetEyeValidatorRejectsSecondAuthority(t *testing.T) {
