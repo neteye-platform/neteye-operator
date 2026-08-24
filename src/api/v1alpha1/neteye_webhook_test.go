@@ -79,27 +79,50 @@ func TestNetEyeValidatorRejectsWrongNamespace(t *testing.T) {
 	}
 }
 
-func TestNetEyeValidatorValidatesFeatureModules(t *testing.T) {
+func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
+	valid := &NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}, APIKeySecret: NetEyeSecretKeySelector{Name: "api-key", Key: "api_key"}, BasicAuthSecretName: "basic-auth", RootCAConfigMapName: "root-ca", GRPCRouteHostname: "otel.example.com", CrossTenantRouteHostname: "otel-cross.example.com"}
 	tests := []struct {
 		name    string
-		modules []string
+		config  *NetEyeElasticStackSpec
 		wantErr bool
 	}{
-		{name: "all supported modules", modules: SupportedFeatureModules},
-		{name: "unsupported module", modules: []string{"asset", "unknown"}, wantErr: true},
-		{name: "duplicate module", modules: []string{"asset", "asset"}, wantErr: true},
+		{name: "absent is disabled"}, {name: "disabled incomplete config", config: &NetEyeElasticStackSpec{}}, {name: "enabled valid", config: valid},
+		{name: "endpoints must not be empty", config: &NetEyeElasticStackSpec{Enabled: true}, wantErr: true},
+		{name: "endpoint must be HTTPS absolute", config: &NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"/_bulk"}}, wantErr: true},
+		{name: "required values must be set", config: &NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://elastic.example.com"}}, wantErr: true},
+		{name: "oidc issuer must be HTTPS", config: withOIDC(valid, " http://issuer.example.com "), wantErr: true},
+		{name: "oidc issuer whitespace rejected", config: withOIDC(valid, " "), wantErr: true},
+		{name: "oidc issuer surrounding whitespace rejected", config: withOIDC(valid, " https://issuer.example.com "), wantErr: true},
+		{name: "route hostnames must be DNS", config: withGRPCHost(valid, " bad_host "), wantErr: true},
+		{name: "route hostname surrounding whitespace rejected", config: withGRPCHost(valid, " otel.example.com "), wantErr: true},
+		{name: "cross tenant hostname whitespace rejected", config: withCrossTenantHost(valid, " "), wantErr: true},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			obj := netEyeWithVersion(CurrentNetEyeVersion)
-			obj.Spec.EnabledModules = tt.modules
+			obj.Spec.ElasticStack = tt.config
 			_, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)
 			}
 		})
 	}
+}
+
+func withOIDC(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
+	copy := *config
+	copy.OIDCIssuerURL = value
+	return &copy
+}
+func withGRPCHost(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
+	copy := *config
+	copy.GRPCRouteHostname = value
+	return &copy
+}
+func withCrossTenantHost(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
+	copy := *config
+	copy.CrossTenantRouteHostname = value
+	return &copy
 }
 
 func TestNetEyeValidatorRejectsSecondAuthority(t *testing.T) {

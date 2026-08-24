@@ -92,6 +92,35 @@ type NetEyeIdentitySpec struct {
 	DBConnection NetEyeDBConnectionSpec `json:"dbConnection"`
 }
 
+// NetEyeElasticStackSpec configures the shared OpenTelemetry Collector.
+type NetEyeElasticStackSpec struct {
+	// Enabled deploys the shared OpenTelemetry Collector.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// ElasticsearchEndpoints is the explicitly configured list of HTTPS Elasticsearch endpoints.
+	// +kubebuilder:validation:Optional
+	ElasticsearchEndpoints []string `json:"elasticsearchEndpoints,omitempty"`
+	// APIKeySecret identifies the API key used by the collector.
+	// +kubebuilder:validation:Optional
+	APIKeySecret NetEyeSecretKeySelector `json:"apiKeySecret,omitempty"`
+	// BasicAuthSecretName is the Secret containing the htpasswd key.
+	// +kubebuilder:default="otel-collector-basicauth"
+	BasicAuthSecretName string `json:"basicAuthSecretName,omitempty"`
+	// RootCAConfigMapName is the ConfigMap containing NetEye root CAs.
+	// +kubebuilder:default="neteye-root-ca"
+	RootCAConfigMapName string `json:"rootCAConfigMapName,omitempty"`
+	// OIDCIssuerURL overrides the issuer derived from identity.hostname.
+	// +kubebuilder:validation:Optional
+	OIDCIssuerURL string `json:"oidcIssuerURL,omitempty"`
+	// GRPCRouteHostname is the public OTLP gRPC hostname.
+	// +kubebuilder:default="otel-collector.rke2.neteyelocal"
+	GRPCRouteHostname string `json:"grpcRouteHostname,omitempty"`
+	// CrossTenantRouteHostname is the public cross-tenant OTLP HTTP hostname.
+	// +kubebuilder:default="otel-collector-crosstenant.rke2.neteyelocal"
+	CrossTenantRouteHostname string `json:"crossTenantRouteHostname,omitempty"`
+}
+
 // NetEyeGatewaySpec defines the Gateway API resources managed by NetEye.
 type NetEyeGatewaySpec struct {
 	// Name is the Gateway name in the shared NetEye namespace. If it already exists,
@@ -187,15 +216,6 @@ type NetEyeSpec struct {
 	// +kubebuilder:example="4.50"
 	Version string `json:"version"`
 
-	// EnabledModules declares which NetEye feature modules are available for tenants.
-	// The field is part of the desired API contract; module-specific reconcilers
-	// will consume it as they are implemented.
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:items:MinLength=1
-	// +kubebuilder:validation:items:Enum=asset;alyvix;cmd;ntopng;elastic-stack;slm;vmd;satayo
-	// +listType=set
-	EnabledModules []string `json:"enabledModules,omitempty"`
-
 	// Gateway configures the Gateway API Gateway and default routes managed by
 	// NetEye.
 	// +kubebuilder:validation:Required
@@ -212,29 +232,10 @@ type NetEyeSpec struct {
 	// Identity configures identity services such as Keycloak.
 	// +kubebuilder:validation:Required
 	Identity NetEyeIdentitySpec `json:"identity"`
-}
 
-// SupportedFeatureModules is the canonical set of feature modules accepted by
-// the NetEye API and available to future component reconcilers.
-var SupportedFeatureModules = []string{
-	"asset",
-	"alyvix",
-	"cmd",
-	"ntopng",
-	"elastic-stack",
-	"slm",
-	"vmd",
-	"satayo",
-}
-
-// IsSupportedFeatureModule reports whether name is a valid feature module.
-func IsSupportedFeatureModule(name string) bool {
-	for _, supported := range SupportedFeatureModules {
-		if name == supported {
-			return true
-		}
-	}
-	return false
+	// ElasticStack configures the optional shared OpenTelemetry Collector.
+	// +kubebuilder:validation:Optional
+	ElasticStack *NetEyeElasticStackSpec `json:"elasticStack,omitempty"`
 }
 
 // ServiceState is the per-service state reported in NetEyeServiceStatus.Status.
@@ -271,7 +272,8 @@ type NetEyeServiceStatus struct {
 // NetEyeServicesStatus groups observed state by NetEye service/component.
 type NetEyeServicesStatus struct {
 	// Identity reports the observed state of identity services such as Keycloak.
-	Identity *NetEyeServiceStatus `json:"identity,omitempty"`
+	Identity     *NetEyeServiceStatus `json:"identity,omitempty"`
+	ElasticStack *NetEyeServiceStatus `json:"elasticStack,omitempty"`
 }
 
 // NetEyeStatus defines the observed state of NetEyeConfig.

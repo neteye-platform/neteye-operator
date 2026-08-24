@@ -6,8 +6,11 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	validation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,7 +42,7 @@ func (v *NetEyeValidator) ValidateCreate(ctx context.Context, obj *NetEye) (admi
 	if err := validateNamespace(obj); err != nil {
 		return nil, err
 	}
-	if err := validateEnabledModules(obj); err != nil {
+	if err := validateElasticStack(obj); err != nil {
 		return nil, err
 	}
 	if obj.Spec.Version == CurrentNetEyeVersion {
@@ -57,7 +60,7 @@ func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *Ne
 	if err := validateNamespace(newObj); err != nil {
 		return nil, err
 	}
-	if err := validateEnabledModules(newObj); err != nil {
+	if err := validateElasticStack(newObj); err != nil {
 		return nil, err
 	}
 	oldVersion := oldObj.Spec.Version
@@ -76,6 +79,71 @@ func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *Ne
 	)
 }
 
+func validateElasticStack(neteye *NetEye) error {
+	path := field.NewPath("spec", "elasticStack")
+	if neteye.Spec.ElasticStack == nil || !neteye.Spec.ElasticStack.Enabled {
+		return nil
+	}
+	config := neteye.Spec.ElasticStack
+	if len(config.ElasticsearchEndpoints) == 0 {
+		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("elasticsearchEndpoints"), "at least one HTTPS endpoint is required")})
+	}
+	var errors field.ErrorList
+	for i, endpoint := range config.ElasticsearchEndpoints {
+		if err := validateHTTPSURL(path.Child("elasticsearchEndpoints").Index(i), endpoint); err != nil {
+			errors = append(errors, err)
+		}
+	}
+	for _, value := range []struct {
+		path  *field.Path
+		value string
+	}{{path.Child("apiKeySecret", "name"), config.APIKeySecret.Name}, {path.Child("apiKeySecret", "key"), config.APIKeySecret.Key}, {path.Child("basicAuthSecretName"), config.BasicAuthSecretName}, {path.Child("rootCAConfigMapName"), config.RootCAConfigMapName}} {
+		if strings.TrimSpace(value.value) == "" {
+			errors = append(errors, field.Required(value.path, "is required when elasticStack is enabled"))
+		}
+	}
+	for _, value := range []struct {
+		path  *field.Path
+		value string
+	}{{path.Child("grpcRouteHostname"), config.GRPCRouteHostname}, {path.Child("crossTenantRouteHostname"), config.CrossTenantRouteHostname}} {
+		if err := validateDNSHostname(value.path, value.value); err != nil {
+			errors = append(errors, err)
+		}
+	}
+	if config.OIDCIssuerURL != "" {
+		if err := validateHTTPSURL(path.Child("oidcIssuerURL"), config.OIDCIssuerURL); err != nil {
+			errors = append(errors, err)
+		}
+	}
+	if len(errors) > 0 {
+		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, errors)
+	}
+	return nil
+}
+
+func validateHTTPSURL(path *field.Path, value string) *field.Error {
+	trimmed := strings.TrimSpace(value)
+	u, err := url.ParseRequestURI(value)
+	if value != trimmed || err != nil || value == "" || !u.IsAbs() || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return field.Invalid(path, value, "must be an absolute HTTPS URL")
+	}
+	return nil
+}
+
+func validateDNSHostname(path *field.Path, value string) *field.Error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return field.Required(path, "is required when elasticStack is enabled")
+	}
+	if value != trimmed {
+		return field.Invalid(path, value, "must not contain surrounding whitespace")
+	}
+	if issues := validation.IsDNS1123Subdomain(value); len(issues) > 0 {
+		return field.Invalid(path, value, strings.Join(issues, ", "))
+	}
+	return nil
+}
+
 func validateNamespace(neteye *NetEye) error {
 	if neteye.Namespace == NetEyeNamespace {
 		return nil
@@ -85,29 +153,6 @@ func validateNamespace(neteye *NetEye) error {
 		neteye.Name,
 		field.ErrorList{field.Forbidden(field.NewPath("metadata", "namespace"), fmt.Sprintf("NetEye resources must be created in namespace %q", NetEyeNamespace))},
 	)
-}
-
-func validateEnabledModules(neteye *NetEye) error {
-	seen := make(map[string]struct{}, len(neteye.Spec.EnabledModules))
-	for index, module := range neteye.Spec.EnabledModules {
-		path := field.NewPath("spec", "enabledModules").Index(index)
-		if !IsSupportedFeatureModule(module) {
-			return apierrors.NewInvalid(
-				GroupVersion.WithKind("NetEye").GroupKind(),
-				neteye.Name,
-				field.ErrorList{field.NotSupported(path, module, SupportedFeatureModules)},
-			)
-		}
-		if _, exists := seen[module]; exists {
-			return apierrors.NewInvalid(
-				GroupVersion.WithKind("NetEye").GroupKind(),
-				neteye.Name,
-				field.ErrorList{field.Duplicate(path, module)},
-			)
-		}
-		seen[module] = struct{}{}
-	}
-	return nil
 }
 
 func (v *NetEyeValidator) validateSingleAuthority(ctx context.Context, obj *NetEye) error {

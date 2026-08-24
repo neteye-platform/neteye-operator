@@ -57,25 +57,62 @@ spec:
           spec:
             description: NetEyeSpec defines the desired state of NetEyeConfig.
             properties:
-              enabledModules:
-                description: |-
-                  EnabledModules declares which NetEye feature modules are available for tenants.
-                  The field is part of the desired API contract; module-specific reconcilers
-                  will consume it as they are implemented.
-                items:
-                  enum:
-                  - asset
-                  - alyvix
-                  - cmd
-                  - ntopng
-                  - elastic-stack
-                  - slm
-                  - vmd
-                  - satayo
-                  minLength: 1
-                  type: string
-                type: array
-                x-kubernetes-list-type: set
+              elasticStack:
+                description: ElasticStack configures the optional shared OpenTelemetry
+                  Collector.
+                properties:
+                  apiKeySecret:
+                    description: APIKeySecret identifies the API key used by the collector.
+                    properties:
+                      key:
+                        description: Key is the key inside the Secret containing the
+                          database credential value.
+                        minLength: 1
+                        type: string
+                      name:
+                        description: Name is the name of the Secret containing the
+                          database credential.
+                        minLength: 1
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  basicAuthSecretName:
+                    default: otel-collector-basicauth
+                    description: BasicAuthSecretName is the Secret containing the
+                      htpasswd key.
+                    type: string
+                  crossTenantRouteHostname:
+                    default: otel-collector-crosstenant.rke2.neteyelocal
+                    description: CrossTenantRouteHostname is the public cross-tenant
+                      OTLP HTTP hostname.
+                    type: string
+                  elasticsearchEndpoints:
+                    description: ElasticsearchEndpoints is the explicitly configured
+                      list of HTTPS Elasticsearch endpoints.
+                    items:
+                      type: string
+                    type: array
+                  enabled:
+                    default: false
+                    description: Enabled deploys the shared OpenTelemetry Collector.
+                    type: boolean
+                  grpcRouteHostname:
+                    default: otel-collector.rke2.neteyelocal
+                    description: GRPCRouteHostname is the public OTLP gRPC hostname.
+                    type: string
+                  oidcIssuerURL:
+                    description: OIDCIssuerURL overrides the issuer derived from identity.hostname.
+                    type: string
+                  rootCAConfigMapName:
+                    default: neteye-root-ca
+                    description: RootCAConfigMapName is the ConfigMap containing NetEye
+                      root CAs.
+                    type: string
+                required:
+                - enabled
+                type: object
               gateway:
                 description: |-
                   Gateway configures the Gateway API Gateway and default routes managed by
@@ -256,6 +293,23 @@ spec:
                 description: ServicesStatus reports observed state for each managed
                   NetEye service.
                 properties:
+                  elasticStack:
+                    description: NetEyeServiceStatus defines the observed state of
+                      one NetEye service.
+                    properties:
+                      message:
+                        description: Message is a human-readable status message for
+                          this service.
+                        type: string
+                      resolvedImage:
+                        description: ResolvedImage is the container image resolved
+                          for this service.
+                        type: string
+                      status:
+                        description: ServiceState is the per-service state reported
+                          in NetEyeServiceStatus.Status.
+                        type: string
+                    type: object
                   identity:
                     description: Identity reports the observed state of identity services
                       such as Keycloak.
