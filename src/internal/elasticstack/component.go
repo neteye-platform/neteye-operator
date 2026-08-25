@@ -43,6 +43,7 @@ const (
 	DefaultAPIKeySecretKey     = "api_key"
 	DefaultBasicAuthSecretName = "otel-collector-basicauth"
 	DefaultRootCAConfigMapName = "neteye-root-ca"
+	GatewayHTTPSPort           = "443"
 )
 
 type Component struct {
@@ -238,7 +239,7 @@ func egressTargets(endpoints []string, issuer string) ([]egressTarget, error) {
 }
 
 func ingressPolicySpec() map[string]any {
-	return map[string]any{"endpointSelector": map[string]any{"matchLabels": map[string]any{"app": "otel-collector"}}, "ingress": []any{
+	return map[string]any{"endpointSelector": map[string]any{"matchLabels": map[string]any{"k8s:app": "otel-collector"}}, "ingress": []any{
 		map[string]any{"fromEntities": []any{"ingress"}, "toPorts": []any{tcpPorts("4317", "4318")}},
 		map[string]any{"fromEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("13133")}},
 	}}
@@ -256,11 +257,14 @@ func egressPolicySpec(targets []egressTarget) map[string]any {
 		ports = append(ports, port)
 	}
 	sort.Strings(ports)
-	egress := []any{map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}}, "toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "53", "protocol": "TCP"}, map[string]any{"port": "53", "protocol": "UDP"}}, "rules": map[string]any{"dns": dnsRules}}}}}
+	egress := []any{
+		map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}}, "toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "53", "protocol": "TCP"}, map[string]any{"port": "53", "protocol": "UDP"}}, "rules": map[string]any{"dns": dnsRules}}}},
+		map[string]any{"toEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts(GatewayHTTPSPort)}},
+	}
 	for _, port := range ports {
 		egress = append(egress, map[string]any{"toFQDNs": byPort[port], "toPorts": []any{tcpPorts(port)}})
 	}
-	return map[string]any{"endpointSelector": map[string]any{"matchLabels": map[string]any{"app": "otel-collector"}}, "egress": egress}
+	return map[string]any{"endpointSelector": map[string]any{"matchLabels": map[string]any{"k8s:app": "otel-collector"}}, "egress": egress}
 }
 
 func tcpPorts(ports ...string) map[string]any {

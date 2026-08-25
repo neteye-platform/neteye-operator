@@ -5,6 +5,8 @@ package elasticstack
 
 import (
 	"context"
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -173,6 +175,10 @@ func TestEnsureResourcesCreatesOwnedCiliumPolicies(t *testing.T) {
 		if len(object.GetOwnerReferences()) != 1 || object.GetOwnerReferences()[0].Name != "platform" {
 			t.Errorf("%s owner refs=%v", policy.name, object.GetOwnerReferences())
 		}
+		endpointSelector, _, _ := unstructured.NestedMap(object.Object, "spec", "endpointSelector")
+		if got, want := endpointSelector, map[string]any{"matchLabels": map[string]any{"k8s:app": "otel-collector"}}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s endpoint selector=%#v, want %#v", policy.name, got, want)
+		}
 		if policy.ingress {
 			rules, _, _ := unstructured.NestedSlice(object.Object, "spec", "ingress")
 			if rules[0].(map[string]any)["fromEntities"].([]any)[0] != "ingress" {
@@ -180,12 +186,54 @@ func TestEnsureResourcesCreatesOwnedCiliumPolicies(t *testing.T) {
 			}
 		} else {
 			rules, _, _ := unstructured.NestedSlice(object.Object, "spec", "egress")
-			if len(rules) != 4 {
+			if len(rules) != 5 {
 				t.Errorf("egress rules=%#v", rules)
 			}
 			labels := rules[0].(map[string]any)["toEndpoints"].([]any)[0].(map[string]any)["matchLabels"].(map[string]any)
 			if labels["k8s:io.kubernetes.pod.namespace"] != "kube-system" || labels["k8s:k8s-app"] != "kube-dns" || len(labels) != 2 {
 				t.Errorf("DNS endpoint labels=%#v", labels)
+			}
+			nodeRule := rules[1].(map[string]any)
+			if got, want := nodeRule["toEntities"], []any{"host", "remote-node"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("Gateway node entities=%#v, want %#v", got, want)
+			}
+			toPorts, _, _ := unstructured.NestedSlice(nodeRule, "toPorts")
+			nodePorts, _, _ := unstructured.NestedSlice(toPorts[0].(map[string]any), "ports")
+			if len(nodePorts) != 1 || nodePorts[0].(map[string]any)["port"] != GatewayHTTPSPort || nodePorts[0].(map[string]any)["protocol"] != "TCP" {
+				t.Errorf("Gateway node ports=%#v, want TCP/%s", nodePorts, GatewayHTTPSPort)
+			}
+			// Assert each FQDN/port egress rule: hostnames must match the
+			// configured Elasticsearch endpoints and OIDC issuer, and each rule
+			// must only allow the corresponding TCP port.
+			wantFQDNs := []struct{ host, port string }{
+				{"elastic.example.com", "443"}, // https://elastic.example.com (default port)
+				{"logs.example.com", "9243"},   // https://logs.example.com:9243
+				{"issuer.example.com", "8443"}, // https://issuer.example.com:8443/...
+			}
+			var gotFQDNs []struct{ host, port string }
+			for _, rule := range rules[2:] {
+				r := rule.(map[string]any)
+				toFQDNs, _, _ := unstructured.NestedSlice(r, "toFQDNs")
+				if len(toFQDNs) == 0 {
+					t.Errorf("egress rule missing toFQDNs: %#v", r)
+					continue
+				}
+				for _, fd := range toFQDNs {
+					matchName, _, _ := unstructured.NestedString(fd.(map[string]any), "matchName")
+					toPorts, _, _ := unstructured.NestedSlice(r, "toPorts")
+					portList, _, _ := unstructured.NestedSlice(toPorts[0].(map[string]any), "ports")
+					port, _, _ := unstructured.NestedString(portList[0].(map[string]any), "port")
+					gotFQDNs = append(gotFQDNs, struct{ host, port string }{matchName, port})
+				}
+			}
+			sort.Slice(gotFQDNs, func(i, j int) bool {
+				return gotFQDNs[i].host+":"+gotFQDNs[i].port < gotFQDNs[j].host+":"+gotFQDNs[j].port
+			})
+			sort.Slice(wantFQDNs, func(i, j int) bool {
+				return wantFQDNs[i].host+":"+wantFQDNs[i].port < wantFQDNs[j].host+":"+wantFQDNs[j].port
+			})
+			if !reflect.DeepEqual(gotFQDNs, wantFQDNs) {
+				t.Errorf("%s egress FQDN rules=%#v, want %#v", policy.name, gotFQDNs, wantFQDNs)
 			}
 		}
 	}
