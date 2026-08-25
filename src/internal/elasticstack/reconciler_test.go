@@ -18,18 +18,21 @@ import (
 
 func TestReconcilerDisabledDeletesManagedResources(t *testing.T) {
 	component := &recordingComponent{}
-	outcome := NewReconciler(component).Reconcile(context.Background(), Request{Namespace: "shared", Owner: owner()})
+	outcome := NewReconciler(component).Reconcile(context.Background(), Request{Namespace: "shared", CollectorImage: "collector-image", Owner: owner()})
 	if component.deletes != 1 || outcome.Err != nil || outcome.Requeue != RequeueNone {
 		t.Fatalf("deletes=%d outcome=%+v", component.deletes, outcome)
 	}
-	if outcome.Service.Status != neteye.ServiceStateDisabled {
-		t.Errorf("service state = %q", outcome.Service.Status)
+	if outcome.Module.Status != neteye.ServiceStateDisabled || outcome.Module.Message != "Elastic Stack feature module is disabled" {
+		t.Errorf("module status = %+v", outcome.Module)
+	}
+	if outcome.Collector == nil || outcome.Collector.Status != neteye.ServiceStateDisabled || outcome.Collector.Message != "OpenTelemetry Collector is disabled" || outcome.Collector.ResolvedImage != "collector-image" {
+		t.Errorf("collector status = %+v", outcome.Collector)
 	}
 }
 
 func TestReconcilerEnabledWithoutComponentFails(t *testing.T) {
 	config := elasticConfig()
-	outcome := NewReconciler(nil).Reconcile(context.Background(), Request{Config: &config})
+	outcome := NewReconciler(nil).Reconcile(context.Background(), Request{Config: &config, CollectorImage: "collector-image"})
 	if outcome.Err == nil || outcome.Requeue != RequeueFailure || outcome.Phase != neteye.PhaseFailed {
 		t.Errorf("outcome = %+v", outcome)
 	}
@@ -38,16 +41,16 @@ func TestReconcilerEnabledWithoutComponentFails(t *testing.T) {
 func TestReconcilerReportsMissingPrerequisiteAsProgressing(t *testing.T) {
 	config := elasticConfig()
 	component := &recordingComponent{ready: false, message: "required user-managed Secret \"api-key\" is missing"}
-	outcome := NewReconciler(component).Reconcile(context.Background(), Request{Config: &config})
-	if outcome.Err != nil || outcome.Requeue != RequeueProgressing || outcome.Phase != neteye.PhaseNotReady || outcome.Service.Message != component.message {
+	outcome := NewReconciler(component).Reconcile(context.Background(), Request{Config: &config, CollectorImage: "collector-image"})
+	if outcome.Err != nil || outcome.Requeue != RequeueProgressing || outcome.Phase != neteye.PhaseNotReady || outcome.Module.Message != "Elastic Stack feature module is not ready" || outcome.Collector == nil || outcome.Collector.Message != component.message || outcome.Collector.ResolvedImage != "collector-image" {
 		t.Errorf("outcome = %+v", outcome)
 	}
 }
 
 func TestReconcilerReady(t *testing.T) {
 	config := elasticConfig()
-	outcome := NewReconciler(&recordingComponent{ready: true}).Reconcile(context.Background(), Request{Config: &config})
-	if outcome.Err != nil || outcome.Requeue != RequeueNone || outcome.Phase != "" || outcome.Service.Status != neteye.ServiceStateReady {
+	outcome := NewReconciler(&recordingComponent{ready: true}).Reconcile(context.Background(), Request{Config: &config, CollectorImage: "collector-image"})
+	if outcome.Err != nil || outcome.Requeue != RequeueNone || outcome.Phase != "" || outcome.Module.Status != neteye.ServiceStateReady || outcome.Module.Message != "Elastic Stack feature module is ready" || outcome.Collector == nil || outcome.Collector.Status != neteye.ServiceStateReady || outcome.Collector.Message != "OpenTelemetry Collector is ready" || outcome.Collector.ResolvedImage != "collector-image" {
 		t.Errorf("outcome = %+v", outcome)
 	}
 }
@@ -75,7 +78,7 @@ type recordingComponent struct {
 	deletes int
 }
 
-func (c *recordingComponent) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, metav1.OwnerReference) (bool, string, error) {
+func (c *recordingComponent) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, metav1.OwnerReference) (bool, string, error) {
 	return c.ready, c.message, c.err
 }
 

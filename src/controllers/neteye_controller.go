@@ -89,7 +89,7 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	ne.Status.ObservedGeneration = ne.GetGeneration()
 	ne.Status.ServicesStatus = neteye.NetEyeServicesStatus{
 		Identity:     identityStatus(neteye.ServiceStateUnknown, "", ""),
-		ElasticStack: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown},
+		ElasticStack: &neteye.NetEyeElasticStackStatus{Status: neteye.ServiceStateUnknown, OTelCollector: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}},
 	}
 	defer func() {
 		if err := r.updateStatus(ctx, req.NamespacedName, ne.Status); err != nil {
@@ -133,7 +133,7 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if result, err := r.reconcileKeycloak(ctx, ne, components.KeycloakImage); shouldReturn(result, err) {
 		return result, err
 	}
-	if result, err := r.reconcileElasticStack(ctx, ne); shouldReturn(result, err) {
+	if result, err := r.reconcileElasticStack(ctx, ne, components.OTelCollectorImage); shouldReturn(result, err) {
 		return result, err
 	}
 
@@ -144,15 +144,15 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{RequeueAfter: r.reconciliationRequeue()}, nil
 }
 
-func (r *NetEyeReconciler) reconcileElasticStack(ctx context.Context, ne *neteye.NetEye) (ctrl.Result, error) {
+func (r *NetEyeReconciler) reconcileElasticStack(ctx context.Context, ne *neteye.NetEye, collectorImage string) (ctrl.Result, error) {
 	if r.ElasticStackReconciler == nil {
 		r.ElasticStackReconciler = elasticstack.NewReconciler(nil)
 	}
 	outcome := r.ElasticStackReconciler.Reconcile(ctx, elasticstack.Request{
-		Namespace: keycloak.WorkloadNamespace, Config: ne.Spec.ElasticStack, IdentityHostname: ne.Spec.Identity.Hostname,
+		Namespace: keycloak.WorkloadNamespace, Config: ne.Spec.ElasticStack, IdentityHostname: ne.Spec.Identity.Hostname, CollectorImage: collectorImage,
 		GatewayNamespace: ne.Namespace, GatewayName: ne.Spec.Gateway.Name, Owner: ownerReferenceFor(ne),
 	})
-	ne.Status.ServicesStatus.ElasticStack = &outcome.Service
+	ne.Status.ServicesStatus.ElasticStack = &neteye.NetEyeElasticStackStatus{Status: outcome.Module.Status, Message: outcome.Module.Message, OTelCollector: outcome.Collector}
 	if outcome.Phase != "" {
 		setPhase(ne, outcome.Phase, outcome.PhaseMessage)
 	}

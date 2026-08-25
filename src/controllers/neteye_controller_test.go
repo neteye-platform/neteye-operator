@@ -204,6 +204,7 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 		component          *elasticStackResources
 		wantServiceState   neteye.ServiceState
 		wantServiceMessage string
+		wantModuleMessage  string
 		wantPhase          neteye.NetEyePhase
 		wantPhaseMessage   string
 		wantRequeue        time.Duration
@@ -214,27 +215,27 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 			name:             "ready",
 			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{ready: true},
-			wantServiceState: neteye.ServiceStateReady, wantServiceMessage: "Elastic Stack feature module is ready",
+			wantServiceState: neteye.ServiceStateReady, wantServiceMessage: "OpenTelemetry Collector is ready", wantModuleMessage: "Elastic Stack feature module is ready",
 			wantPhase: neteye.PhaseReady, wantPhaseMessage: "previous phase",
 		},
 		{
 			name:             "not ready uses progressing override",
 			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{message: "required user-managed Secret is missing"},
-			wantServiceState: neteye.ServiceStateNotReady, wantServiceMessage: "required user-managed Secret is missing",
+			wantServiceState: neteye.ServiceStateNotReady, wantServiceMessage: "required user-managed Secret is missing", wantModuleMessage: "Elastic Stack feature module is not ready",
 			wantPhase: neteye.PhaseNotReady, wantPhaseMessage: "Check services status for details", wantRequeue: 7 * time.Second,
 		},
 		{
 			name:             "failed uses failure override",
 			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{err: errors.New("ensure failed")},
-			wantServiceState: neteye.ServiceStateFailed, wantServiceMessage: "ensure failed",
+			wantServiceState: neteye.ServiceStateFailed, wantServiceMessage: "ensure failed", wantModuleMessage: "Elastic Stack feature module is unavailable",
 			wantPhase: neteye.PhaseFailed, wantPhaseMessage: "Check services status for details", wantRequeue: 11 * time.Second, wantErr: true,
 		},
 		{
 			name:             "disabled cleans up",
 			component:        &elasticStackResources{},
-			wantServiceState: neteye.ServiceStateDisabled, wantServiceMessage: "Elastic Stack feature module is disabled",
+			wantServiceState: neteye.ServiceStateDisabled, wantServiceMessage: "OpenTelemetry Collector is disabled", wantModuleMessage: "Elastic Stack feature module is disabled",
 			wantPhase: neteye.PhaseReady, wantPhaseMessage: "previous phase", wantDeletes: 1,
 		},
 	}
@@ -251,15 +252,19 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 				FailureRequeueAfter:            11 * time.Second,
 			}
 
-			result, err := r.reconcileElasticStack(context.Background(), ne)
+			result, err := r.reconcileElasticStack(context.Background(), ne, "collector-image")
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("error = %v, want error=%t", err, tt.wantErr)
 			}
 			if result.RequeueAfter != tt.wantRequeue {
 				t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, tt.wantRequeue)
 			}
-			if ne.Status.ServicesStatus.ElasticStack.Status != tt.wantServiceState || ne.Status.ServicesStatus.ElasticStack.Message != tt.wantServiceMessage {
-				t.Errorf("ElasticStack status = %+v, want state=%q message=%q", ne.Status.ServicesStatus.ElasticStack, tt.wantServiceState, tt.wantServiceMessage)
+			collector := ne.Status.ServicesStatus.ElasticStack.OTelCollector
+			if module := ne.Status.ServicesStatus.ElasticStack; module.Status != tt.wantServiceState || module.Message != tt.wantModuleMessage {
+				t.Errorf("ElasticStack module status = %+v, want state=%q message=%q", module, tt.wantServiceState, tt.wantModuleMessage)
+			}
+			if collector.Status != tt.wantServiceState || collector.Message != tt.wantServiceMessage || collector.ResolvedImage != "collector-image" {
+				t.Errorf("ElasticStack collector status = %+v, want state=%q message=%q image=collector-image", collector, tt.wantServiceState, tt.wantServiceMessage)
 			}
 			if ne.Status.Phase != tt.wantPhase || ne.Status.Message != tt.wantPhaseMessage {
 				t.Errorf("phase = %q/%q, want %q/%q", ne.Status.Phase, ne.Status.Message, tt.wantPhase, tt.wantPhaseMessage)
@@ -278,7 +283,7 @@ type elasticStackResources struct {
 	deletes int
 }
 
-func (r *elasticStackResources) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, metav1.OwnerReference) (bool, string, error) {
+func (r *elasticStackResources) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, metav1.OwnerReference) (bool, string, error) {
 	return r.ready, r.message, r.err
 }
 

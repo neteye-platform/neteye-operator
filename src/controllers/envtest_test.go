@@ -132,8 +132,8 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Status.ServicesStatus.ElasticStack.Status != neteye.ServiceStateNotReady {
-		t.Errorf("Elastic Stack status before deployment readiness = %q", current.Status.ServicesStatus.ElasticStack.Status)
+	if current.Status.ServicesStatus.ElasticStack.OTelCollector.Status != neteye.ServiceStateNotReady {
+		t.Errorf("Elastic Stack collector status before deployment readiness = %q", current.Status.ServicesStatus.ElasticStack.OTelCollector.Status)
 	}
 	deployment.Status.ObservedGeneration = deployment.Generation
 	deployment.Status.Replicas = *deployment.Spec.Replicas
@@ -148,8 +148,8 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Status.ServicesStatus.ElasticStack.Status != neteye.ServiceStateReady {
-		t.Errorf("Elastic Stack status after deployment readiness = %q", current.Status.ServicesStatus.ElasticStack.Status)
+	if current.Status.ServicesStatus.ElasticStack.OTelCollector.Status != neteye.ServiceStateReady {
+		t.Errorf("Elastic Stack collector status after deployment readiness = %q", current.Status.ServicesStatus.ElasticStack.OTelCollector.Status)
 	}
 	for _, route := range []struct {
 		gvk  schema.GroupVersionKind

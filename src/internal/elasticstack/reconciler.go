@@ -14,7 +14,7 @@ import (
 
 // ResourceReconciler manages Elastic Stack feature module resources.
 type ResourceReconciler interface {
-	EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, metav1.OwnerReference) (bool, string, error)
+	EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, metav1.OwnerReference) (bool, string, error)
 	DeleteResources(context.Context, string, metav1.OwnerReference) error
 }
 
@@ -42,7 +42,8 @@ const (
 type Outcome struct {
 	Phase        neteye.NetEyePhase
 	PhaseMessage string
-	Service      neteye.NetEyeServiceStatus
+	Module       neteye.NetEyeServiceStatus
+	Collector    *neteye.NetEyeServiceStatus
 	Requeue      RequeueReason
 	Err          error
 }
@@ -53,6 +54,7 @@ type Request struct {
 	IdentityHostname string
 	GatewayNamespace string
 	GatewayName      string
+	CollectorImage   string
 	Owner            metav1.OwnerReference
 }
 
@@ -60,39 +62,53 @@ func (r *Reconciler) Reconcile(ctx context.Context, request Request) Outcome {
 	if request.Config == nil || !request.Config.Enabled {
 		if r.component != nil {
 			if err := r.component.DeleteResources(ctx, request.Namespace, request.Owner); err != nil {
-				return failedOutcome(err)
+				return failedOutcome(err, request.CollectorImage)
 			}
 		}
-		return Outcome{Service: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateDisabled, Message: "Elastic Stack feature module is disabled"}}
+		return elasticStackOutcome(neteye.ServiceStateDisabled, "Elastic Stack feature module is disabled", neteye.ServiceStateDisabled, "OpenTelemetry Collector is disabled", request.CollectorImage)
 	}
 	if r.component == nil {
-		return failedOutcome(fmt.Errorf("elastic stack feature module component is not initialized"))
+		return failedOutcome(fmt.Errorf("elastic stack feature module component is not initialized"), request.CollectorImage)
 	}
 	if request.Config.OTelCollector == nil {
-		return Outcome{Phase: neteye.PhaseNotReady, PhaseMessage: "Check services status for details", Service: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateNotReady, Message: "Elastic Stack feature module configuration is incomplete: otelCollector is required when enabled"}, Requeue: RequeueProgressing}
+		return Outcome{Phase: neteye.PhaseNotReady, PhaseMessage: "Check services status for details", Module: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateNotReady, Message: "Elastic Stack feature module configuration is incomplete: otelCollector is required when enabled"}, Requeue: RequeueProgressing}
 	}
 
-	ready, message, err := r.component.EnsureResources(ctx, request.Namespace, *request.Config, request.IdentityHostname, request.GatewayNamespace, request.GatewayName, request.Owner)
+	ready, message, err := r.component.EnsureResources(ctx, request.Namespace, *request.Config, request.IdentityHostname, request.GatewayNamespace, request.GatewayName, request.CollectorImage, request.Owner)
 	if err != nil {
-		return failedOutcome(err)
+		return failedOutcome(err, request.CollectorImage)
 	}
 	if !ready {
 		return Outcome{
 			Phase:        neteye.PhaseNotReady,
 			PhaseMessage: "Check services status for details",
-			Service:      neteye.NetEyeServiceStatus{Status: neteye.ServiceStateNotReady, Message: message},
+			Module:       neteye.NetEyeServiceStatus{Status: neteye.ServiceStateNotReady, Message: "Elastic Stack feature module is not ready"},
+			Collector:    ptrTo(collectorStatus(neteye.ServiceStateNotReady, message, request.CollectorImage)),
 			Requeue:      RequeueProgressing,
 		}
 	}
-	return Outcome{Service: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateReady, Message: "Elastic Stack feature module is ready"}}
+	return elasticStackOutcome(neteye.ServiceStateReady, "Elastic Stack feature module is ready", neteye.ServiceStateReady, "OpenTelemetry Collector is ready", request.CollectorImage)
 }
 
-func failedOutcome(err error) Outcome {
+func failedOutcome(err error, image string) Outcome {
 	return Outcome{
 		Phase:        neteye.PhaseFailed,
 		PhaseMessage: "Check services status for details",
-		Service:      neteye.NetEyeServiceStatus{Status: neteye.ServiceStateFailed, Message: err.Error()},
+		Module:       neteye.NetEyeServiceStatus{Status: neteye.ServiceStateFailed, Message: "Elastic Stack feature module is unavailable"},
+		Collector:    ptrTo(collectorStatus(neteye.ServiceStateFailed, err.Error(), image)),
 		Requeue:      RequeueFailure,
 		Err:          err,
 	}
+}
+
+func elasticStackOutcome(moduleState neteye.ServiceState, moduleMessage string, collectorState neteye.ServiceState, collectorMessage, collectorImage string) Outcome {
+	return Outcome{Module: neteye.NetEyeServiceStatus{Status: moduleState, Message: moduleMessage}, Collector: ptrTo(collectorStatus(collectorState, collectorMessage, collectorImage))}
+}
+
+func ptrTo[T any](value T) *T {
+	return &value
+}
+
+func collectorStatus(state neteye.ServiceState, message, image string) neteye.NetEyeServiceStatus {
+	return neteye.NetEyeServiceStatus{Status: state, Message: message, ResolvedImage: image}
 }

@@ -27,7 +27,7 @@ import (
 func TestEnsureResourcesRequiresUserManagedPrerequisites(t *testing.T) {
 	s := elasticScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).Build()
-	ready, message, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), "neteye-tenant-shared", elasticConfig(), "identity.example.com", "neteye-tenant-shared", "neteye", owner())
+	ready, message, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), "neteye-tenant-shared", elasticConfig(), "identity.example.com", "neteye-tenant-shared", "neteye", "collector-image", owner())
 	if err != nil || ready || message == "" {
 		t.Fatalf("result = ready %t, message %q, err %v", ready, message, err)
 	}
@@ -45,7 +45,7 @@ func TestEnsureResourcesRequiresCredentialData(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			s := elasticScheme(t)
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultAPIKeySecretName}, Data: test.apiKey}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultBasicAuthSecretName}, Data: test.basicAuth}, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultRootCAConfigMapName}}).Build()
-			ready, message, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", owner())
+			ready, message, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", "collector-image", owner())
 			if err != nil || ready || message == "" {
 				t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
 			}
@@ -60,7 +60,7 @@ func TestEnsureResourcesRendersWorkloadAndVariables(t *testing.T) {
 	s := elasticScheme(t)
 	namespace := "neteye-tenant-shared"
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(defaultPrerequisites(namespace)...).Build()
-	ready, _, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", owner())
+	ready, _, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", "collector-image", owner())
 	if err != nil || ready {
 		t.Fatalf("ensure resources: ready %t err %v", ready, err)
 	}
@@ -118,7 +118,7 @@ func TestEnsureResourcesUsesConfiguredReferencesAndReplicas(t *testing.T) {
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.OTelCollector.BasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("hash")}},
 		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.OTelCollector.RootCAConfigMapName}},
 	).Build()
-	if ready, message, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, config, "identity.example.com", namespace, "neteye", owner()); err != nil || ready {
+	if ready, message, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, config, "identity.example.com", namespace, "neteye", "collector-image", owner()); err != nil || ready {
 		t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
 	}
 	deployment := &appsv1.Deployment{}
@@ -128,6 +128,9 @@ func TestEnsureResourcesUsesConfiguredReferencesAndReplicas(t *testing.T) {
 	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 3 {
 		t.Errorf("replicas = %v, want 3", deployment.Spec.Replicas)
 	}
+	if got, want := deployment.Spec.Template.Spec.Containers[0].Image, "collector-image"; got != want {
+		t.Errorf("collector image = %q, want %q", got, want)
+	}
 }
 
 func TestEnsureResourcesReportsReadyAfterDeploymentStatus(t *testing.T) {
@@ -135,7 +138,7 @@ func TestEnsureResourcesReportsReadyAfterDeploymentStatus(t *testing.T) {
 	s := elasticScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&appsv1.Deployment{}).WithObjects(defaultPrerequisites(namespace)...).Build()
 	component := NewComponent(c, logr.Discard())
-	if ready, _, err := component.EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", owner()); err != nil || ready {
+	if ready, _, err := component.EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", "collector-image", owner()); err != nil || ready {
 		t.Fatalf("before status: ready=%t err=%v", ready, err)
 	}
 	deployment := &appsv1.Deployment{}
@@ -148,7 +151,7 @@ func TestEnsureResourcesReportsReadyAfterDeploymentStatus(t *testing.T) {
 	if err := c.Status().Update(context.Background(), deployment); err != nil {
 		t.Fatal(err)
 	}
-	if ready, message, err := component.EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", owner()); err != nil || !ready {
+	if ready, message, err := component.EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", "collector-image", owner()); err != nil || !ready {
 		t.Fatalf("after status: ready=%t message=%q err=%v", ready, message, err)
 	}
 }
@@ -160,7 +163,7 @@ func TestEnsureResourcesCreatesOwnedCiliumPolicies(t *testing.T) {
 	config := elasticConfig()
 	config.OTelCollector.ElasticsearchEndpoints = []string{"https://elastic.example.com", "https://logs.example.com:9243"}
 	config.OTelCollector.OIDCIssuerURL = "https://issuer.example.com:8443/auth/realms/master"
-	if _, _, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, config, "identity.example.com", namespace, "neteye", owner()); err != nil {
+	if _, _, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, config, "identity.example.com", namespace, "neteye", "collector-image", owner()); err != nil {
 		t.Fatal(err)
 	}
 	for _, policy := range []struct {
@@ -245,7 +248,7 @@ func TestEnsureResourcesUsesConfiguredOIDCIssuer(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(defaultPrerequisites(namespace)...).Build()
 	config := elasticConfig()
 	config.OTelCollector.OIDCIssuerURL = "https://issuer.example.com/auth/realms/custom"
-	if _, _, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, config, "identity.example.com", namespace, "neteye", owner()); err != nil {
+	if _, _, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, config, "identity.example.com", namespace, "neteye", "collector-image", owner()); err != nil {
 		t.Fatal(err)
 	}
 	variables := &corev1.ConfigMap{}

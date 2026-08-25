@@ -56,7 +56,7 @@ func NewComponent(c client.Client, log logr.Logger) *Component {
 }
 
 // EnsureResources checks user-managed prerequisites first, then creates Elastic Stack feature module resources.
-func (c *Component) EnsureResources(ctx context.Context, namespace string, config neteye.NetEyeElasticStackSpec, identityHostname, gatewayNamespace, gatewayName string, owner metav1.OwnerReference) (bool, string, error) {
+func (c *Component) EnsureResources(ctx context.Context, namespace string, config neteye.NetEyeElasticStackSpec, identityHostname, gatewayNamespace, gatewayName, collectorImage string, owner metav1.OwnerReference) (bool, string, error) {
 	if config.OTelCollector == nil {
 		return false, "Elastic Stack feature module configuration is incomplete: otelCollector is required when enabled", nil
 	}
@@ -97,7 +97,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, confi
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, VariablesConfigMapName, map[string]string{"ELASTICSEARCH_ENDPOINTS": string(endpoints), "OIDC_ISSUER": issuer}, owner); err != nil {
 		return false, "", err
 	}
-	if err := resources.EnsureDeployment(ctx, c.client, deployment(namespace, *collector, references), owner); err != nil {
+	if err := resources.EnsureDeployment(ctx, c.client, deployment(namespace, *collector, collectorImage, references), owner); err != nil {
 		return false, "", err
 	}
 	if err := resources.EnsureService(ctx, c.client, service(namespace), owner); err != nil {
@@ -189,7 +189,7 @@ func resolvedReferences(config *neteye.NetEyeOtelCollectorSpec) references {
 	return resolved
 }
 
-func deployment(namespace string, config neteye.NetEyeOtelCollectorSpec, references references) *appsv1.Deployment {
+func deployment(namespace string, config neteye.NetEyeOtelCollectorSpec, collectorImage string, references references) *appsv1.Deployment {
 	labels := map[string]string{"app": "otel-collector"}
 	mode := int32(0440)
 	replicas := config.Replicas
@@ -198,7 +198,7 @@ func deployment(namespace string, config neteye.NetEyeOtelCollectorSpec, referen
 	}
 	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: DeploymentName, Namespace: namespace}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To(replicas), Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: corev1.PodSpec{
 		InitContainers: []corev1.Container{{Name: "otel-collector-ca-bundle", Image: "docker.io/alpine:3.23.5", Command: []string{"/bin/sh", "-ec", caBundleCommand}, VolumeMounts: []corev1.VolumeMount{{Name: "otel-trusted-ca-bundle", MountPath: "/work"}, {Name: "host-trusted-ca-bundle", MountPath: "/input/system/tls-ca-bundle.pem", ReadOnly: true}, {Name: "neteye-root-ca", MountPath: "/input/neteye", ReadOnly: true}}}},
-		Containers:     []corev1.Container{{Name: "otel-collector", Image: "docker.io/otel/opentelemetry-collector-contrib:0.156.0", Args: []string{"--config", "/etc/otel-collector-config/otel-collector-config.yaml"}, Ports: []corev1.ContainerPort{{Name: "health", ContainerPort: 13133}, {Name: "otlp-grpc", ContainerPort: 4317}, {Name: "otlp-http", ContainerPort: 4318}}, EnvFrom: []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: VariablesConfigMapName}}}}, Env: []corev1.EnvVar{{Name: "ELASTICSEARCH_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: references.apiKeySecret.Name}, Key: references.apiKeySecret.Key}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "otel-config", MountPath: "/etc/otel-collector-config", ReadOnly: true}, {Name: "otel-trusted-ca-bundle", MountPath: "/etc/pki/tls/certs/ca-bundle.crt", SubPath: "ca-bundle.pem", ReadOnly: true}, {Name: "otel-basicauth", MountPath: "/etc/otel-collector-basicauth", ReadOnly: true}}, StartupProbe: probe(5, 30), ReadinessProbe: probe(10, 3), LivenessProbe: probe(10, 3)}},
+		Containers:     []corev1.Container{{Name: "otel-collector", Image: collectorImage, Args: []string{"--config", "/etc/otel-collector-config/otel-collector-config.yaml"}, Ports: []corev1.ContainerPort{{Name: "health", ContainerPort: 13133}, {Name: "otlp-grpc", ContainerPort: 4317}, {Name: "otlp-http", ContainerPort: 4318}}, EnvFrom: []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: VariablesConfigMapName}}}}, Env: []corev1.EnvVar{{Name: "ELASTICSEARCH_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: references.apiKeySecret.Name}, Key: references.apiKeySecret.Key}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "otel-config", MountPath: "/etc/otel-collector-config", ReadOnly: true}, {Name: "otel-trusted-ca-bundle", MountPath: "/etc/pki/tls/certs/ca-bundle.crt", SubPath: "ca-bundle.pem", ReadOnly: true}, {Name: "otel-basicauth", MountPath: "/etc/otel-collector-basicauth", ReadOnly: true}}, StartupProbe: probe(5, 30), ReadinessProbe: probe(10, 3), LivenessProbe: probe(10, 3)}},
 		Volumes:        []corev1.Volume{{Name: "otel-config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName}}}}, {Name: "otel-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, {Name: "host-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", Type: ptr.To(corev1.HostPathFile)}}}, {Name: "neteye-root-ca", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: references.rootCAConfigMapName}}}}, {Name: "otel-basicauth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: references.basicAuthSecretName, DefaultMode: &mode}}}},
 	}}}}
 }

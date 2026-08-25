@@ -301,20 +301,33 @@ spec:
                   NetEye service.
                 properties:
                   elasticStack:
-                    description: NetEyeServiceStatus defines the observed state of
-                      one NetEye service.
+                    description: NetEyeElasticStackStatus reports observed state for
+                      Elastic Stack components.
                     properties:
                       message:
                         description: Message is a human-readable status message for
-                          this service.
+                          the Elastic Stack feature module.
                         type: string
-                      resolvedImage:
-                        description: ResolvedImage is the container image resolved
-                          for this service.
-                        type: string
+                      otelCollector:
+                        description: OTelCollector reports the observed state of the
+                          shared OpenTelemetry Collector.
+                        properties:
+                          message:
+                            description: Message is a human-readable status message
+                              for this service.
+                            type: string
+                          resolvedImage:
+                            description: ResolvedImage is the container image resolved
+                              for this service.
+                            type: string
+                          status:
+                            description: ServiceState is the per-service state reported
+                              in NetEyeServiceStatus.Status.
+                            type: string
+                        type: object
                       status:
-                        description: ServiceState is the per-service state reported
-                          in NetEyeServiceStatus.Status.
+                        description: Status is the observed state of the Elastic Stack
+                          feature module.
                         type: string
                     type: object
                   identity:

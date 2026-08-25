@@ -15,6 +15,8 @@ import (
 type NetEyeComponents struct {
 	// Full image reference for the Keycloak container, e.g. quay.io/keycloak/keycloak:27.0.0
 	KeycloakImage string
+	// Full image reference for the OpenTelemetry Collector container.
+	OTelCollectorImage string
 }
 
 // NetEyeSecretKeySelector identifies one key inside a Secret in the NetEye CR
@@ -167,14 +169,16 @@ type NetEyeGatewaySpec struct {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.1"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.1", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.156.0"},
 }
 
 const (
 	// RelatedImageKeycloakEnv overrides the Keycloak image packaged with the operator.
 	RelatedImageKeycloakEnv = "RELATED_IMAGE_KEYCLOAK"
-	CurrentNetEyeVersion    = "4.50"
-	PreviousNetEyeVersion   = "4.49"
+	// RelatedImageOTelCollectorEnv overrides the OpenTelemetry Collector image packaged with the operator.
+	RelatedImageOTelCollectorEnv = "RELATED_IMAGE_OTEL_COLLECTOR"
+	CurrentNetEyeVersion         = "4.50"
+	PreviousNetEyeVersion        = "4.49"
 )
 
 // ComponentsForVersion returns the component image set for the given NetEye
@@ -187,6 +191,9 @@ func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	}
 	if image := strings.TrimSpace(os.Getenv(RelatedImageKeycloakEnv)); image != "" {
 		c.KeycloakImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageOTelCollectorEnv)); image != "" {
+		c.OTelCollectorImage = image
 	}
 	return c, ok
 }
@@ -281,11 +288,23 @@ type NetEyeServiceStatus struct {
 	ResolvedImage string `json:"resolvedImage,omitempty"`
 }
 
+// NetEyeElasticStackStatus reports observed state for Elastic Stack components.
+type NetEyeElasticStackStatus struct {
+	// Status is the observed state of the Elastic Stack feature module.
+	Status ServiceState `json:"status,omitempty"`
+
+	// Message is a human-readable status message for the Elastic Stack feature module.
+	Message string `json:"message,omitempty"`
+
+	// OTelCollector reports the observed state of the shared OpenTelemetry Collector.
+	OTelCollector *NetEyeServiceStatus `json:"otelCollector,omitempty"`
+}
+
 // NetEyeServicesStatus groups observed state by NetEye service/component.
 type NetEyeServicesStatus struct {
 	// Identity reports the observed state of identity services such as Keycloak.
-	Identity     *NetEyeServiceStatus `json:"identity,omitempty"`
-	ElasticStack *NetEyeServiceStatus `json:"elasticStack,omitempty"`
+	Identity     *NetEyeServiceStatus      `json:"identity,omitempty"`
+	ElasticStack *NetEyeElasticStackStatus `json:"elasticStack,omitempty"`
 }
 
 // NetEyeStatus defines the observed state of NetEyeConfig.
