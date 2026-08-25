@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -391,16 +392,37 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if err := c.Status().Update(ctx, cert); err != nil {
 		t.Fatalf("update certificate status: %v", err)
 	}
+	legacyDefaultDeny := newUnstructured(networkPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
+	legacyDefaultDeny.Object["spec"] = map[string]any{
+		"podSelector": map[string]any{},
+		"policyTypes": []any{"Ingress"},
+	}
+	if err := c.Create(ctx, legacyDefaultDeny); err != nil {
+		t.Fatalf("create legacy native default deny: %v", err)
+	}
 
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
-	defaultDeny := requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.DefaultDenyPolicyName)
-	if podSelector, _, _ := unstructured.NestedMap(defaultDeny.Object, "spec", "podSelector"); len(podSelector) != 0 {
-		t.Errorf("default deny pod selector = %v, want empty", podSelector)
+	legacyDefaultDeny = newUnstructured(networkPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
+	if err := c.Get(ctx, client.ObjectKeyFromObject(legacyDefaultDeny), legacyDefaultDeny); !apierrors.IsNotFound(err) {
+		t.Errorf("legacy native default deny still exists or lookup failed: %v", err)
 	}
-	if policyTypes, _, _ := unstructured.NestedStringSlice(defaultDeny.Object, "spec", "policyTypes"); len(policyTypes) != 2 || policyTypes[0] != "Ingress" || policyTypes[1] != "Egress" {
-		t.Errorf("default deny policy types = %v, want [Ingress Egress]", policyTypes)
+	defaultDeny := requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
+	if endpointSelector, _, _ := unstructured.NestedMap(defaultDeny.Object, "spec", "endpointSelector"); len(endpointSelector) != 0 {
+		t.Errorf("default deny endpoint selector = %v, want empty", endpointSelector)
+	}
+	enableDefaultDeny, _, _ := unstructured.NestedMap(defaultDeny.Object, "spec", "enableDefaultDeny")
+	if enableDefaultDeny["ingress"] != true || enableDefaultDeny["egress"] != true {
+		t.Errorf("default deny settings = %#v, want ingress and egress enabled", enableDefaultDeny)
+	}
+	ingress, found, err := unstructured.NestedSlice(defaultDeny.Object, "spec", "ingress")
+	if err != nil || !found || !reflect.DeepEqual(ingress, []any{map[string]any{"fromEntities": []any{"none"}}}) {
+		t.Errorf("default deny ingress = %#v, want non-matching none entity", ingress)
+	}
+	egress, found, err := unstructured.NestedSlice(defaultDeny.Object, "spec", "egress")
+	if err != nil || !found || !reflect.DeepEqual(egress, []any{map[string]any{"toEntities": []any{"none"}}}) {
+		t.Errorf("default deny egress = %#v, want non-matching none entity", egress)
 	}
 	keycloakCertificate := requireExists(ctx, t, c, certificateGVK, keycloak.WorkloadNamespace, keycloak.TLSCertificateName)
 	if owner := keycloakCertificate.GetOwnerReferences(); len(owner) != 0 {

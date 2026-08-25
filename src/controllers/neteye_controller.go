@@ -67,7 +67,7 @@ type NetEyeReconciler struct {
 // +kubebuilder:rbac:groups=k8s.keycloak.org,resources=keycloaks,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=olm.operatorframework.io,resources=clusterextensions,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;list;watch;create;update;delete
 
 // Reconcile reconciles a NetEye resource with the desired cluster state.
@@ -123,6 +123,11 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	if result, err := r.reconcileBaseResources(ctx, ne); shouldReturn(result, err) {
 		return result, err
+	}
+	if err := resources.EnsureDefaultDenyNetworkPolicy(ctx, r.Client, keycloak.WorkloadNamespace); err != nil {
+		log.Error(err, "failed to ensure shared default-deny network policy", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared default-deny network policy: %w", err)
 	}
 
 	if result, err := r.reconcileKeycloak(ctx, ne, components.KeycloakImage); shouldReturn(result, err) {
