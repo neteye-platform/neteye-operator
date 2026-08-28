@@ -1,0 +1,12 @@
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakRealm
+metadata:
+  name: demo-realm
+  namespace: keycloak
+  annotations:
+    edp.epam.com/preserve-resources-on-deletion: "true"
+spec:
+  realmName: demo
+  keycloakRef:
+    name: keycloak-connection
+    kind: Keycloak

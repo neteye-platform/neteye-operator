@@ -1,0 +1,99 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: keycloakauthflows.neteye.cloud
+spec:
+  group: neteye.cloud
+
+  names:
+    kind: KeycloakAuthFlow
+    listKind: KeycloakAuthFlowList
+    plural: keycloakauthflows
+    singular: keycloakauthflow
+
+  scope: Namespaced
+
+  versions:
+    - name: v1
+      served: true
+      storage: true
+
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+
+            spec:
+              type: object
+              description: Keycloak authentication flow.
+
+              required:
+                - alias
+                - realm
+                - executions
+
+              properties:
+
+                alias:
+                  type: string
+                  description: Alias of the authentication flow.
+
+                realm:
+                  type: string
+                  description: Keycloak realm.
+
+                executions:
+                  type: array
+                  description: Executions and subflows of the authentication flow.
+                  items:
+                    type: object
+
+                    required:
+                      - requirement
+
+                    properties:
+
+                      requirement:
+                        type: string
+                        enum:
+                          - REQUIRED
+                          - ALTERNATIVE
+                          - DISABLED
+                          - CONDITIONAL
+
+                      authenticator:
+                        type: string
+                        description: Keycloak authenticator provider ID.
+
+                      alias:
+                        type: string
+                        description: Optional execution alias.
+
+                      authenticationConfig:
+                        type: string
+                        description: ID of an existing Keycloak authenticator configuration.
+
+                      flow:
+                        type: object
+                        description: Nested authentication flow.
+                        x-kubernetes-preserve-unknown-fields: true
+
+            status:
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: Keycloak internal ID of the authentication flow.
+
+                value:
+                  type: string
+                  description: Reconciliation status.
+
+      subresources:
+        status: {}
+
+      additionalPrinterColumns:
+        - name: Status
+          type: string
+          jsonPath: .status.value
+          description: Reconciliation status

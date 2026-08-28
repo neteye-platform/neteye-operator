@@ -1,0 +1,101 @@
+# Top-level flow: entry point of the custom browser authentication
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakAuthFlow
+metadata:
+  name: keycloakauthflow-neteye-browser
+  namespace: keycloak
+spec:
+  realmRef:
+    name: keycloakrealm-neteye
+    kind: KeycloakRealm
+  alias: "NetEye Browser"
+  description: "Custom browser authentication flow for NetEye"
+  providerId: basic-flow
+  topLevel: true
+  builtIn: false
+  authenticationExecutions:
+    - authenticator: "auth-cookie"
+      priority: 0
+      requirement: "ALTERNATIVE"
+    - authenticator: "identity-provider-redirector"
+      priority: 1
+      requirement: "ALTERNATIVE"
+      authenticatorConfig:
+        alias: neteye-idp-redirect
+        config:
+          "defaultProvider": "neteye-saml"
+
+---
+# Nested subflow: username/password + credential forms
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakAuthFlow
+metadata:
+  name: keycloakauthflow-neteye-forms
+  namespace: keycloak
+spec:
+  realmRef:
+    name: keycloakrealm-neteye
+    kind: KeycloakRealm
+  alias: "NetEye Forms"
+  description: "Username/password and credential forms"
+  providerId: basic-flow
+  topLevel: false
+  parentName: "NetEye Browser"
+  childType: basic-flow
+  childRequirement: ALTERNATIVE
+  builtIn: false
+  authenticationExecutions:
+    - authenticator: "auth-username-password-form"
+      priority: 0
+      requirement: "REQUIRED"
+
+---
+# Nested subflow: X.509 client certificate authentication
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakAuthFlow
+metadata:
+  name: keycloakauthflow-neteye-x509
+  namespace: keycloak
+spec:
+  realmRef:
+    name: keycloakrealm-neteye
+    kind: KeycloakRealm
+  alias: "NetEye X509"
+  description: "Client certificate authentication"
+  providerId: basic-flow
+  topLevel: false
+  parentName: "NetEye Forms"
+  childType: basic-flow
+  childRequirement: ALTERNATIVE
+  builtIn: false
+  authenticationExecutions:
+    - authenticator: "auth-x509-client-username-form"
+      priority: 0
+      requirement: "ALTERNATIVE"
+
+---
+# Nested subflow: conditional OTP, only enforced if user has OTP configured
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakAuthFlow
+metadata:
+  name: keycloakauthflow-neteye-conditional-otp
+  namespace: keycloak
+spec:
+  realmRef:
+    name: keycloakrealm-neteye
+    kind: KeycloakRealm
+  alias: "NetEye Conditional OTP"
+  description: "Enforces OTP only when configured for the user"
+  providerId: basic-flow
+  topLevel: false
+  parentName: "NetEye X509"
+  childType: basic-flow
+  childRequirement: CONDITIONAL
+  builtIn: false
+  authenticationExecutions:
+    - authenticator: "conditional-user-configured"
+      priority: 0
+      requirement: "REQUIRED"
+    - authenticator: "auth-otp-form"
+      priority: 1
+      requirement: "REQUIRED"

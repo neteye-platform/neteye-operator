@@ -1,0 +1,23 @@
+apiVersion: neteye.cloud/v1
+kind: KeycloakAuthFlow
+metadata:
+  name: neteye-first-broker-login-flow2
+  namespace: keycloak
+spec:
+  alias: neteye-first-broker-login-flow2
+
+  realm: master
+
+  executions:
+    - requirement: REQUIRED
+      authenticator: idp-detect-existing-broker-user
+      alias: Detect existing broker user
+      config:
+        alias: "test"
+        values:
+          authenticatorReference: "some-reference"
+          authenticatorReferenceMaxAge: "3600"
+
+    - requirement: REQUIRED
+      authenticator: idp-auto-link
+      alias: Automatically set existing user

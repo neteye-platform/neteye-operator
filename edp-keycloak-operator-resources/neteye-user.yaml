@@ -1,0 +1,27 @@
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakRealmUser
+metadata:
+  name: keycloakrealmuser-neteye-admin
+  namespace: keycloak
+spec:
+  reconciliationStrategy: full
+  realmRef:
+    name: keycloakrealm-neteye
+    kind: KeycloakRealm
+  username: "neteye"
+  enabled: true
+  keepResource: true
+  passwordSecret:
+    key: password
+    name: keycloakrealmuser-neteye-admin-password
+    temporary: false
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloakrealmuser-neteye-admin-password
+  namespace: keycloak
+type: Opaque
+stringData:
+  password: "password"

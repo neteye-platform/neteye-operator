@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keycloak-realm-controller
+  namespace: keycloak
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: keycloak-realm-controller
+  namespace: keycloak
+rules:
+  - apiGroups:
+      - neteye.cloud
+    resources:
+      - keycloakrealms
+    verbs:
+      - get
+      - list
+      - watch
+      - patch
+  - apiGroups:
+      - neteye.cloud
+    resources:
+      - keycloakrealms/status
+    verbs:
+      - get
+      - patch
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: keycloak-realm-controller
+  namespace: keycloak
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: keycloak-realm-controller
+subjects:
+  - kind: ServiceAccount
+    name: keycloak-realm-controller
+    namespace: keycloak

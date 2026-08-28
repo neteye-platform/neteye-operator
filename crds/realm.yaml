@@ -1,0 +1,381 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: keycloakrealms.neteye.cloud
+
+spec:
+  group: neteye.cloud
+
+  names:
+    kind: KeycloakRealm
+    listKind: KeycloakRealmList
+    plural: keycloakrealms
+    singular: keycloakrealm
+    shortNames:
+      - kcrealm
+
+  scope: Namespaced
+
+  versions:
+    - name: v1
+      served: true
+      storage: true
+
+      additionalPrinterColumns:
+        - name: Realm
+          type: string
+          jsonPath: .spec.realm
+
+        - name: Status
+          type: string
+          jsonPath: .status.value
+
+      schema:
+        openAPIV3Schema:
+          type: object
+
+          description: Keycloak realm.
+
+          properties:
+            spec:
+              type: object
+              description: Desired Keycloak realm.
+
+              required:
+                - realm
+
+              properties:
+                realm:
+                  type: string
+                  description: Name of the Keycloak realm.
+
+                displayName:
+                  type: string
+
+                displayNameHtml:
+                  type: string
+
+                defaultSignatureAlgorithm:
+                  type: string
+
+                revokeRefreshToken:
+                  type: boolean
+
+                refreshTokenMaxReuse:
+                  type: integer
+
+                accessTokenLifespan:
+                  type: integer
+
+                accessTokenLifespanForImplicitFlow:
+                  type: integer
+
+                ssoSessionIdleTimeout:
+                  type: integer
+
+                ssoSessionMaxLifespan:
+                  type: integer
+
+                ssoSessionIdleTimeoutRememberMe:
+                  type: integer
+
+                ssoSessionMaxLifespanRememberMe:
+                  type: integer
+
+                offlineSessionIdleTimeout:
+                  type: integer
+
+                offlineSessionMaxLifespanEnabled:
+                  type: boolean
+
+                offlineSessionMaxLifespan:
+                  type: integer
+
+                clientSessionIdleTimeout:
+                  type: integer
+
+                clientSessionMaxLifespan:
+                  type: integer
+
+                clientOfflineSessionIdleTimeout:
+                  type: integer
+
+                clientOfflineSessionMaxLifespan:
+                  type: integer
+
+                accessCodeLifespan:
+                  type: integer
+
+                accessCodeLifespanUserAction:
+                  type: integer
+
+                accessCodeLifespanLogin:
+                  type: integer
+
+                actionTokenGeneratedByAdminLifespan:
+                  type: integer
+
+                actionTokenGeneratedByUserLifespan:
+                  type: integer
+
+                oauth2DeviceCodeLifespan:
+                  type: integer
+
+                oauth2DevicePollingInterval:
+                  type: integer
+
+                enabled:
+                  type: boolean
+
+                sslRequired:
+                  type: string
+
+                registrationAllowed:
+                  type: boolean
+
+                registrationEmailAsUsername:
+                  type: boolean
+
+                rememberMe:
+                  type: boolean
+
+                verifyEmail:
+                  type: boolean
+
+                loginWithEmailAllowed:
+                  type: boolean
+
+                duplicateEmailsAllowed:
+                  type: boolean
+
+                resetPasswordAllowed:
+                  type: boolean
+
+                editUsernameAllowed:
+                  type: boolean
+
+                bruteForceProtected:
+                  type: boolean
+
+                permanentLockout:
+                  type: boolean
+
+                maxTemporaryLockouts:
+                  type: integer
+
+                bruteForceStrategy:
+                  type: string
+
+                maxFailureWaitSeconds:
+                  type: integer
+
+                minimumQuickLoginWaitSeconds:
+                  type: integer
+
+                waitIncrementSeconds:
+                  type: integer
+
+                quickLoginCheckMilliSeconds:
+                  type: integer
+
+                maxDeltaTimeSeconds:
+                  type: integer
+
+                failureFactor:
+                  type: integer
+
+                maxSecondaryAuthFailures:
+                  type: integer
+
+                otpPolicyType:
+                  type: string
+
+                otpPolicyAlgorithm:
+                  type: string
+
+                otpPolicyInitialCounter:
+                  type: integer
+
+                otpPolicyDigits:
+                  type: integer
+
+                otpPolicyLookAheadWindow:
+                  type: integer
+
+                otpPolicyPeriod:
+                  type: integer
+
+                otpPolicyCodeReusable:
+                  type: boolean
+
+                otpSupportedApplications:
+                  type: array
+                  items:
+                    type: string
+
+                webAuthnPolicyRpEntityName:
+                  type: string
+
+                webAuthnPolicySignatureAlgorithms:
+                  type: array
+                  items:
+                    type: string
+
+                webAuthnPolicyRpId:
+                  type: string
+
+                webAuthnPolicyAttestationConveyancePreference:
+                  type: string
+
+                webAuthnPolicyAuthenticatorAttachment:
+                  type: string
+
+                webAuthnPolicyRequireResidentKey:
+                  type: string
+
+                webAuthnPolicyResidentKey:
+                  type: string
+
+                webAuthnPolicyUserVerificationRequirement:
+                  type: string
+
+                webAuthnPolicyCreateTimeout:
+                  type: integer
+
+                webAuthnPolicyAvoidSameAuthenticatorRegister:
+                  type: boolean
+
+                webAuthnPolicyAcceptableAaguids:
+                  type: array
+                  items:
+                    type: string
+
+                webAuthnPolicyExtraOrigins:
+                  type: array
+                  items:
+                    type: string
+
+                webAuthnPolicyPasswordlessRpEntityName:
+                  type: string
+
+                webAuthnPolicyPasswordlessSignatureAlgorithms:
+                  type: array
+                  items:
+                    type: string
+
+                webAuthnPolicyPasswordlessRpId:
+                  type: string
+
+                webAuthnPolicyPasswordlessAttestationConveyancePreference:
+                  type: string
+
+                webAuthnPolicyPasswordlessAuthenticatorAttachment:
+                  type: string
+
+                webAuthnPolicyPasswordlessRequireResidentKey:
+                  type: string
+
+                webAuthnPolicyPasswordlessResidentKey:
+                  type: string
+
+                webAuthnPolicyPasswordlessUserVerificationRequirement:
+                  type: string
+
+                webAuthnPolicyPasswordlessCreateTimeout:
+                  type: integer
+
+                webAuthnPolicyPasswordlessAvoidSameAuthenticatorRegister:
+                  type: boolean
+
+                webAuthnPolicyPasswordlessAcceptableAaguids:
+                  type: array
+                  items:
+                    type: string
+
+                webAuthnPolicyPasswordlessExtraOrigins:
+                  type: array
+                  items:
+                    type: string
+
+                browserSecurityHeaders:
+                  type: object
+                  additionalProperties:
+                    type: string
+
+                smtpServer:
+                  type: object
+                  additionalProperties:
+                    type: string
+
+                loginTheme:
+                  type: string
+
+                accountTheme:
+                  type: string
+
+                adminTheme:
+                  type: string
+
+                emailTheme:
+                  type: string
+
+                eventsEnabled:
+                  type: boolean
+
+                eventsExpiration:
+                  type: integer
+
+                eventsListeners:
+                  type: array
+                  items:
+                    type: string
+
+                enabledEventTypes:
+                  type: array
+                  items:
+                    type: string
+
+                adminEventsEnabled:
+                  type: boolean
+
+                adminEventsDetailsEnabled:
+                  type: boolean
+
+                internationalizationEnabled:
+                  type: boolean
+
+                attributes:
+                  type: object
+                  additionalProperties:
+                    type: string
+
+                userManagedAccessAllowed:
+                  type: boolean
+
+                organizationsEnabled:
+                  type: boolean
+
+                verifiableCredentialsEnabled:
+                  type: boolean
+
+                adminPermissionsEnabled:
+                  type: boolean
+
+                scimApiEnabled:
+                  type: boolean
+
+            status:
+              type: object
+
+              properties:
+                id:
+                  type: string
+                  description: Keycloak internal ID of the realm.
+
+                value:
+                  type: string
+                  description: Reconciliation status.
+
+      subresources:
+        status: {}
+

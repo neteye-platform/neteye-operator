@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin-secret
+  namespace: keycloak
+type: Opaque
+stringData:
+  username: admin
+  password: admin123   # must match the admin credentials of your existing keycloak-cluster CR
+---
+apiVersion: v1.edp.epam.com/v1
+kind: Keycloak
+metadata:
+  name: keycloak-connection
+  namespace: keycloak
+spec:
+  # Points to the Service in front of your existing Keycloak StatefulSet cluster.
+  url: "https://keycloak-cluster-service.keycloak.svc.rke2.neteyelocal:8443"
+  secret: keycloak-admin-secret
+  adminType: user            # authenticate as a realm admin user (master realm admin)
+  # Because we're using a self-signed cert from openssl earlier, skip TLS verification for this test cluster:
+  insecureSkipVerify: true
+

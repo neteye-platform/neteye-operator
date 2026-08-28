@@ -1,0 +1,47 @@
+apiVersion: neteye.cloud/v1
+kind: KeycloakAuthFlow
+metadata:
+  name: neteye-idp-discovery-flow2
+  namespace: keycloak
+spec:
+  alias: neteye-idp-discovery-flow2
+
+  realm: master
+
+  executions:
+    - requirement: ALTERNATIVE
+      authenticator: auth-cookie
+      alias: Cookie
+
+    - requirement: ALTERNATIVE
+      authenticator: identity-provider-redirector
+      alias: neteye-idp-discovery-flow2 adfs
+      authenticationConfig: 27ffb094-57c4-4a88-8bc7-c41b4eee8579
+
+    - requirement: ALTERNATIVE
+      authenticator: home-idp-discovery
+      alias: neteye-idp-discovery-flow2 home-idp-discovery
+      authenticationConfig: 6a82aadf-a208-4b0f-b512-4e43e0b06a53
+
+    - requirement: DISABLED
+      flow:
+        alias: neteye-idp-discovery-flow2 Block LDAP logins
+        executions:
+          - requirement: REQUIRED
+            authenticator: conditional-user-attribute
+            alias: neteye-idp-discovery-flow2 check-ldap-user
+            authenticationConfig: 4d5ddeaa-67be-43da-8080-b8661beb5869
+
+          - requirement: REQUIRED
+            authenticator: deny-access-authenticator
+            alias: neteye-idp-discovery-flow2 deny-ldap
+            authenticationConfig: 9bdef530-b08e-4e01-9735-ab1d5c60b7da
+
+    - requirement: ALTERNATIVE
+      flow:
+        alias: neteye-idp-discovery-flow2 username-password
+        provider: form-flow
+        executions:
+          - requirement: REQUIRED
+            authenticator: auth-username-password-form
+            alias: Username Password Form

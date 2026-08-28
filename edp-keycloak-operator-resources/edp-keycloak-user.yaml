@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo-user-password
+  namespace: keycloak
+type: Opaque
+stringData:
+  password: DemoUserPass123!
+---
+apiVersion: v1.edp.epam.com/v1
+kind: KeycloakRealmUser
+metadata:
+  name: demo-user
+  namespace: keycloak
+spec:
+  realmRef:
+    name: demo-realm
+    kind: KeycloakRealm
+  username: jdoe
+  email: jdoe@example.com
+  firstName: John
+  lastName: Doe
+  enabled: true
+  emailVerified: true
+  requiredUserActions: []      # empty = no forced actions like UPDATE_PASSWORD on first login
+  passwordSecret:
+    name: demo-user-password
+    key: password
+  reconciliationStrategy: full
