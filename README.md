@@ -52,8 +52,7 @@ cert-manager Issuer must therefore exist in `neteye-tenant-shared`.
 
 ## Development
 
-The Go module lives in `src/` (Go 1.26,
-[controller-runtime](https://github.com/kubernetes-sigs/controller-runtime)).
+The Go module lives in `src/` ([controller-runtime](https://github.com/kubernetes-sigs/controller-runtime)).
 Run make targets from that directory, e.g. `make -C src build`:
 
 - `build` — build the manager binary
