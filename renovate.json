@@ -1,4 +1,20 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>neteye-platform/repo-commons"]
+  "extends": ["github>neteye-platform/repo-commons"],
+  "packageRules": [
+    {
+      "description": "Do not pin the OperatorHub catalog digest",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["quay.io/operatorhubio/catalog"],
+      "pinDigests": false,
+      "minimumReleaseAge": null
+    },
+    {
+      "description": "Do not pin the Neteye Operator catalog digest",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/neteye-platform/neteye-operator-catalog"],
+      "pinDigests": false,
+      "minimumReleaseAge": null
+    }
+  ]
 }
