@@ -1,0 +1,12 @@
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterCatalog
+metadata:
+  name: {{ .Values.operator.catalogName | quote }}
+  labels:
+    olm.example.io/catalog: {{ .Values.operator.catalogName | quote }}
+spec:
+  source:
+    type: Image
+    image:
+      ref: {{ .Values.operator.catalogImage | quote }}
+      pollIntervalMinutes: {{ .Values.operator.pollIntervalMinutes }}

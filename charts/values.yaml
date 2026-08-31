@@ -1,0 +1,27 @@
+# Default values for neteye-operator.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# registry:
+# secret: "<value>"
+# name: neteye-registry-pull-secret
+
+operator:
+  packageName: neteye-operator
+  catalogName: neteye-catalog
+  catalogImage: 172.19.69.254:5000/neteye-operator-catalog:0.1.0
+  versionRange: ">=0.1.0"
+  channel: stable
+  pollIntervalMinutes: 10
+
+namespace:
+  operators: neteye-system
+  system: neteye-system
+  olm: olmv1-system
+
+keycloak:
+  enabled: true
+  packageName: keycloak-operator
+  channel: fast
+  catalogName: operatorhubio
+  catalogImage: quay.io/operatorhubio/catalog:latest
