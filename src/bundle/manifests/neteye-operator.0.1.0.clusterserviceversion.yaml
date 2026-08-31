@@ -1,0 +1,374 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "neteye.cloud/v1alpha1",
+          "kind": "NetEye",
+          "metadata": {
+            "name": "neteye-sample"
+          },
+          "spec": {
+            "version": "4.51",
+            "enabledModules": [
+              "elastic-stack"
+            ],
+            "gateway": {
+              "name": "neteye",
+              "className": "cilium",
+              "annotations": {
+                "lbipam.cilium.io/ips": "192.0.2.10"
+              },
+              "tlsSecretName": "neteyelocal-wildcard-tls"
+            },
+            "internalCertificateIssuerRef": "neteye-internal-issuer",
+            "identity": {
+              "replicas": 1,
+              "hostname": "keycloak.example.com",
+              "podExtraEnvVars": [
+                "JAVA_OPTS_APPEND=-Djava.net.preferIPv6Addresses=true"
+              ],
+              "dbConnection": {
+                "host": "mariadb.example.com",
+                "port": 3306,
+                "dbName": "keycloak",
+                "usernameSecret": {
+                  "name": "keycloak-db-secret",
+                  "key": "username"
+                },
+                "passwordSecret": {
+                  "name": "keycloak-db-secret",
+                  "key": "password"
+                }
+              }
+            }
+          }
+        }
+      ]
+    capabilities: Basic Install
+    operators.operatorframework.io/builder: operator-sdk-v1.32.0
+    operators.operatorframework.io/project_layout: go.kubebuilder.io/v3
+  name: neteye-operator.0.1.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+      - description: >-
+          NetEye declares the product version and reconciles components in the
+          same namespace as the NetEye custom resource.
+        displayName: NetEye
+        kind: NetEye
+        name: neteyes.neteye.cloud
+        version: v1alpha1
+    required:
+      - displayName: cert-manager Certificate
+        kind: Certificate
+        name: certificates.cert-manager.io
+        version: v1
+      - displayName: cert-manager Issuer
+        kind: Issuer
+        name: issuers.cert-manager.io
+        version: v1
+      - displayName: Gateway API HTTPRoute
+        kind: HTTPRoute
+        name: httproutes.gateway.networking.k8s.io
+        version: v1
+      - displayName: Gateway API Gateway
+        kind: Gateway
+        name: gateways.gateway.networking.k8s.io
+        version: v1
+  description: NetEye Operator for managing cloud-native infrastructure
+  displayName: NetEye Operator
+  icon:
+    - base64data: ""
+      mediatype: ""
+  install:
+    spec:
+      clusterPermissions:
+        - rules:
+            - apiGroups:
+                - ""
+              resources:
+                - configmaps
+                - secrets
+                - services
+                - serviceaccounts
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - ""
+              resources:
+                - pods
+                - pods/log
+              verbs:
+                - get
+                - list
+                - watch
+            - apiGroups:
+                - ""
+              resources:
+                - nodes
+              verbs:
+                - get
+                - list
+                - watch
+            - apiGroups:
+                - ""
+              resources:
+                - namespaces
+              verbs:
+                - create
+                - get
+                - list
+                - watch
+            - apiGroups:
+                - ""
+              resources:
+                - endpoints
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - storage.k8s.io
+              resources:
+                - storageclasses
+              verbs:
+                - get
+                - list
+                - watch
+            - apiGroups:
+                - apps
+              resources:
+                - deployments
+                - statefulsets
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - rbac.authorization.k8s.io
+              resources:
+                - clusterroles
+                - clusterrolebindings
+                - roles
+                - rolebindings
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - apiextensions.k8s.io
+              resources:
+                - customresourcedefinitions
+              verbs:
+                - get
+                - list
+                - watch
+            - apiGroups:
+                - k8s.keycloak.org
+              resources:
+                - keycloaks
+              verbs:
+                - create
+                - get
+                - list
+                - update
+                - watch
+            - apiGroups:
+                - olm.operatorframework.io
+              resources:
+                - clusterextensions
+              verbs:
+                - create
+                - get
+                - list
+                - update
+                - watch
+            - apiGroups:
+                - cert-manager.io
+              resources:
+                - certificates
+              verbs:
+                - create
+                - get
+                - list
+                - update
+                - watch
+            - apiGroups:
+                - cert-manager.io
+              resources:
+                - issuers
+              verbs:
+                - get
+                - list
+                - watch
+            - apiGroups:
+                - gateway.networking.k8s.io
+              resources:
+                - gateways
+                - httproutes
+              verbs:
+                - create
+                - get
+                - list
+                - update
+                - watch
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - neteyes
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - neteyes/status
+              verbs:
+                - get
+                - patch
+                - update
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - neteyes/finalizers
+              verbs:
+                - update
+          serviceAccountName: neteye-operator
+      deployments:
+        - name: neteye-operator
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: neteye-operator
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: neteye-operator
+              spec:
+                containers:
+                  - image: 172.19.69.254:5000/neteye-operator:0.1.0
+                    imagePullPolicy: Always
+                    name: manager
+                    ports:
+                      - containerPort: 9443
+                        name: webhook-server
+                        protocol: TCP
+                    resources:
+                      limits:
+                        cpu: 200m
+                        memory: 256Mi
+                      requests:
+                        cpu: 100m
+                        memory: 128Mi
+                imagePullSecrets:
+                  - name: neteye-registry-pull-secret
+                serviceAccountName: neteye-operator
+      permissions:
+        - rules:
+            - apiGroups:
+                - ""
+              resources:
+                - configmaps
+              verbs:
+                - get
+                - list
+                - watch
+                - create
+                - update
+                - patch
+                - delete
+            - apiGroups:
+                - coordination.k8s.io
+              resources:
+                - leases
+              verbs:
+                - get
+                - list
+                - watch
+                - create
+                - update
+                - patch
+                - delete
+            - apiGroups:
+                - ""
+              resources:
+                - events
+              verbs:
+                - create
+                - patch
+          serviceAccountName: neteye-operator
+    strategy: deployment
+  installModes:
+    - supported: false
+      type: OwnNamespace
+    - supported: false
+      type: SingleNamespace
+    - supported: false
+      type: MultiNamespace
+    - supported: true
+      type: AllNamespaces
+  keywords:
+    - neteye
+    - operator
+  links:
+    - name: NetEye
+      url: https://neteye.guide/
+  maintainers:
+    - email: info.italy@wuerth-it.com
+      name: Wuerth IT | Italy
+  maturity: alpha
+  minKubeVersion: 1.36.0
+  provider:
+    name: Wuerth IT | Italy
+  version: 0.1.0
+  webhookdefinitions:
+    - admissionReviewVersions:
+        - v1
+      containerPort: 9443
+      deploymentName: neteye-operator
+      failurePolicy: Fail
+      generateName: vneteye-v1alpha1.neteye.cloud
+      rules:
+        - apiGroups:
+            - neteye.cloud
+          apiVersions:
+            - v1alpha1
+          operations:
+            - CREATE
+            - UPDATE
+          resources:
+            - neteyes
+          scope: Namespaced
+      sideEffects: None
+      targetPort: 9443
+      type: ValidatingAdmissionWebhook
+      webhookPath: /validate-neteye-cloud-v1alpha1-neteye

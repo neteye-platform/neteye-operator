@@ -1,0 +1,23 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - misspell
+    - revive
+    - unconvert
+  settings:
+    misspell:
+      locale: US
+    revive:
+      rules:
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings

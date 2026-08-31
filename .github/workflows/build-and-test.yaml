@@ -1,0 +1,71 @@
+name: Build and Test
+
+on:
+  pull_request:
+    branches:
+      - "**"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Set up envtest
+        working-directory: src
+        run: |
+          GOBIN="$(pwd)/bin" go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.24
+          ASSETS="$(./bin/setup-envtest use 1.36.2 --bin-dir "$(pwd)/bin" -p path)"
+          echo "KUBEBUILDER_ASSETS=$ASSETS" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        working-directory: src
+        run: go test ./...
+
+  build-operator:
+    name: Build operator image
+    needs: test
+    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@e7adeb7e455b395a44b4a649fc047cc65266cbc2 # main
+    with:
+      working-directory: src
+      dockerfile-path: src/Dockerfile
+      image-name: neteye-operator
+      push: ${{ startsWith(github.ref, 'refs/tags/') }}
+    secrets: inherit
+
+  build-bundle:
+    name: Build bundle image
+    needs: test
+    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@e7adeb7e455b395a44b4a649fc047cc65266cbc2 # main
+    with:
+      working-directory: src
+      dockerfile-path: src/Dockerfile.bundle
+      image-name: neteye-operator-bundle
+      push: ${{ startsWith(github.ref, 'refs/tags/') }}
+    secrets: inherit
+
+  build-catalog:
+    name: Build catalog image
+    needs: test
+    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@e7adeb7e455b395a44b4a649fc047cc65266cbc2 # main
+    with:
+      working-directory: src
+      dockerfile-path: src/Dockerfile.catalog
+      image-name: neteye-operator-catalog
+      push: ${{ startsWith(github.ref, 'refs/tags/') }}
+    secrets: inherit
