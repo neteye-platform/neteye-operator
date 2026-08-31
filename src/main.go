@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap/zapcore"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -28,6 +29,10 @@ var (
 	version           = "dev"
 	logLevelEnvVar    = "LOG_LEVEL"
 	configuredLogName = "zap-default"
+
+	waitForProgressingRequeueEnvVar = "WAIT_FOR_PROGRESSING_REQUEUE_AFTER"
+	failureRequeueEnvVar            = "FAILURE_REQUEUE_AFTER"
+	reconciliationRequeueEnvVar     = "RECONCILIATION_REQUEUE_AFTER"
 )
 
 func init() {
@@ -42,7 +47,7 @@ func main() {
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 
@@ -61,12 +66,27 @@ func main() {
 	}
 	setupLog.Info("logger configured", "level", configuredLogName, "envVar", logLevelEnvVar)
 
+	waitForProgressingRequeue, err := durationFromEnv(waitForProgressingRequeueEnvVar, controllers.DefaultWaitForProgressingRequeueAfter)
+	if err != nil {
+		setupLog.Error(err, "invalid requeue interval configured; using default", "envVar", waitForProgressingRequeueEnvVar)
+	}
+	failureRequeue, err := durationFromEnv(failureRequeueEnvVar, controllers.DefaultFailureRequeueAfter)
+	if err != nil {
+		setupLog.Error(err, "invalid requeue interval configured; using default", "envVar", failureRequeueEnvVar)
+	}
+	reconciliationRequeue, err := durationFromEnv(reconciliationRequeueEnvVar, controllers.DefaultReconciliationRequeueAfter)
+	if err != nil {
+		setupLog.Error(err, "invalid requeue interval configured; using default", "envVar", reconciliationRequeueEnvVar)
+	}
+	setupLog.Info("requeue intervals configured", "waitForProgressing", waitForProgressingRequeue, "failure", failureRequeue, "reconciliation", reconciliationRequeue)
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 controllers.Scheme,
-		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "neteye-operator.neteye.cloud",
+		Scheme:                        controllers.Scheme,
+		Metrics:                       metricsserver.Options{BindAddress: metricsAddr},
+		HealthProbeBindAddress:        probeAddr,
+		LeaderElection:                enableLeaderElection,
+		LeaderElectionID:              "neteye-operator.neteye.cloud",
+		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to create controller manager")
@@ -91,10 +111,13 @@ func main() {
 	}
 
 	if err := (&controllers.NetEyeReconciler{
-		Client:            mgr.GetClient(),
-		Log:               ctrl.Log.WithName("neteye-reconciler"),
-		Scheme:            mgr.GetScheme(),
-		KeycloakComponent: keycloakComponent,
+		Client:                         mgr.GetClient(),
+		Log:                            ctrl.Log.WithName("neteye-reconciler"),
+		Scheme:                         mgr.GetScheme(),
+		KeycloakComponent:              keycloakComponent,
+		WaitForProgressingRequeueAfter: waitForProgressingRequeue,
+		FailureRequeueAfter:            failureRequeue,
+		ReconciliationRequeueAfter:     reconciliationRequeue,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create NetEye controller")
 		os.Exit(1)
@@ -149,4 +172,19 @@ func parseVerbosity(raw string) (int8, bool, error) {
 		return 0, true, fmt.Errorf("unsupported value %q, expected v<number> with a non-negative integer", raw)
 	}
 	return int8(verbosity), true, nil
+}
+
+func durationFromEnv(envVar string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(envVar))
+	if raw == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return fallback, fmt.Errorf("unsupported value %q, expected a Go duration such as 30s or 5m: %w", raw, err)
+	}
+	if d <= 0 {
+		return fallback, fmt.Errorf("unsupported value %q, expected a positive duration", raw)
+	}
+	return d, nil
 }

@@ -25,10 +25,12 @@ import (
 // Scheme is shared by the manager and tests.
 var Scheme = runtime.NewScheme()
 
+// Default requeue intervals. main.go seeds the reconciler fields from these
+// (overridable via env vars); tests rely on them directly.
 const (
-	waitForProgressingRequeueAfter = 30 * time.Second
-	failureRequeueAfter            = 2 * time.Minute
-	reconciliationRequeueAfter     = 10 * time.Minute
+	DefaultWaitForProgressingRequeueAfter = 30 * time.Second
+	DefaultFailureRequeueAfter            = 2 * time.Minute
+	DefaultReconciliationRequeueAfter     = 10 * time.Minute
 )
 
 // NetEyeReconciler reconciles NetEye CRs and drives per-CR component deployment.
@@ -37,6 +39,11 @@ type NetEyeReconciler struct {
 	Log               logr.Logger
 	Scheme            *runtime.Scheme
 	KeycloakComponent *keycloak.Component
+
+	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
+	WaitForProgressingRequeueAfter time.Duration
+	FailureRequeueAfter            time.Duration
+	ReconciliationRequeueAfter     time.Duration
 }
 
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyes,verbs=get;list;watch;create;update;patch;delete
@@ -75,26 +82,26 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}()
 
 	if !neteye.IsLatestVersion(ne.Spec.Version) && neteye.IsPreviousVersion(ne.Spec.Version) {
-		log.Info("NetEye version is not the latest", "currentVersion", ne.Spec.Version, "latestVersion", neteye.CurrentNetEyeVersion, "requeueAfter", failureRequeueAfter)
+		log.Info("NetEye version is not the latest", "currentVersion", ne.Spec.Version, "latestVersion", neteye.CurrentNetEyeVersion, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhasePendingUpgrades, fmt.Sprintf("NetEye version '%s' is not the latest; consider upgrading to '%s'. Reconciliation will be paused until the upgrade is performed.", ne.Spec.Version, neteye.CurrentNetEyeVersion))
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, nil
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	} else if !neteye.IsLatestVersion(ne.Spec.Version) {
-		log.Error(nil, "NetEye version mismatch detected", "currentVersion", ne.Spec.Version, "latestVersion", neteye.CurrentNetEyeVersion, "requeueAfter", failureRequeueAfter)
+		log.Error(nil, "NetEye version mismatch detected", "currentVersion", ne.Spec.Version, "latestVersion", neteye.CurrentNetEyeVersion, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("NetEye version '%s' is not the latest. Latest version is '%s'. Reconciliation will be paused until the mismatch has been resolved.", ne.Spec.Version, neteye.CurrentNetEyeVersion))
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, nil
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
 
 	components, ok := neteye.ComponentsForVersion(ne.Spec.Version)
 	if !ok {
-		log.Error(nil, "unsupported NetEye version", "version", ne.Spec.Version, "supportedVersions", neteye.SupportedVersions(), "requeueAfter", failureRequeueAfter)
+		log.Error(nil, "unsupported NetEye version", "version", ne.Spec.Version, "supportedVersions", neteye.SupportedVersions(), "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("unsupported NetEye version '%s'; supported versions are: %v", ne.Spec.Version, neteye.SupportedVersions()))
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, nil
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
 
 	if r.KeycloakComponent == nil {
-		log.Error(nil, "keycloak component is not initialized", "requeueAfter", failureRequeueAfter)
+		log.Error(nil, "keycloak component is not initialized", "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "keycloak component is not initialized")
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, fmt.Errorf("keycloak component is not initialized")
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("keycloak component is not initialized")
 	}
 	log.V(1).Info("Components loaded", "version", ne.Spec.Version)
 
@@ -109,12 +116,33 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	setPhase(ne, neteye.PhaseReady, "All components are ready")
 	ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateReady, "Identity service is ready", components.KeycloakImage)
 
-	log.Info("NetEye is ready", "namespace", ne.Namespace, "name", ne.Name, "requeueAfter", reconciliationRequeueAfter)
-	return ctrl.Result{RequeueAfter: reconciliationRequeueAfter}, nil
+	log.Info("NetEye is ready", "namespace", ne.Namespace, "name", ne.Name, "requeueAfter", r.reconciliationRequeue())
+	return ctrl.Result{RequeueAfter: r.reconciliationRequeue()}, nil
 }
 
 func shouldReturn(result ctrl.Result, err error) bool {
 	return err != nil || !result.IsZero()
+}
+
+func (r *NetEyeReconciler) waitForProgressingRequeue() time.Duration {
+	if r.WaitForProgressingRequeueAfter > 0 {
+		return r.WaitForProgressingRequeueAfter
+	}
+	return DefaultWaitForProgressingRequeueAfter
+}
+
+func (r *NetEyeReconciler) failureRequeue() time.Duration {
+	if r.FailureRequeueAfter > 0 {
+		return r.FailureRequeueAfter
+	}
+	return DefaultFailureRequeueAfter
+}
+
+func (r *NetEyeReconciler) reconciliationRequeue() time.Duration {
+	if r.ReconciliationRequeueAfter > 0 {
+		return r.ReconciliationRequeueAfter
+	}
+	return DefaultReconciliationRequeueAfter
 }
 
 func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *neteye.NetEye) (ctrl.Result, error) {
@@ -124,39 +152,39 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 	owner := ownerReferenceFor(ne)
 	if err := resources.EnsureIssuerExists(ctx, r.Client, ne.Namespace, issuerRef); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.V(1).Info("required cert-manager Issuer is missing", "namespace", ne.Namespace, "issuer", issuerRef.Name, "requeueAfter", failureRequeueAfter)
+			log.V(1).Info("required cert-manager Issuer is missing", "namespace", ne.Namespace, "issuer", issuerRef.Name, "requeueAfter", r.failureRequeue())
 			setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("cert-manager Issuer '%q' was not found in namespace %q; create it before creating or reconciling this NetEye resource", issuerRef.Name, ne.Namespace))
-			return ctrl.Result{RequeueAfter: failureRequeueAfter}, nil
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
-		log.Error(err, "failed to ensure cert-manager Issuer exists", "namespace", ne.Namespace, "issuer", issuerRef.Name, "requeueAfter", failureRequeueAfter)
+		log.Error(err, "failed to ensure cert-manager Issuer exists", "namespace", ne.Namespace, "issuer", issuerRef.Name, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure cert-manager Issuer '%q' exists in namespace %q: %v", issuerRef.Name, ne.Namespace, err))
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, fmt.Errorf("ensure issuer exists: %w", err)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure issuer exists: %w", err)
 	}
 	if err := resources.EnsureGatewayTLSCertificate(ctx, r.Client, ne.Namespace, gateway.TLSSecretName, issuerRef, owner); err != nil {
-		log.Error(err, "failed to ensure gateway TLS certificate exists", "namespace", ne.Namespace, "tlsSecretName", gateway.TLSSecretName, "requeueAfter", failureRequeueAfter)
+		log.Error(err, "failed to ensure gateway TLS certificate exists", "namespace", ne.Namespace, "tlsSecretName", gateway.TLSSecretName, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure gateway TLS certificate '%q' exists in namespace %q: %v", gateway.TLSSecretName, ne.Namespace, err))
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, fmt.Errorf("ensure gateway tls certificate: %w", err)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure gateway tls certificate: %w", err)
 	}
 	if err := resources.EnsureGateway(ctx, r.Client, ne.Namespace, gateway.Name, gateway.ClassName, gateway.Annotations, gateway.TLSSecretName, owner); err != nil {
-		log.Error(err, "failed to ensure gateway exists", "namespace", ne.Namespace, "gatewayName", gateway.Name, "requeueAfter", failureRequeueAfter)
+		log.Error(err, "failed to ensure gateway exists", "namespace", ne.Namespace, "gatewayName", gateway.Name, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure gateway '%q' exists in namespace %q: %v", gateway.Name, ne.Namespace, err))
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, fmt.Errorf("ensure gateway: %w", err)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure gateway: %w", err)
 	}
 	if err := resources.EnsureHTTPToHTTPSRedirectRoute(ctx, r.Client, ne.Namespace, gateway.Name, owner); err != nil {
-		log.Error(err, "failed to ensure HTTP to HTTPS redirect route exists", "namespace", ne.Namespace, "gatewayName", gateway.Name, "requeueAfter", failureRequeueAfter)
+		log.Error(err, "failed to ensure HTTP to HTTPS redirect route exists", "namespace", ne.Namespace, "gatewayName", gateway.Name, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure HTTP to HTTPS redirect route exists for gateway '%q' in namespace %q: %v", gateway.Name, ne.Namespace, err))
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, fmt.Errorf("ensure HTTP to HTTPS redirect route: %w", err)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure HTTP to HTTPS redirect route: %w", err)
 	}
 	gatewayCertificateReady, gatewayCertificateMessage, err := resources.IsCertificateReady(ctx, r.Client, ne.Namespace, gateway.TLSSecretName)
 	if err != nil {
-		log.Error(err, "failed to check gateway TLS certificate readiness", "namespace", ne.Namespace, "tlsSecretName", gateway.TLSSecretName, "requeueAfter", failureRequeueAfter)
+		log.Error(err, "failed to check gateway TLS certificate readiness", "namespace", ne.Namespace, "tlsSecretName", gateway.TLSSecretName, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to check gateway TLS certificate readiness for secret '%q' in namespace %q: %v", gateway.TLSSecretName, ne.Namespace, err))
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, fmt.Errorf("check gateway tls certificate readiness: %w", err)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("check gateway tls certificate readiness: %w", err)
 	}
 	if !gatewayCertificateReady {
-		log.V(1).Info("gateway tls certificate is not ready", "reason", gatewayCertificateMessage, "requeueAfter", waitForProgressingRequeueAfter)
+		log.V(1).Info("gateway tls certificate is not ready", "reason", gatewayCertificateMessage, "requeueAfter", r.waitForProgressingRequeue())
 		setPhase(ne, neteye.PhaseNotReady, gatewayCertificateMessage)
-		return ctrl.Result{RequeueAfter: waitForProgressingRequeueAfter}, nil
+		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -167,29 +195,29 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 	log.Info("Started Keycloak reconciliation", "namespace", ne.Namespace, "name", owner.Name)
 	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, ne.Namespace, image, ne.Spec.Identity, ne.Spec.Gateway.Name, issuerRefFor(ne), owner)
 	if err != nil {
-		log.Error(err, "failed to ensure keycloak resources", "namespace", ne.Namespace, "requeueAfter", failureRequeueAfter)
+		log.Error(err, "failed to ensure keycloak resources", "namespace", ne.Namespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to ensure keycloak resources in namespace %q: %v", ne.Namespace, err), image)
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, fmt.Errorf("ensure keycloak resources: %w", err)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure keycloak resources: %w", err)
 	}
 	if !keycloakResourcesReady {
-		log.V(1).Info("identity resources are not ready", "reason", keycloakResourcesMessage, "requeueAfter", waitForProgressingRequeueAfter)
+		log.V(1).Info("identity resources are not ready", "reason", keycloakResourcesMessage, "requeueAfter", r.waitForProgressingRequeue())
 		setPhase(ne, neteye.PhaseNotReady, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, keycloakResourcesMessage, image)
-		return ctrl.Result{RequeueAfter: waitForProgressingRequeueAfter}, nil
+		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
 	}
 	keycloakReady, keycloakMessage, err := r.KeycloakComponent.IsReady(ctx, ne.Namespace)
 	if err != nil {
-		log.Error(err, "failed to check keycloak readiness", "namespace", ne.Namespace, "requeueAfter", failureRequeueAfter)
+		log.Error(err, "failed to check keycloak readiness", "namespace", ne.Namespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to check keycloak readiness: %v", err), image)
-		return ctrl.Result{RequeueAfter: failureRequeueAfter}, fmt.Errorf("check keycloak readiness: %w", err)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("check keycloak readiness: %w", err)
 	}
 	if !keycloakReady {
-		log.V(1).Info("identity service is not ready", "reason", keycloakMessage, "requeueAfter", waitForProgressingRequeueAfter)
+		log.V(1).Info("identity service is not ready", "reason", keycloakMessage, "requeueAfter", r.waitForProgressingRequeue())
 		setPhase(ne, neteye.PhaseNotReady, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, keycloakMessage, image)
-		return ctrl.Result{RequeueAfter: waitForProgressingRequeueAfter}, nil
+		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
 	}
 
 	log.Info("Keycloak reconciled and ready", "namespace", ne.Namespace, "name", owner.Name)
