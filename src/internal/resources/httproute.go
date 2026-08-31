@@ -14,13 +14,13 @@ import (
 
 // EnsureHTTPRoute ensures a Gateway API HTTPRoute exists for a hostname and
 // routes traffic to a Service in the same namespace as the route.
-func EnsureHTTPRoute(ctx context.Context, client client.Client, namespace string, name, gatewayRef string, hostnames []string, backendServiceName string, backendServicePort int64, owner metav1.OwnerReference) error {
+func EnsureHTTPRoute(ctx context.Context, client client.Client, namespace string, name, gatewayNamespace, gatewayRef string, hostnames []string, backendServiceName string, backendServicePort int64, owner *metav1.OwnerReference) error {
 	desiredSpec := map[string]any{
 		"parentRefs": []any{
 			map[string]any{
 				"group":       "gateway.networking.k8s.io",
 				"kind":        "Gateway",
-				"namespace":   namespace,
+				"namespace":   gatewayNamespace,
 				"name":        gatewayRef,
 				"sectionName": gatewayHTTPSListenerName,
 			},
@@ -42,13 +42,13 @@ func EnsureHTTPRoute(ctx context.Context, client client.Client, namespace string
 	return ensureHTTPRouteSpec(ctx, client, namespace, name, desiredSpec, owner)
 }
 
-func ensureHTTPRouteSpec(ctx context.Context, client client.Client, namespace string, name string, desiredSpec map[string]any, owner metav1.OwnerReference) error {
+func ensureHTTPRouteSpec(ctx context.Context, client client.Client, namespace string, name string, desiredSpec map[string]any, owner *metav1.OwnerReference) error {
 	outcome, err := Apply(ctx, client, ObjectDefinition{
 		GVK:       httpRouteGVK(),
 		Name:      name,
 		Namespace: namespace,
 		Spec:      desiredSpec,
-		Owner:     &owner,
+		Owner:     owner,
 	})
 	if err != nil {
 		return err

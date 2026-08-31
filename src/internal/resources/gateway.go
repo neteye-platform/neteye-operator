@@ -21,8 +21,8 @@ const (
 
 // EnsureGatewayTLSCertificate ensures the wildcard TLS certificate used by the
 // Gateway HTTPS listener exists and writes the referenced Gateway TLS Secret.
-func EnsureGatewayTLSCertificate(ctx context.Context, client client.Client, namespace string, secretName string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
-	return EnsureCertificate(ctx, client, namespace, secretName, secretName, GatewayWildcardDNSName, []string{GatewayWildcardDNSName}, issuerRef, owner)
+func EnsureGatewayTLSCertificate(ctx context.Context, client client.Client, namespace string, secretName, identityHostname string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
+	return EnsureCertificate(ctx, client, namespace, secretName, secretName, GatewayWildcardDNSName, []string{GatewayWildcardDNSName, identityHostname}, issuerRef, &owner)
 }
 
 // EnsureGateway ensures a Gateway API Gateway exists in the NetEye namespace.
@@ -37,7 +37,10 @@ func EnsureGateway(ctx context.Context, client client.Client, namespace string, 
 				"port":     int64(80),
 				"allowedRoutes": map[string]any{
 					"namespaces": map[string]any{
-						"from": "Same",
+						"from": "Selector",
+						"selector": map[string]any{
+							"matchLabels": map[string]any{"kubernetes.io/metadata.name": "neteye-tenant-shared"},
+						},
 					},
 					"kinds": routeKinds(),
 				},
@@ -48,7 +51,10 @@ func EnsureGateway(ctx context.Context, client client.Client, namespace string, 
 				"port":     int64(443),
 				"allowedRoutes": map[string]any{
 					"namespaces": map[string]any{
-						"from": "Same",
+						"from": "Selector",
+						"selector": map[string]any{
+							"matchLabels": map[string]any{"kubernetes.io/metadata.name": "neteye-tenant-shared"},
+						},
 					},
 					"kinds": routeKinds(),
 				},
@@ -118,7 +124,7 @@ func EnsureHTTPToHTTPSRedirectRoute(ctx context.Context, client client.Client, n
 		},
 	}
 
-	return ensureHTTPRouteSpec(ctx, client, namespace, HTTPToHTTPSRedirectRouteName, desiredSpec, owner)
+	return ensureHTTPRouteSpec(ctx, client, namespace, HTTPToHTTPSRedirectRouteName, desiredSpec, &owner)
 }
 
 func gatewayGVK() schema.GroupVersionKind {

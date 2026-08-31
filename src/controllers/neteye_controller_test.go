@@ -5,15 +5,19 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 )
@@ -108,6 +112,37 @@ func TestReconcileNotFound(t *testing.T) {
 	}
 	if !res.IsZero() {
 		t.Errorf("expected an empty result, got %+v", res)
+	}
+}
+
+func TestUpdateStatusRetriesConflict(t *testing.T) {
+	s := testScheme(t)
+	ne := newNetEye(neteye.CurrentNetEyeVersion)
+	attempts := 0
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(ne).WithObjects(ne).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, underlying client.Client, subResourceName string, object client.Object, options ...client.SubResourceUpdateOption) error {
+			attempts++
+			if attempts == 1 {
+				return apierrors.NewConflict(neteye.GroupVersion.WithResource("neteyes").GroupResource(), object.GetName(), errors.New("simulated conflict"))
+			}
+			return underlying.SubResource(subResourceName).Update(ctx, object, options...)
+		},
+	}).Build()
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s}
+	status := neteye.NetEyeStatus{Phase: neteye.PhaseReady}
+
+	if err := r.updateStatus(context.Background(), client.ObjectKeyFromObject(ne), status); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("status update attempts = %d, want 2", attempts)
+	}
+	got := &neteye.NetEye{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(ne), got); err != nil {
+		t.Fatalf("get neteye: %v", err)
+	}
+	if got.Status.Phase != neteye.PhaseReady {
+		t.Errorf("phase = %q, want %q", got.Status.Phase, neteye.PhaseReady)
 	}
 }
 

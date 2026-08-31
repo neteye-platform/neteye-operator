@@ -24,14 +24,20 @@ import (
 )
 
 const (
-	OperatorNamespace  = "neteye-system"
-	HTTPRouteName      = "keycloak"
-	TLSCertificateName = "keycloak-tls"
-	TLSSecretName      = "keycloak-tls-secret"
-	InstanceName       = "neteye-kc"
-	ServiceName        = "neteye-kc-service"
-	HTTPPort           = int64(8080)
-	HTTPRelativePath   = "/auth"
+	OperatorNamespace     = "keycloak-system"
+	WorkloadNamespace     = "neteye-tenant-shared"
+	HTTPRouteName         = "keycloak"
+	TLSCertificateName    = "keycloak-tls"
+	TLSSecretName         = "keycloak-tls-secret"
+	InstanceName          = "neteye-kc"
+	ServiceName           = "neteye-kc-service"
+	EgressPolicyName      = "neteye-kc-egress"
+	IngressPolicyName     = "neteye-kc-ingress"
+	HostPolicyName        = "neteye-kc-host-management"
+	DefaultDenyPolicyName = "neteye-default-deny"
+	HTTPPort              = int64(8080)
+	HTTPRelativePath      = "/auth"
+	KubeSystemNamespace   = "kube-system"
 
 	extensionName = "keycloak-operator"
 	channel       = "fast"
@@ -135,10 +141,22 @@ func clusterExtensionSpec() map[string]any {
 
 // EnsureResources reconciles the identity component resources owned by the Keycloak
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
-func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
+func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef) (bool, string, error) {
 	ctx = logf.IntoContext(ctx, c.log)
-	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, owner); err != nil {
+	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, nil); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
+	}
+	if err := c.EnsureDefaultDenyNetworkPolicy(ctx, namespace); err != nil {
+		return false, "", fmt.Errorf("ensure default deny network policy: %w", err)
+	}
+	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), nil); err != nil {
+		return false, "", fmt.Errorf("ensure keycloak workload network policy: %w", err)
+	}
+	if err := c.EnsureIngressNetworkPolicy(ctx, namespace); err != nil {
+		return false, "", fmt.Errorf("ensure keycloak ingress network policy: %w", err)
+	}
+	if err := c.EnsureHostManagementPolicy(ctx, namespace); err != nil {
+		return false, "", fmt.Errorf("ensure keycloak host management policy: %w", err)
 	}
 	certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
 	if err != nil {
@@ -147,13 +165,31 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if !certificateReady {
 		return false, certificateMessage, nil
 	}
-	if err := c.EnsureInstance(ctx, namespace, image, identity, owner); err != nil {
+	if err := c.EnsureInstance(ctx, namespace, image, identity, nil); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
-	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, owner); err != nil {
+	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, nil); err != nil {
 		return false, "", fmt.Errorf("ensure http route: %w", err)
 	}
 	return true, "Keycloak is Ready", nil
+}
+
+// EnsureDefaultDenyNetworkPolicy isolates every pod in the shared namespace.
+// Component-specific policies add back only the traffic required by managed workloads.
+func (c *Component) EnsureDefaultDenyNetworkPolicy(ctx context.Context, namespace string) error {
+	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
+		GVK:  schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"},
+		Name: DefaultDenyPolicyName, Namespace: namespace,
+		Spec: defaultDenyNetworkPolicySpec(),
+	})
+	return err
+}
+
+func defaultDenyNetworkPolicySpec() map[string]any {
+	return map[string]any{
+		"podSelector": map[string]any{},
+		"policyTypes": []any{"Ingress", "Egress"},
+	}
 }
 
 // IsReady reports whether the Keycloak Operator marked the Keycloak instance
@@ -179,13 +215,13 @@ func (c *Component) IsReady(ctx context.Context, namespace string) (bool, string
 	return resources.ReadyConditionMessage(kc, "Keycloak")
 }
 
-func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, owner metav1.OwnerReference) error {
+func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, owner *metav1.OwnerReference) error {
 	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:       keycloakGVK(),
 		Name:      InstanceName,
 		Namespace: namespace,
 		Spec:      keycloakInstanceSpec(image, identity),
-		Owner:     &owner,
+		Owner:     owner,
 	})
 	if err != nil {
 		return err
@@ -221,6 +257,10 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 		"http": map[string]any{
 			"httpEnabled": true,
 		},
+		"ingress": map[string]any{
+			"enabled": false,
+		},
+		"networkPolicy": map[string]any{"enabled": false},
 		"hostname": map[string]any{
 			"hostname":           resourceURI(identity.Hostname),
 			"strict":             true,
@@ -240,6 +280,96 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 		spec["env"] = env
 	}
 	return spec
+}
+
+func (c *Component) EnsureIngressNetworkPolicy(ctx context.Context, namespace string) error {
+	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
+		GVK:  schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"},
+		Name: IngressPolicyName, Namespace: namespace,
+		Spec: keycloakIngressNetworkPolicySpec(),
+	})
+	return err
+}
+
+func keycloakIngressNetworkPolicySpec() map[string]any {
+	return map[string]any{
+		"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()},
+		"policyTypes": []any{"Ingress"},
+		"ingress": []any{
+			map[string]any{
+				"from":  []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
+				"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")},
+			},
+		},
+	}
+}
+
+func (c *Component) EnsureHostManagementPolicy(ctx context.Context, namespace string) error {
+	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
+		GVK:  schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"},
+		Name: HostPolicyName, Namespace: namespace,
+		Spec: keycloakHostManagementPolicySpec(),
+	})
+	return err
+}
+
+func keycloakHostManagementPolicySpec() map[string]any {
+	return map[string]any{
+		"endpointSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()},
+		"ingress": []any{
+			map[string]any{
+				"fromEntities": []any{"ingress"},
+				"toPorts":      []any{map[string]any{"ports": []any{map[string]any{"port": "8080", "protocol": "TCP"}}}},
+			},
+			map[string]any{
+				"fromEntities": []any{"host", "remote-node"},
+				"toPorts":      []any{map[string]any{"ports": []any{map[string]any{"port": "9000", "protocol": "TCP"}}}},
+			},
+		},
+	}
+}
+
+// EnsureWorkloadNetworkPolicy creates the Keycloak egress policy.
+func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, databasePort int32, owner *metav1.OwnerReference) error {
+	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
+		GVK:  schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"},
+		Name: EgressPolicyName, Namespace: namespace, Owner: owner,
+		Spec: keycloakEgressNetworkPolicySpec(databasePort),
+	})
+	return err
+}
+
+func keycloakEgressNetworkPolicySpec(databasePort int32) map[string]any {
+	return map[string]any{
+		"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()},
+		"policyTypes": []any{"Egress"},
+		"egress": []any{
+			// Standard NetworkPolicy cannot select an external database by DNS name.
+			// Restrict the interim rule to the configured database TCP port only.
+			map[string]any{"ports": []any{networkPort(databasePort, "TCP")}},
+			map[string]any{"to": []any{namespaceAndPodSelector(KubeSystemNamespace, map[string]any{"k8s-app": "kube-dns"})}, "ports": []any{networkPort(53, "TCP"), networkPort(53, "UDP")}},
+			map[string]any{"to": []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}}, "ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}},
+		},
+	}
+}
+
+func networkPort(port int32, protocol string) map[string]any {
+	return map[string]any{"protocol": protocol, "port": int64(port)}
+}
+
+func keycloakWorkloadLabels() map[string]any {
+	return map[string]any{
+		"app":                          "keycloak",
+		"app.kubernetes.io/instance":   InstanceName,
+		"app.kubernetes.io/managed-by": "keycloak-operator",
+	}
+}
+
+func namespaceAndPodSelector(namespace string, podLabels map[string]any) map[string]any {
+	return map[string]any{
+		"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": namespace}},
+		"podSelector":       map[string]any{"matchLabels": podLabels},
+	}
 }
 
 func identityReplicas(identity neteye.NetEyeIdentitySpec) int32 {

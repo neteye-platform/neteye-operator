@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -56,7 +57,7 @@ func Apply(ctx context.Context, c client.Client, obj ObjectDefinition) (ApplyOut
 
 	switch err := c.Get(ctx, key, live); {
 	case err == nil:
-		return reconcileExisting(ctx, c, live, obj)
+		return reconcileExisting(ctx, c, key, obj)
 	case apierrors.IsNotFound(err):
 		return createObject(ctx, c, obj)
 	default:
@@ -64,31 +65,41 @@ func Apply(ctx context.Context, c client.Client, obj ObjectDefinition) (ApplyOut
 	}
 }
 
-func reconcileExisting(ctx context.Context, c client.Client, live *unstructured.Unstructured, obj ObjectDefinition) (ApplyOutcome, error) {
-	currentSpec, _, _ := unstructured.NestedMap(live.Object, "spec")
-
-	ownerChanged := false
-	if obj.Owner != nil {
-		changed, err := SetOwnerReference(live, *obj.Owner)
-		if err != nil {
-			return Unchanged, err
+func reconcileExisting(ctx context.Context, c client.Client, key types.NamespacedName, obj ObjectDefinition) (ApplyOutcome, error) {
+	outcome := Unchanged
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		live := &unstructured.Unstructured{}
+		live.SetGroupVersionKind(obj.GVK)
+		if err := c.Get(ctx, key, live); err != nil {
+			return err
 		}
-		ownerChanged = changed
-	}
 
-	specChanged := !reflect.DeepEqual(currentSpec, obj.Spec)
-	if !specChanged && !ownerChanged {
-		return Unchanged, nil
-	}
-	if specChanged {
-		if err := unstructured.SetNestedMap(live.Object, obj.Spec, "spec"); err != nil {
-			return Unchanged, err
+		currentSpec, _, _ := unstructured.NestedMap(live.Object, "spec")
+		ownerChanged := false
+		if obj.Owner != nil {
+			changed, err := SetOwnerReference(live, *obj.Owner)
+			if err != nil {
+				return err
+			}
+			ownerChanged = changed
 		}
-	}
-	if err := c.Update(ctx, live); err != nil {
-		return Unchanged, err
-	}
-	return Updated, nil
+
+		specChanged := !reflect.DeepEqual(currentSpec, obj.Spec)
+		if !specChanged && !ownerChanged {
+			return nil
+		}
+		if specChanged {
+			if err := unstructured.SetNestedMap(live.Object, obj.Spec, "spec"); err != nil {
+				return err
+			}
+		}
+		if err := c.Update(ctx, live); err != nil {
+			return err
+		}
+		outcome = Updated
+		return nil
+	})
+	return outcome, err
 }
 
 func createObject(ctx context.Context, c client.Client, obj ObjectDefinition) (ApplyOutcome, error) {
@@ -107,8 +118,12 @@ func createObject(ctx context.Context, c client.Client, obj ObjectDefinition) (A
 			return Unchanged, err
 		}
 	}
-	if err := c.Create(ctx, desired); err != nil && !apierrors.IsAlreadyExists(err) {
-		return Unchanged, err
+	if err := c.Create(ctx, desired); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return Unchanged, err
+		}
+		key := types.NamespacedName{Name: obj.Name, Namespace: obj.Namespace}
+		return reconcileExisting(ctx, c, key, obj)
 	}
 	return Created, nil
 }
