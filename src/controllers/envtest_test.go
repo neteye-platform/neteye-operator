@@ -409,6 +409,8 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 		t.Errorf("legacy native default deny still exists or lookup failed: %v", err)
 	}
 	defaultDeny := requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
+	assertNetEyeOwner(t, defaultDeny)
+	assertNetEyeOwner(t, requireExists(ctx, t, c, schema.GroupVersionKind{Group: "coordination.k8s.io", Version: "v1", Kind: "Lease"}, keycloak.WorkloadNamespace, clusterAuthorityLeaseName))
 	if endpointSelector, _, _ := unstructured.NestedMap(defaultDeny.Object, "spec", "endpointSelector"); len(endpointSelector) != 0 {
 		t.Errorf("default deny endpoint selector = %v, want empty", endpointSelector)
 	}
@@ -425,9 +427,7 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 		t.Errorf("default deny egress = %#v, want non-matching none entity", egress)
 	}
 	keycloakCertificate := requireExists(ctx, t, c, certificateGVK, keycloak.WorkloadNamespace, keycloak.TLSCertificateName)
-	if owner := keycloakCertificate.GetOwnerReferences(); len(owner) != 0 {
-		t.Errorf("shared Keycloak certificate owner references = %v, want none", owner)
-	}
+	assertNetEyeOwner(t, keycloakCertificate)
 	if err := unstructured.SetNestedSlice(keycloakCertificate.Object, []any{map[string]any{"type": "Ready", "status": "True"}}, "status", "conditions"); err != nil {
 		t.Fatal(err)
 	}
@@ -438,6 +438,11 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 		t.Fatalf("third reconcile: %v", err)
 	}
 	route := requireExists(ctx, t, c, httpRouteGVK, keycloak.WorkloadNamespace, keycloak.HTTPRouteName)
+	assertNetEyeOwner(t, route)
+	assertNetEyeOwner(t, requireExists(ctx, t, c, schema.GroupVersionKind{Group: "k8s.keycloak.org", Version: "v2beta1", Kind: "Keycloak"}, keycloak.WorkloadNamespace, keycloak.InstanceName))
+	assertNetEyeOwner(t, requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.EgressPolicyName))
+	assertNetEyeOwner(t, requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.IngressPolicyName))
+	assertNetEyeOwner(t, requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.HostPolicyName))
 	parentRefs, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs")
 	parentRef := parentRefs[0].(map[string]any)
 	if parentRef["namespace"] != ns {
@@ -446,5 +451,13 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	hostnames, _, _ := unstructured.NestedSlice(route.Object, "spec", "hostnames")
 	if len(hostnames) != 1 || hostnames[0] != "keycloak.rke2.neteyelocal" {
 		t.Errorf("route hostnames = %v, want [keycloak.rke2.neteyelocal]", hostnames)
+	}
+}
+
+func assertNetEyeOwner(t *testing.T, object *unstructured.Unstructured) {
+	t.Helper()
+	owners := object.GetOwnerReferences()
+	if len(owners) != 1 || owners[0].Name != "platform" || owners[0].Kind != "NetEye" || owners[0].Controller == nil || !*owners[0].Controller {
+		t.Errorf("%s %s/%s owner references = %v, want NetEye/platform controller owner", object.GetKind(), object.GetNamespace(), object.GetName(), owners)
 	}
 }
