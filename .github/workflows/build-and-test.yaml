@@ -6,15 +6,18 @@ on:
       - "**"
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
 
 permissions:
   contents: read
   packages: write
 
+env:
+  ENVTEST_K8S_VERSION: "1.36.2"
+
 jobs:
-  test:
-    name: Go tests
+  unit:
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -26,20 +29,43 @@ jobs:
           go-version-file: src/go.mod
           cache-dependency-path: src/go.sum
 
+      - name: Run unit tests
+        working-directory: src
+        run: go test ./...
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Cache envtest binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src/bin/k8s
+          key: envtest-${{ runner.os }}-k8s-${{ env.ENVTEST_K8S_VERSION }}
+
       - name: Set up envtest
         working-directory: src
         run: |
           GOBIN="$(pwd)/bin" go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.24
-          ASSETS="$(./bin/setup-envtest use 1.36.2 --bin-dir "$(pwd)/bin" -p path)"
+          ASSETS="$(./bin/setup-envtest use "${ENVTEST_K8S_VERSION}" --bin-dir "$(pwd)/bin" -p path)"
           echo "KUBEBUILDER_ASSETS=$ASSETS" >> "$GITHUB_ENV"
 
-      - name: Run tests
+      - name: Run integration tests
         working-directory: src
-        run: go test ./...
+        run: go test ./controllers/...
 
   build-operator:
     name: Build operator image
-    needs: test
+    needs: [unit, integration]
     uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@e7adeb7e455b395a44b4a649fc047cc65266cbc2 # main
     with:
       working-directory: src
@@ -50,7 +76,7 @@ jobs:
 
   build-bundle:
     name: Build bundle image
-    needs: test
+    needs: [unit, integration]
     uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@e7adeb7e455b395a44b4a649fc047cc65266cbc2 # main
     with:
       working-directory: src
@@ -61,7 +87,7 @@ jobs:
 
   build-catalog:
     name: Build catalog image
-    needs: test
+    needs: [unit, integration]
     uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@e7adeb7e455b395a44b4a649fc047cc65266cbc2 # main
     with:
       working-directory: src

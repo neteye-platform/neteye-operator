@@ -140,8 +140,8 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if res.RequeueAfter != waitForProgressingRequeueAfter {
-		t.Errorf("requeueAfter = %v, want %v", res.RequeueAfter, waitForProgressingRequeueAfter)
+	if res.RequeueAfter != DefaultWaitForProgressingRequeueAfter {
+		t.Errorf("requeueAfter = %v, want %v", res.RequeueAfter, DefaultWaitForProgressingRequeueAfter)
 	}
 
 	cert := requireExists(ctx, t, c, certificateGVK, ns, "gateway-tls")

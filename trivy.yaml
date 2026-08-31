@@ -1,0 +1,6 @@
+---
+ignorefile: .trivyignore.yaml
+
+rego:
+  data:
+    - trivy-data.yaml

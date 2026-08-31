@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,8 +61,8 @@ func TestReconcileVersionGating(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if res.RequeueAfter != failureRequeueAfter {
-				t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, failureRequeueAfter)
+			if res.RequeueAfter != DefaultFailureRequeueAfter {
+				t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, DefaultFailureRequeueAfter)
 			}
 
 			got := &neteye.NetEye{}
@@ -114,7 +115,7 @@ func TestShouldReturn(t *testing.T) {
 	if shouldReturn(ctrl.Result{}, nil) {
 		t.Error("empty result with no error should not stop reconciliation")
 	}
-	if !shouldReturn(ctrl.Result{RequeueAfter: reconciliationRequeueAfter}, nil) {
+	if !shouldReturn(ctrl.Result{RequeueAfter: DefaultReconciliationRequeueAfter}, nil) {
 		t.Error("a requeue result should stop reconciliation")
 	}
 	if !shouldReturn(ctrl.Result{}, context.Canceled) {
@@ -129,5 +130,33 @@ func TestOwnerReferenceFor(t *testing.T) {
 	}
 	if owner.Controller == nil || !*owner.Controller {
 		t.Error("owner should be a controller reference")
+	}
+}
+
+func TestRequeueIntervals(t *testing.T) {
+	overridden := &NetEyeReconciler{
+		WaitForProgressingRequeueAfter: 1 * time.Second,
+		FailureRequeueAfter:            2 * time.Second,
+		ReconciliationRequeueAfter:     3 * time.Second,
+	}
+	if got := overridden.waitForProgressingRequeue(); got != 1*time.Second {
+		t.Errorf("waitForProgressingRequeue() = %v, want %v", got, 1*time.Second)
+	}
+	if got := overridden.failureRequeue(); got != 2*time.Second {
+		t.Errorf("failureRequeue() = %v, want %v", got, 2*time.Second)
+	}
+	if got := overridden.reconciliationRequeue(); got != 3*time.Second {
+		t.Errorf("reconciliationRequeue() = %v, want %v", got, 3*time.Second)
+	}
+
+	def := &NetEyeReconciler{}
+	if got := def.waitForProgressingRequeue(); got != DefaultWaitForProgressingRequeueAfter {
+		t.Errorf("waitForProgressingRequeue() default = %v, want %v", got, DefaultWaitForProgressingRequeueAfter)
+	}
+	if got := def.failureRequeue(); got != DefaultFailureRequeueAfter {
+		t.Errorf("failureRequeue() default = %v, want %v", got, DefaultFailureRequeueAfter)
+	}
+	if got := def.reconciliationRequeue(); got != DefaultReconciliationRequeueAfter {
+		t.Errorf("reconciliationRequeue() default = %v, want %v", got, DefaultReconciliationRequeueAfter)
 	}
 }
