@@ -41,6 +41,7 @@ repos:
     rev: 57b21406f092110c18776e39b0bda50d37c945c8 # frozen: v2.4.3
     hooks:
       - id: codespell
+        args: ["--ignore-words", ".codespellignore"]
 
   - repo: https://github.com/rhysd/actionlint
     rev: 914e7df21a07ef503a81201c76d2b11c789d3fca # frozen: v1.7.12
@@ -53,7 +54,7 @@ repos:
       - id: shellcheck
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 65dbdb59d2f2d9c3bdc343c566821ad3319ddaa3 # frozen: v0.16.3
+    rev: 1f1e8bf348ff38fc88619a38d3ca4d9c56abea49 # frozen: v0.16.5
     hooks:
       - id: ruff-check
         args:
@@ -61,7 +62,7 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: b84c4a0a90bd58c7d82ae8f0d4d5e77b1ddd3ce6 # frozen: 0.12.5
+    rev: 0f34924c4110aca2294a4e4204aac7b3e31803fb # frozen: 0.12.7
     hooks:
       - id: uv-lock
 
@@ -81,7 +82,7 @@ repos:
       - id: markdownlint-cli2
 
   - repo: https://github.com/renovatebot/pre-commit-hooks
-    rev: 42ce3a76122fe740d44470f11009250124fa3e05 # frozen: 44.33.2
+    rev: 66aa87b54ea1eb8d84f613942b4233db5f6ac749 # frozen: 44.52.1
     hooks:
       - id: renovate-config-validator
         args: [--strict]
@@ -92,8 +93,8 @@ repos:
         name: golangci-lint
         entry: bash -c 'cd src && golangci-lint run'
         language: golang
-        language_version: "1.26.6"
+        language_version: "1.27.0"
         additional_dependencies:
-          - github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.3
+          - github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
         types: [go]
         pass_filenames: false
