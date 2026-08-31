@@ -57,15 +57,69 @@ spec:
           spec:
             description: NetEyeSpec defines the desired state of NetEyeConfig.
             properties:
-              enabledModules:
-                description: |-
-                  EnabledModules declares which NetEye feature modules are available for tenants.
-                  The field is part of the desired API contract; module-specific reconcilers
-                  will consume it as they are implemented.
-                items:
-                  minLength: 1
-                  type: string
-                type: array
+              elasticStack:
+                description: ElasticStack configures the optional shared OpenTelemetry
+                  Collector.
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled enables the Elastic Stack feature module.
+                    type: boolean
+                  otelCollector:
+                    description: |-
+                      OTelCollector configures the shared OpenTelemetry Collector. It is required
+                      when Enabled is true.
+                    properties:
+                      apiKeySecret:
+                        description: |-
+                          APIKeySecret optionally overrides the Secret key used by the Elastic Stack
+                          feature module. When omitted, it uses otel-collector-api-key/api_key.
+                        properties:
+                          key:
+                            description: Key is the key inside the Secret containing
+                              the database credential value.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the name of the Secret containing
+                              the database credential.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      basicAuthSecretName:
+                        description: |-
+                          BasicAuthSecretName optionally overrides the Secret containing the htpasswd
+                          key. When omitted, the feature module uses otel-collector-basicauth.
+                        type: string
+                      elasticsearchEndpoints:
+                        description: ElasticsearchEndpoints is the explicitly configured
+                          list of HTTPS Elasticsearch endpoints.
+                        items:
+                          type: string
+                        type: array
+                      oidcIssuerURL:
+                        description: OIDCIssuerURL overrides the issuer derived from
+                          identity.hostname.
+                        type: string
+                      replicas:
+                        default: 1
+                        description: Replicas is the number of stateless Elastic Stack
+                          feature module replicas to deploy.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      rootCAConfigMapName:
+                        description: |-
+                          RootCAConfigMapName optionally overrides the ConfigMap containing NetEye root
+                          CAs. When omitted, the feature module uses neteye-root-ca.
+                        type: string
+                    type: object
+                required:
+                - enabled
+                type: object
               gateway:
                 description: |-
                   Gateway configures the Gateway API Gateway and default routes managed by
@@ -89,7 +143,7 @@ spec:
                     type: string
                   name:
                     description: |-
-                      Name is the Gateway name in the NetEye CR namespace. If it already exists,
+                      Name is the Gateway name in the shared NetEye namespace. If it already exists,
                       the operator adopts and reconciles it; otherwise the operator creates it.
                     example: neteye
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
@@ -208,7 +262,7 @@ spec:
                 description: |-
                   InternalCertificateIssuerRef is the cert-manager Issuer name used for TLS
                   certificates consumed by common NetEye components. The Issuer must already
-                  exist in the NetEye CR namespace and is managed by the user.
+                  exist in the shared NetEye namespace and is managed by the user.
                 example: neteye-internal-issuer
                 minLength: 1
                 type: string
@@ -246,6 +300,36 @@ spec:
                 description: ServicesStatus reports observed state for each managed
                   NetEye service.
                 properties:
+                  elasticStack:
+                    description: NetEyeElasticStackStatus reports observed state for
+                      Elastic Stack components.
+                    properties:
+                      message:
+                        description: Message is a human-readable status message for
+                          the Elastic Stack feature module.
+                        type: string
+                      otelCollector:
+                        description: OTelCollector reports the observed state of the
+                          shared OpenTelemetry Collector.
+                        properties:
+                          message:
+                            description: Message is a human-readable status message
+                              for this service.
+                            type: string
+                          resolvedImage:
+                            description: ResolvedImage is the container image resolved
+                              for this service.
+                            type: string
+                          status:
+                            description: ServiceState is the per-service state reported
+                              in NetEyeServiceStatus.Status.
+                            type: string
+                        type: object
+                      status:
+                        description: Status is the observed state of the Elastic Stack
+                          feature module.
+                        type: string
+                    type: object
                   identity:
                     description: Identity reports the observed state of identity services
                       such as Keycloak.

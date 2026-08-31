@@ -15,6 +15,8 @@ import (
 type NetEyeComponents struct {
 	// Full image reference for the Keycloak container, e.g. quay.io/keycloak/keycloak:27.0.0
 	KeycloakImage string
+	// Full image reference for the OpenTelemetry Collector container.
+	OTelCollectorImage string
 }
 
 // NetEyeSecretKeySelector identifies one key inside a Secret in the NetEye CR
@@ -92,9 +94,49 @@ type NetEyeIdentitySpec struct {
 	DBConnection NetEyeDBConnectionSpec `json:"dbConnection"`
 }
 
+// NetEyeElasticStackSpec configures the Elastic Stack feature module.
+type NetEyeElasticStackSpec struct {
+	// Enabled enables the Elastic Stack feature module.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// OTelCollector configures the shared OpenTelemetry Collector. It is required
+	// when Enabled is true.
+	// +kubebuilder:validation:Optional
+	OTelCollector *NetEyeOtelCollectorSpec `json:"otelCollector,omitempty"`
+}
+
+// NetEyeOtelCollectorSpec configures the shared Elastic Stack OpenTelemetry Collector.
+type NetEyeOtelCollectorSpec struct {
+	// Replicas is the number of stateless Elastic Stack feature module replicas to deploy.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=1
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// ElasticsearchEndpoints is the explicitly configured list of HTTPS Elasticsearch endpoints.
+	// +kubebuilder:validation:Optional
+	ElasticsearchEndpoints []string `json:"elasticsearchEndpoints,omitempty"`
+	// APIKeySecret optionally overrides the Secret key used by the Elastic Stack
+	// feature module. When omitted, it uses otel-collector-api-key/api_key.
+	// +kubebuilder:validation:Optional
+	APIKeySecret *NetEyeSecretKeySelector `json:"apiKeySecret,omitempty"`
+	// BasicAuthSecretName optionally overrides the Secret containing the htpasswd
+	// key. When omitted, the feature module uses otel-collector-basicauth.
+	// +kubebuilder:validation:Optional
+	BasicAuthSecretName string `json:"basicAuthSecretName,omitempty"`
+	// RootCAConfigMapName optionally overrides the ConfigMap containing NetEye root
+	// CAs. When omitted, the feature module uses neteye-root-ca.
+	// +kubebuilder:validation:Optional
+	RootCAConfigMapName string `json:"rootCAConfigMapName,omitempty"`
+	// OIDCIssuerURL overrides the issuer derived from identity.hostname.
+	// +kubebuilder:validation:Optional
+	OIDCIssuerURL string `json:"oidcIssuerURL,omitempty"`
+}
+
 // NetEyeGatewaySpec defines the Gateway API resources managed by NetEye.
 type NetEyeGatewaySpec struct {
-	// Name is the Gateway name in the NetEye CR namespace. If it already exists,
+	// Name is the Gateway name in the shared NetEye namespace. If it already exists,
 	// the operator adopts and reconciles it; otherwise the operator creates it.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
@@ -127,14 +169,16 @@ type NetEyeGatewaySpec struct {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.1"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.1", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.156.0"},
 }
 
 const (
 	// RelatedImageKeycloakEnv overrides the Keycloak image packaged with the operator.
 	RelatedImageKeycloakEnv = "RELATED_IMAGE_KEYCLOAK"
-	CurrentNetEyeVersion    = "4.50"
-	PreviousNetEyeVersion   = "4.49"
+	// RelatedImageOTelCollectorEnv overrides the OpenTelemetry Collector image packaged with the operator.
+	RelatedImageOTelCollectorEnv = "RELATED_IMAGE_OTEL_COLLECTOR"
+	CurrentNetEyeVersion         = "4.50"
+	PreviousNetEyeVersion        = "4.49"
 )
 
 // ComponentsForVersion returns the component image set for the given NetEye
@@ -147,6 +191,9 @@ func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	}
 	if image := strings.TrimSpace(os.Getenv(RelatedImageKeycloakEnv)); image != "" {
 		c.KeycloakImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageOTelCollectorEnv)); image != "" {
+		c.OTelCollectorImage = image
 	}
 	return c, ok
 }
@@ -187,13 +234,6 @@ type NetEyeSpec struct {
 	// +kubebuilder:example="4.50"
 	Version string `json:"version"`
 
-	// EnabledModules declares which NetEye feature modules are available for tenants.
-	// The field is part of the desired API contract; module-specific reconcilers
-	// will consume it as they are implemented.
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:items:MinLength=1
-	EnabledModules []string `json:"enabledModules,omitempty"`
-
 	// Gateway configures the Gateway API Gateway and default routes managed by
 	// NetEye.
 	// +kubebuilder:validation:Required
@@ -201,7 +241,7 @@ type NetEyeSpec struct {
 
 	// InternalCertificateIssuerRef is the cert-manager Issuer name used for TLS
 	// certificates consumed by common NetEye components. The Issuer must already
-	// exist in the NetEye CR namespace and is managed by the user.
+	// exist in the shared NetEye namespace and is managed by the user.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:example="neteye-internal-issuer"
@@ -210,6 +250,10 @@ type NetEyeSpec struct {
 	// Identity configures identity services such as Keycloak.
 	// +kubebuilder:validation:Required
 	Identity NetEyeIdentitySpec `json:"identity"`
+
+	// ElasticStack configures the optional shared OpenTelemetry Collector.
+	// +kubebuilder:validation:Optional
+	ElasticStack *NetEyeElasticStackSpec `json:"elasticStack,omitempty"`
 }
 
 // ServiceState is the per-service state reported in NetEyeServiceStatus.Status.
@@ -220,6 +264,7 @@ const (
 	ServiceStateNotReady ServiceState = "NotReady"
 	ServiceStateReady    ServiceState = "Ready"
 	ServiceStateFailed   ServiceState = "Failed"
+	ServiceStateDisabled ServiceState = "Disabled"
 )
 
 // NetEyePhase is the aggregate lifecycle state reported in NetEyeStatus.Phase.
@@ -243,10 +288,23 @@ type NetEyeServiceStatus struct {
 	ResolvedImage string `json:"resolvedImage,omitempty"`
 }
 
+// NetEyeElasticStackStatus reports observed state for Elastic Stack components.
+type NetEyeElasticStackStatus struct {
+	// Status is the observed state of the Elastic Stack feature module.
+	Status ServiceState `json:"status,omitempty"`
+
+	// Message is a human-readable status message for the Elastic Stack feature module.
+	Message string `json:"message,omitempty"`
+
+	// OTelCollector reports the observed state of the shared OpenTelemetry Collector.
+	OTelCollector *NetEyeServiceStatus `json:"otelCollector,omitempty"`
+}
+
 // NetEyeServicesStatus groups observed state by NetEye service/component.
 type NetEyeServicesStatus struct {
 	// Identity reports the observed state of identity services such as Keycloak.
-	Identity *NetEyeServiceStatus `json:"identity,omitempty"`
+	Identity     *NetEyeServiceStatus      `json:"identity,omitempty"`
+	ElasticStack *NetEyeElasticStackStatus `json:"elasticStack,omitempty"`
 }
 
 // NetEyeStatus defines the observed state of NetEyeConfig.
