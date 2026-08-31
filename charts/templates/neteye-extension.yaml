@@ -11,6 +11,11 @@ spec:
       channels:
       - {{ .Values.operator.channel | quote }}
       version: {{ .Values.operator.versionRange | quote }}
+      upgradeConstraintPolicy: {{ .Values.operator.upgradeConstraintPolicy | quote }}
       selector:
         matchLabels:
           olm.example.io/catalog: {{ .Values.operator.catalogName | quote }}
+  install:
+    preflight:
+      crdUpgradeSafety:
+        enforcement: Strict

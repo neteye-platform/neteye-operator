@@ -302,6 +302,9 @@ spec:
                   - image: ghcr.io/neteye-platform/neteye-operator:0.1.0
                     imagePullPolicy: Always
                     name: manager
+                    env:
+                      - name: RELATED_IMAGE_KEYCLOAK
+                        value: ghcr.io/neteye-platform/neteye-keycloak:1.0.1
                     securityContext:
                       allowPrivilegeEscalation: false
                       capabilities:
@@ -378,6 +381,9 @@ spec:
   minKubeVersion: 1.36.0
   provider:
     name: Wuerth IT | Italy
+  relatedImages:
+    - image: ghcr.io/neteye-platform/neteye-keycloak:1.0.1
+      name: neteye-keycloak
   version: 0.1.0
   webhookdefinitions:
     - admissionReviewVersions:
