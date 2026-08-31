@@ -60,6 +60,9 @@ func TestComponentsForVersion(t *testing.T) {
 	if c.KeycloakImage == "" {
 		t.Error("expected a resolved Keycloak image")
 	}
+	if c.OTelCollectorImage == "" {
+		t.Error("expected a resolved OpenTelemetry Collector image")
+	}
 	if _, ok := ComponentsForVersion("0.0"); ok {
 		t.Error("ComponentsForVersion(\"0.0\") found, want not found")
 	}
@@ -86,6 +89,18 @@ func TestComponentsForVersionWhitespaceKeycloakImageOverrideUsesDefault(t *testi
 	}
 	if got, want := components.KeycloakImage, netEyeVersionMap[CurrentNetEyeVersion].KeycloakImage; got != want {
 		t.Errorf("KeycloakImage = %q, want %q", got, want)
+	}
+}
+
+func TestComponentsForVersionOTelCollectorImageOverride(t *testing.T) {
+	t.Setenv(RelatedImageOTelCollectorEnv, "registry.example/otel-collector:dev")
+
+	components, ok := ComponentsForVersion(CurrentNetEyeVersion)
+	if !ok {
+		t.Fatalf("ComponentsForVersion(%q) not found", CurrentNetEyeVersion)
+	}
+	if got, want := components.OTelCollectorImage, "registry.example/otel-collector:dev"; got != want {
+		t.Errorf("OTelCollectorImage = %q, want %q", got, want)
 	}
 }
 

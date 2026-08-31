@@ -12,9 +12,6 @@ metadata:
           },
           "spec": {
             "version": "4.50",
-            "enabledModules": [
-              "elastic-stack"
-            ],
             "gateway": {
               "name": "neteye",
               "className": "cilium",
@@ -101,7 +98,6 @@ spec:
                 - ""
               resources:
                 - configmaps
-                - secrets
                 - services
                 - serviceaccounts
               verbs:
@@ -111,6 +107,14 @@ spec:
                 - list
                 - patch
                 - update
+                - watch
+            - apiGroups:
+                - ""
+              resources:
+                - secrets
+              verbs:
+                - get
+                - list
                 - watch
             - apiGroups:
                 - ""
@@ -127,6 +131,7 @@ spec:
                 - namespaces
               verbs:
                 - create
+                - delete
                 - get
                 - list
                 - watch
@@ -192,6 +197,7 @@ spec:
                 - keycloaks
               verbs:
                 - create
+                - delete
                 - get
                 - list
                 - update
@@ -229,8 +235,10 @@ spec:
               resources:
                 - gateways
                 - httproutes
+                - grpcroutes
               verbs:
                 - create
+                - delete
                 - get
                 - list
                 - update
@@ -241,6 +249,7 @@ spec:
                 - ciliumnetworkpolicies
               verbs:
                 - create
+                - delete
                 - get
                 - list
                 - update

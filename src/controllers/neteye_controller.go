@@ -23,6 +23,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
@@ -42,9 +43,10 @@ const (
 // NetEyeReconciler reconciles NetEye CRs and drives per-CR component deployment.
 type NetEyeReconciler struct {
 	client.Client
-	Log               logr.Logger
-	Scheme            *runtime.Scheme
-	KeycloakComponent *keycloak.Component
+	Log                    logr.Logger
+	Scheme                 *runtime.Scheme
+	KeycloakComponent      *keycloak.Component
+	ElasticStackReconciler *elasticstack.Reconciler
 
 	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
 	WaitForProgressingRequeueAfter time.Duration
@@ -57,12 +59,16 @@ type NetEyeReconciler struct {
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;httproutes,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes;grpcroutes,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups="",resources=configmaps;services,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=k8s.keycloak.org,resources=keycloaks,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=olm.operatorframework.io,resources=clusterextensions,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update
-// +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;list;watch;create;update;delete
 
 // Reconcile reconciles a NetEye resource with the desired cluster state.
 func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -82,7 +88,8 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	ne.Status.ObservedGeneration = ne.GetGeneration()
 	ne.Status.ServicesStatus = neteye.NetEyeServicesStatus{
-		Identity: identityStatus(neteye.ServiceStateUnknown, "", ""),
+		Identity:     identityStatus(neteye.ServiceStateUnknown, "", ""),
+		ElasticStack: &neteye.NetEyeElasticStackStatus{Status: neteye.ServiceStateUnknown, OTelCollector: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}},
 	}
 	defer func() {
 		if err := r.updateStatus(ctx, req.NamespacedName, ne.Status); err != nil {
@@ -117,8 +124,16 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if result, err := r.reconcileBaseResources(ctx, ne); shouldReturn(result, err) {
 		return result, err
 	}
+	if err := resources.EnsureDefaultDenyNetworkPolicy(ctx, r.Client, keycloak.WorkloadNamespace); err != nil {
+		log.Error(err, "failed to ensure shared default-deny network policy", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared default-deny network policy: %w", err)
+	}
 
 	if result, err := r.reconcileKeycloak(ctx, ne, components.KeycloakImage); shouldReturn(result, err) {
+		return result, err
+	}
+	if result, err := r.reconcileElasticStack(ctx, ne, components.OTelCollectorImage); shouldReturn(result, err) {
 		return result, err
 	}
 
@@ -127,6 +142,32 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	log.Info("NetEye is ready", "namespace", ne.Namespace, "name", ne.Name, "requeueAfter", r.reconciliationRequeue())
 	return ctrl.Result{RequeueAfter: r.reconciliationRequeue()}, nil
+}
+
+func (r *NetEyeReconciler) reconcileElasticStack(ctx context.Context, ne *neteye.NetEye, collectorImage string) (ctrl.Result, error) {
+	if r.ElasticStackReconciler == nil {
+		r.ElasticStackReconciler = elasticstack.NewReconciler(nil)
+	}
+	outcome := r.ElasticStackReconciler.Reconcile(ctx, elasticstack.Request{
+		Namespace: keycloak.WorkloadNamespace, Config: ne.Spec.ElasticStack, IdentityHostname: ne.Spec.Identity.Hostname, CollectorImage: collectorImage,
+		GatewayNamespace: ne.Namespace, GatewayName: ne.Spec.Gateway.Name, Owner: ownerReferenceFor(ne),
+	})
+	ne.Status.ServicesStatus.ElasticStack = &neteye.NetEyeElasticStackStatus{Status: outcome.Module.Status, Message: outcome.Module.Message, OTelCollector: outcome.Collector}
+	if outcome.Phase != "" {
+		setPhase(ne, outcome.Phase, outcome.PhaseMessage)
+	}
+	return r.resultForRequeue(outcome.Requeue), outcome.Err
+}
+
+func (r *NetEyeReconciler) resultForRequeue(reason elasticstack.RequeueReason) ctrl.Result {
+	switch reason {
+	case elasticstack.RequeueProgressing:
+		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}
+	case elasticstack.RequeueFailure:
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}
+	default:
+		return ctrl.Result{}
+	}
 }
 
 func (r *NetEyeReconciler) updateStatus(ctx context.Context, key client.ObjectKey, status neteye.NetEyeStatus) error {

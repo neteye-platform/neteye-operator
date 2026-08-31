@@ -146,14 +146,6 @@ func TestKeycloakInstanceSpecOmitsEnvWhenEmpty(t *testing.T) {
 }
 
 func TestKeycloakNetworkPolicies(t *testing.T) {
-	defaultDeny := defaultDenyNetworkPolicySpec()
-	if !reflect.DeepEqual(defaultDeny["podSelector"], map[string]any{}) {
-		t.Errorf("default deny pod selector = %#v", defaultDeny["podSelector"])
-	}
-	if !reflect.DeepEqual(defaultDeny["policyTypes"], []any{"Ingress", "Egress"}) {
-		t.Errorf("default deny policy types = %#v", defaultDeny["policyTypes"])
-	}
-
 	instance := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "h"})
 	if !reflect.DeepEqual(instance["networkPolicy"], map[string]any{"enabled": false}) {
 		t.Errorf("native network policy = %#v, want disabled", instance["networkPolicy"])
@@ -169,7 +161,11 @@ func TestKeycloakNetworkPolicies(t *testing.T) {
 		t.Fatalf("ingress rule count = %d, want 1", len(ingress["ingress"].([]any)))
 	}
 	host := keycloakHostManagementPolicySpec()
-	if !reflect.DeepEqual(host["endpointSelector"], map[string]any{"matchLabels": keycloakWorkloadLabels()}) {
+	if !reflect.DeepEqual(host["endpointSelector"], map[string]any{"matchLabels": map[string]any{
+		"k8s:app":                          "keycloak",
+		"k8s:app.kubernetes.io/instance":   InstanceName,
+		"k8s:app.kubernetes.io/managed-by": "keycloak-operator",
+	}}) {
 		t.Errorf("host endpoint selector = %#v", host["endpointSelector"])
 	}
 	hostRules := host["ingress"].([]any)
