@@ -42,6 +42,55 @@ metadata:
               }
             }
           }
+        },
+        {
+          "apiVersion": "neteye.cloud/v1alpha1",
+          "kind": "KeycloakClient",
+          "metadata": {
+            "name": "neteye"
+          },
+          "spec": {
+            "realm": "master",
+            "clientId": "neteye",
+            "rootUrl": "https://neteye.example.com",
+            "redirectUris": [
+              "/neteye/*"
+            ],
+            "directAccess": true,
+            "serviceAccount": {
+              "enabled": true
+            },
+            "protocolMappers": [
+              {
+                "name": "groups membership",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-group-membership-mapper",
+                "config": {
+                  "full.path": "true",
+                  "multivalued": "true",
+                  "userinfo.token.claim": "true",
+                  "id.token.claim": "true",
+                  "access.token.claim": "true",
+                  "claim.name": "groups",
+                  "jsonType.label": "String"
+                }
+              }
+            ],
+            "defaultClientScopes": [
+              "web-origins",
+              "acr",
+              "roles",
+              "profile",
+              "basic",
+              "email"
+            ],
+            "optionalClientScopes": [
+              "address",
+              "phone",
+              "offline_access",
+              "microprofile-jwt"
+            ]
+          }
         }
       ]
     capabilities: Basic Install
@@ -59,6 +108,13 @@ spec:
         displayName: NetEye
         kind: NetEye
         name: neteyes.neteye.cloud
+        version: v1alpha1
+      - description: >-
+          KeycloakClient declares an OpenID Connect client the operator keeps
+          continuously reconciled in the identity service.
+        displayName: Keycloak Client
+        kind: KeycloakClient
+        name: keycloakclients.neteye.cloud
         version: v1alpha1
     required:
       - displayName: cert-manager Certificate
@@ -288,6 +344,30 @@ spec:
                 - neteye.cloud
               resources:
                 - neteyes/finalizers
+              verbs:
+                - update
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - keycloakclients
+              verbs:
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - keycloakclients/status
+              verbs:
+                - get
+                - patch
+                - update
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - keycloakclients/finalizers
               verbs:
                 - update
           serviceAccountName: neteye-operator

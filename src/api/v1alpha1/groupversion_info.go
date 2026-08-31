@@ -32,6 +32,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 
 		&NetEye{},
 		&NetEyeList{},
+		&KeycloakClient{},
+		&KeycloakClientList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, GroupVersion)

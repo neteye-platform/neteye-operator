@@ -1,0 +1,234 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: keycloakclients.neteye.cloud
+spec:
+  group: neteye.cloud
+  names:
+    kind: KeycloakClient
+    listKind: KeycloakClientList
+    plural: keycloakclients
+    shortNames:
+    - kcc
+    singular: keycloakclient
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clientId
+      name: ClientID
+      type: string
+    - jsonPath: .spec.realm
+      name: Realm
+      type: string
+    - jsonPath: .status.status
+      name: Status
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          KeycloakClient is the Schema for the keycloakclients API. It describes one
+          OpenID Connect client the operator keeps reconciled in the identity service.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              KeycloakClientSpec declares the desired state of one OpenID Connect client in
+              the identity service. The operator reconciles it continuously against the
+              Keycloak Admin API, so changes made outside the cluster are reverted.
+            properties:
+              clientId:
+                description: ClientID is the Keycloak client identifier, unique within
+                  the realm.
+                example: neteye
+                minLength: 1
+                type: string
+              defaultClientScopes:
+                description: DefaultClientScopes lists the client scopes always applied
+                  to tokens.
+                items:
+                  type: string
+                type: array
+              description:
+                description: Description is the client description shown in the admin
+                  console.
+                type: string
+              directAccess:
+                default: false
+                description: DirectAccess enables the resource owner password credentials
+                  grant.
+                type: boolean
+              enabled:
+                default: true
+                description: Enabled enables the client in Keycloak.
+                type: boolean
+              name:
+                description: Name is the human-readable client name shown in the admin
+                  console.
+                type: string
+              optionalClientScopes:
+                description: OptionalClientScopes lists the client scopes applied
+                  only when requested.
+                items:
+                  type: string
+                type: array
+              protocolMappers:
+                description: ProtocolMappers lists the protocol mappers reconciled
+                  on the client.
+                items:
+                  description: |-
+                    KeycloakProtocolMapper declares one protocol mapper attached to a Keycloak
+                    client. Mappers are matched by name: the operator creates missing ones and
+                    reconciles the configuration of existing ones.
+                  properties:
+                    config:
+                      additionalProperties:
+                        type: string
+                      description: Config holds the mapper configuration exactly as
+                        Keycloak expects it.
+                      example:
+                        claim.name: groups
+                        full.path: "true"
+                      type: object
+                    name:
+                      description: Name identifies the mapper inside the client.
+                      example: groups membership
+                      minLength: 1
+                      type: string
+                    protocol:
+                      default: openid-connect
+                      description: Protocol is the Keycloak protocol the mapper applies
+                        to.
+                      enum:
+                      - openid-connect
+                      - saml
+                      type: string
+                    protocolMapper:
+                      description: ProtocolMapper is the Keycloak mapper implementation
+                        identifier.
+                      example: oidc-group-membership-mapper
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  - protocolMapper
+                  type: object
+                type: array
+              publicClient:
+                default: false
+                description: |-
+                  PublicClient marks the client as public, meaning it authenticates without
+                  a client secret.
+                type: boolean
+              realm:
+                default: master
+                description: |-
+                  Realm is the Keycloak realm owning the client. The realm must already
+                  exist; the operator does not create realms.
+                minLength: 1
+                type: string
+              redirectUris:
+                description: RedirectUris lists the valid redirect URIs. Entries may
+                  be relative to RootURL.
+                example:
+                - /neteye/*
+                items:
+                  type: string
+                type: array
+              rootUrl:
+                description: RootURL is the base URL relative redirect URIs and web
+                  origins resolve against.
+                example: https://neteye.example.com
+                type: string
+              secretRef:
+                description: |-
+                  SecretRef references the Secret key holding the client secret. It is
+                  required for confidential clients, and the Secret must exist in the same
+                  namespace as this resource.
+                properties:
+                  key:
+                    description: Key is the key inside the Secret containing the database
+                      credential value.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the Secret containing the database
+                      credential.
+                    minLength: 1
+                    type: string
+                required:
+                - key
+                - name
+                type: object
+              serviceAccount:
+                description: ServiceAccount configures the client service account.
+                properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled turns the client service account on, enabling the client
+                      credentials grant.
+                    type: boolean
+                required:
+                - enabled
+                type: object
+              standardFlow:
+                default: true
+                description: StandardFlow enables the OpenID Connect authorization
+                  code flow.
+                type: boolean
+              webOrigins:
+                description: WebOrigins lists the allowed CORS origins.
+                items:
+                  type: string
+                type: array
+            required:
+            - clientId
+            type: object
+          status:
+            description: KeycloakClientStatus defines the observed state of a KeycloakClient.
+            properties:
+              clientUUID:
+                description: ClientUUID is the internal Keycloak identifier of the
+                  reconciled client.
+                type: string
+              message:
+                description: Message is a human-readable status message.
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the generation of the most recently observed
+                  KeycloakClient.
+                format: int64
+                type: integer
+              status:
+                description: Status is the observed state of the Keycloak client.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

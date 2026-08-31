@@ -157,8 +157,16 @@ func TestKeycloakNetworkPolicies(t *testing.T) {
 	if !reflect.DeepEqual(ingress["policyTypes"], []any{"Ingress"}) {
 		t.Errorf("ingress policy types = %#v", ingress["policyTypes"])
 	}
-	if len(ingress["ingress"].([]any)) != 1 {
-		t.Fatalf("ingress rule count = %d, want 1", len(ingress["ingress"].([]any)))
+	ingressRules := ingress["ingress"].([]any)
+	if len(ingressRules) != 2 {
+		t.Fatalf("ingress rule count = %d, want 2", len(ingressRules))
+	}
+	operatorRule := ingressRules[1].(map[string]any)
+	if !reflect.DeepEqual(operatorRule["from"], []any{namespaceSelector(OperatorSystemNamespace)}) {
+		t.Errorf("operator ingress source = %#v", operatorRule["from"])
+	}
+	if !reflect.DeepEqual(operatorRule["ports"], []any{networkPort(int32(HTTPPort), "TCP")}) {
+		t.Errorf("operator ingress ports = %#v", operatorRule["ports"])
 	}
 	host := keycloakHostManagementPolicySpec()
 	if !reflect.DeepEqual(host["endpointSelector"], map[string]any{"matchLabels": map[string]any{

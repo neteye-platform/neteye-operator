@@ -24,19 +24,27 @@ import (
 )
 
 const (
-	OperatorNamespace   = "keycloak-system"
-	WorkloadNamespace   = "neteye-tenant-shared"
-	HTTPRouteName       = "keycloak"
-	TLSCertificateName  = "keycloak-tls"
-	TLSSecretName       = "keycloak-tls-secret"
-	InstanceName        = "neteye-kc"
-	ServiceName         = "neteye-kc-service"
-	EgressPolicyName    = "neteye-kc-egress"
-	IngressPolicyName   = "neteye-kc-ingress"
-	HostPolicyName      = "neteye-kc-host-management"
-	HTTPPort            = int64(8080)
-	HTTPRelativePath    = "/auth"
-	KubeSystemNamespace = "kube-system"
+	OperatorNamespace  = "keycloak-system"
+	WorkloadNamespace  = "neteye-tenant-shared"
+	HTTPRouteName      = "keycloak"
+	TLSCertificateName = "keycloak-tls"
+	TLSSecretName      = "keycloak-tls-secret"
+	InstanceName       = "neteye-kc"
+	ServiceName        = "neteye-kc-service"
+	EgressPolicyName   = "neteye-kc-egress"
+	IngressPolicyName  = "neteye-kc-ingress"
+	HostPolicyName     = "neteye-kc-host-management"
+	HTTPPort           = int64(8080)
+	// AdminSecretName is the Secret the Keycloak Operator creates with the
+	// bootstrap admin credentials of the Keycloak instance.
+	AdminSecretName        = InstanceName + "-initial-admin"
+	AdminSecretUsernameKey = "username"
+	AdminSecretPasswordKey = "password"
+	HTTPRelativePath       = "/auth"
+	KubeSystemNamespace    = "kube-system"
+	// OperatorSystemNamespace runs the NetEye operator itself, which reaches the
+	// Keycloak Admin API in-cluster to reconcile KeycloakClient resources.
+	OperatorSystemNamespace = "neteye-system"
 
 	extensionName = "keycloak-operator"
 	channel       = "fast"
@@ -278,6 +286,12 @@ func keycloakIngressNetworkPolicySpec() map[string]any {
 				"from":  []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
 				"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")},
 			},
+			// The operator calls the Keycloak Admin API to reconcile KeycloakClient
+			// resources, so it needs its own way in through the default deny.
+			map[string]any{
+				"from":  []any{namespaceSelector(OperatorSystemNamespace)},
+				"ports": []any{networkPort(int32(HTTPPort), "TCP")},
+			},
 		},
 	}
 }
@@ -348,6 +362,12 @@ func keycloakCiliumWorkloadLabels() map[string]any {
 		"k8s:app":                          "keycloak",
 		"k8s:app.kubernetes.io/instance":   InstanceName,
 		"k8s:app.kubernetes.io/managed-by": "keycloak-operator",
+	}
+}
+
+func namespaceSelector(namespace string) map[string]any {
+	return map[string]any{
+		"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": namespace}},
 	}
 }
 
