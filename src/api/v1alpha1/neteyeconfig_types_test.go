@@ -3,7 +3,24 @@
 
 package v1alpha1
 
-import "testing"
+import (
+	"testing"
+
+	"k8s.io/apimachinery/pkg/runtime"
+)
+
+func TestAddToSchemeRegistersNetEyeResourceTypes(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := AddToScheme(scheme); err != nil {
+		t.Fatalf("add NetEye types to scheme: %v", err)
+	}
+
+	for _, kind := range []string{"NetEye", "NetEyeList"} {
+		if _, err := scheme.New(GroupVersion.WithKind(kind)); err != nil {
+			t.Errorf("scheme does not register %s: %v", kind, err)
+		}
+	}
+}
 
 func TestIsLatestVersion(t *testing.T) {
 	if !IsLatestVersion(CurrentNetEyeVersion) {
@@ -45,6 +62,30 @@ func TestComponentsForVersion(t *testing.T) {
 	}
 	if _, ok := ComponentsForVersion("0.0"); ok {
 		t.Error("ComponentsForVersion(\"0.0\") found, want not found")
+	}
+}
+
+func TestComponentsForVersionKeycloakImageOverride(t *testing.T) {
+	t.Setenv(RelatedImageKeycloakEnv, "registry.example/neteye-keycloak:dev")
+
+	components, ok := ComponentsForVersion(CurrentNetEyeVersion)
+	if !ok {
+		t.Fatalf("ComponentsForVersion(%q) not found", CurrentNetEyeVersion)
+	}
+	if got, want := components.KeycloakImage, "registry.example/neteye-keycloak:dev"; got != want {
+		t.Errorf("KeycloakImage = %q, want %q", got, want)
+	}
+}
+
+func TestComponentsForVersionWhitespaceKeycloakImageOverrideUsesDefault(t *testing.T) {
+	t.Setenv(RelatedImageKeycloakEnv, " \t ")
+
+	components, ok := ComponentsForVersion(CurrentNetEyeVersion)
+	if !ok {
+		t.Fatalf("ComponentsForVersion(%q) not found", CurrentNetEyeVersion)
+	}
+	if got, want := components.KeycloakImage, netEyeVersionMap[CurrentNetEyeVersion].KeycloakImage; got != want {
+		t.Errorf("KeycloakImage = %q, want %q", got, want)
 	}
 }
 
