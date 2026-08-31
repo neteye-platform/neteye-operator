@@ -6,13 +6,15 @@
       "description": "Do not pin the OperatorHub catalog digest",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["quay.io/operatorhubio/catalog"],
-      "pinDigests": false
+      "pinDigests": false,
+      "minimumReleaseAge": null
     },
     {
       "description": "Do not pin the Neteye Operator catalog digest",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["ghcr.io/neteye-platform/neteye-operator-catalog"],
-      "pinDigests": false
+      "pinDigests": false,
+      "minimumReleaseAge": null
     }
   ]
 }
