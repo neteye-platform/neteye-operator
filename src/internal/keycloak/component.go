@@ -140,18 +140,18 @@ func clusterExtensionSpec() map[string]any {
 
 // EnsureResources reconciles the identity component resources owned by the Keycloak
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
-func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef) (bool, string, error) {
+func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
 	ctx = logf.IntoContext(ctx, c.log)
-	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, nil); err != nil {
+	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
 	}
-	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), nil); err != nil {
+	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak workload network policy: %w", err)
 	}
-	if err := c.EnsureIngressNetworkPolicy(ctx, namespace); err != nil {
+	if err := c.EnsureIngressNetworkPolicy(ctx, namespace, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak ingress network policy: %w", err)
 	}
-	if err := c.EnsureHostManagementPolicy(ctx, namespace); err != nil {
+	if err := c.EnsureHostManagementPolicy(ctx, namespace, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak host management policy: %w", err)
 	}
 	certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
@@ -161,10 +161,10 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if !certificateReady {
 		return false, certificateMessage, nil
 	}
-	if err := c.EnsureInstance(ctx, namespace, image, identity, nil); err != nil {
+	if err := c.EnsureInstance(ctx, namespace, image, identity, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
-	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, nil); err != nil {
+	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure http route: %w", err)
 	}
 	return true, "Keycloak is Ready", nil
@@ -260,11 +260,12 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 	return spec
 }
 
-func (c *Component) EnsureIngressNetworkPolicy(ctx context.Context, namespace string) error {
+func (c *Component) EnsureIngressNetworkPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
 	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:  nativeNetworkPolicyGVK(),
 		Name: IngressPolicyName, Namespace: namespace,
-		Spec: keycloakIngressNetworkPolicySpec(),
+		Spec:  keycloakIngressNetworkPolicySpec(),
+		Owner: owner,
 	})
 	return err
 }
@@ -282,11 +283,12 @@ func keycloakIngressNetworkPolicySpec() map[string]any {
 	}
 }
 
-func (c *Component) EnsureHostManagementPolicy(ctx context.Context, namespace string) error {
+func (c *Component) EnsureHostManagementPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
 	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:  ciliumNetworkPolicyGVK(),
 		Name: HostPolicyName, Namespace: namespace,
-		Spec: keycloakHostManagementPolicySpec(),
+		Spec:  keycloakHostManagementPolicySpec(),
+		Owner: owner,
 	})
 	return err
 }
