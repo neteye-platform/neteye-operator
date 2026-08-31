@@ -3,7 +3,7 @@ kind: ClusterCatalog
 metadata:
   name: {{ .Values.operator.catalogName | quote }}
   labels:
-    olm.example.io/catalog: {{ .Values.operator.catalogName | quote }}
+    olm.operatorframework.io/metadata.name: {{ .Values.operator.catalogName | quote }}
 spec:
   source:
     type: Image
