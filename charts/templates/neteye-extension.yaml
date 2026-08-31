@@ -14,7 +14,7 @@ spec:
       upgradeConstraintPolicy: {{ .Values.operator.upgradeConstraintPolicy | quote }}
       selector:
         matchLabels:
-          olm.example.io/catalog: {{ .Values.operator.catalogName | quote }}
+          olm.operatorframework.io/metadata.name: {{ .Values.operator.catalogName | quote }}
   install:
     preflight:
       crdUpgradeSafety:
