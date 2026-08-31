@@ -66,7 +66,7 @@ jobs:
   build-operator:
     name: Build operator image
     needs: [unit, integration]
-    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@e7adeb7e455b395a44b4a649fc047cc65266cbc2 # main
+    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@9fb4a55beca0a2763ade099d68abe572c900fd80 # main
     with:
       working-directory: src
       dockerfile-path: src/Dockerfile
@@ -77,7 +77,7 @@ jobs:
   build-bundle:
     name: Build bundle image
     needs: [unit, integration]
-    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@e7adeb7e455b395a44b4a649fc047cc65266cbc2 # main
+    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@9fb4a55beca0a2763ade099d68abe572c900fd80 # main
     with:
       working-directory: src
       dockerfile-path: src/Dockerfile.bundle
@@ -88,7 +88,7 @@ jobs:
   build-catalog:
     name: Build catalog image
     needs: [unit, integration]
-    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@e7adeb7e455b395a44b4a649fc047cc65266cbc2 # main
+    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@9fb4a55beca0a2763ade099d68abe572c900fd80 # main
     with:
       working-directory: src
       dockerfile-path: src/Dockerfile.catalog
