@@ -1,0 +1,11 @@
+{{- range $namespace := list .Values.namespace.keycloakOperator .Values.namespace.tenantShared }}
+{{- if not (lookup "v1" "Namespace" "" $namespace) }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $namespace | quote }}
+  annotations:
+    helm.sh/resource-policy: keep
+{{- end }}
+{{- end }}

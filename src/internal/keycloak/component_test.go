@@ -116,6 +116,13 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 	if db["port"] != int64(3307) {
 		t.Errorf("db.port = %v, want int64(3307)", db["port"])
 	}
+	ingress, ok := spec["ingress"].(map[string]any)
+	if !ok {
+		t.Fatalf("ingress is not a map: %T", spec["ingress"])
+	}
+	if ingress["enabled"] != false {
+		t.Errorf("ingress.enabled = %v, want false", ingress["enabled"])
+	}
 	hostname, ok := spec["hostname"].(map[string]any)
 	if !ok {
 		t.Fatalf("hostname is not a map: %T", spec["hostname"])
@@ -126,11 +133,67 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 	if _, ok := spec["env"]; !ok {
 		t.Errorf("env should be set when PodExtraEnvVars is provided")
 	}
+	if _, ok := spec["networkPolicy"]; !ok {
+		t.Error("networkPolicy should always be configured")
+	}
 }
 
 func TestKeycloakInstanceSpecOmitsEnvWhenEmpty(t *testing.T) {
 	spec := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "h"})
 	if _, ok := spec["env"]; ok {
 		t.Errorf("env should not be set when PodExtraEnvVars is empty")
+	}
+}
+
+func TestKeycloakNetworkPolicies(t *testing.T) {
+	defaultDeny := defaultDenyNetworkPolicySpec()
+	if !reflect.DeepEqual(defaultDeny["podSelector"], map[string]any{}) {
+		t.Errorf("default deny pod selector = %#v", defaultDeny["podSelector"])
+	}
+	if !reflect.DeepEqual(defaultDeny["policyTypes"], []any{"Ingress", "Egress"}) {
+		t.Errorf("default deny policy types = %#v", defaultDeny["policyTypes"])
+	}
+
+	instance := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "h"})
+	if !reflect.DeepEqual(instance["networkPolicy"], map[string]any{"enabled": false}) {
+		t.Errorf("native network policy = %#v, want disabled", instance["networkPolicy"])
+	}
+	ingress := keycloakIngressNetworkPolicySpec()
+	if !reflect.DeepEqual(ingress["podSelector"], map[string]any{"matchLabels": keycloakWorkloadLabels()}) {
+		t.Errorf("ingress selector = %#v", ingress["podSelector"])
+	}
+	if !reflect.DeepEqual(ingress["policyTypes"], []any{"Ingress"}) {
+		t.Errorf("ingress policy types = %#v", ingress["policyTypes"])
+	}
+	if len(ingress["ingress"].([]any)) != 1 {
+		t.Fatalf("ingress rule count = %d, want 1", len(ingress["ingress"].([]any)))
+	}
+	host := keycloakHostManagementPolicySpec()
+	if !reflect.DeepEqual(host["endpointSelector"], map[string]any{"matchLabels": keycloakWorkloadLabels()}) {
+		t.Errorf("host endpoint selector = %#v", host["endpointSelector"])
+	}
+	hostRules := host["ingress"].([]any)
+	if !reflect.DeepEqual(hostRules[0].(map[string]any)["fromEntities"], []any{"ingress"}) {
+		t.Errorf("gateway entities = %#v", hostRules[0].(map[string]any)["fromEntities"])
+	}
+	if !reflect.DeepEqual(hostRules[1].(map[string]any)["fromEntities"], []any{"host", "remote-node"}) {
+		t.Errorf("host entities = %#v", hostRules[1].(map[string]any)["fromEntities"])
+	}
+	egress := keycloakEgressNetworkPolicySpec(3306)
+	if got := egress["policyTypes"]; !reflect.DeepEqual(got, []any{"Egress"}) {
+		t.Errorf("policyTypes = %#v, want only Egress", got)
+	}
+	rules := egress["egress"].([]any)
+	if len(rules) != 3 {
+		t.Fatalf("egress rule count = %d, want 3", len(rules))
+	}
+	if _, found := rules[0].(map[string]any)["to"]; found {
+		t.Error("database egress must not constrain an external hostname by CIDR")
+	}
+	if !reflect.DeepEqual(rules[1].(map[string]any)["to"], []any{namespaceAndPodSelector(KubeSystemNamespace, map[string]any{"k8s-app": "kube-dns"})}) {
+		t.Errorf("DNS egress destination = %#v", rules[1].(map[string]any)["to"])
+	}
+	if !reflect.DeepEqual(rules[2].(map[string]any)["ports"], []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}) {
+		t.Errorf("intra-cluster ports = %#v", rules[2].(map[string]any)["ports"])
 	}
 }

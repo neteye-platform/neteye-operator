@@ -69,7 +69,7 @@ func TestEnsureCertificateCreates(t *testing.T) {
 	controller := true
 	owner := metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "platform", UID: "u", Controller: &controller}
 
-	err := EnsureCertificate(context.Background(), c, "ns", "cert", "cert-secret", "example.com", []string{"example.com"}, CertificateIssuerRef{Name: "issuer"}, owner)
+	err := EnsureCertificate(context.Background(), c, "ns", "cert", "cert-secret", "example.com", []string{"example.com"}, CertificateIssuerRef{Name: "issuer"}, &owner)
 	if err != nil {
 		t.Fatalf("ensure certificate: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestEnsureCertificateCreates(t *testing.T) {
 }
 
 func TestEnsureCertificateRejectsEmptyIssuer(t *testing.T) {
-	err := EnsureCertificate(context.Background(), certClient(t), "ns", "cert", "s", "example.com", []string{"example.com"}, CertificateIssuerRef{}, metav1.OwnerReference{})
+	err := EnsureCertificate(context.Background(), certClient(t), "ns", "cert", "s", "example.com", []string{"example.com"}, CertificateIssuerRef{}, &metav1.OwnerReference{})
 	if err == nil {
 		t.Error("expected an error for an empty issuer reference")
 	}

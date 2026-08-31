@@ -27,10 +27,11 @@ import (
 )
 
 var (
-	certificateGVK = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
-	issuerGVK      = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"}
-	gatewayGVK     = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway"}
-	httpRouteGVK   = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}
+	certificateGVK   = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
+	issuerGVK        = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"}
+	gatewayGVK       = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway"}
+	httpRouteGVK     = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}
+	networkPolicyGVK = schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"}
 )
 
 // startEnvtest boots a real API server via envtest. It skips the test when the
@@ -97,8 +98,14 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
 		t.Fatalf("create namespace: %v", err)
 	}
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: keycloak.WorkloadNamespace}}); err != nil {
+		t.Fatalf("create shared Keycloak namespace: %v", err)
+	}
 	if err := c.Create(ctx, newUnstructured(issuerGVK, ns, "internal-issuer")); err != nil {
 		t.Fatalf("create issuer: %v", err)
+	}
+	if err := c.Create(ctx, newUnstructured(issuerGVK, keycloak.WorkloadNamespace, "internal-issuer")); err != nil {
+		t.Fatalf("create shared Keycloak issuer: %v", err)
 	}
 
 	ne := &neteye.NetEye{
@@ -148,7 +155,29 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if owner := cert.GetOwnerReferences(); len(owner) != 1 || owner[0].Name != "platform" {
 		t.Errorf("gateway certificate owner references = %v", owner)
 	}
-	requireExists(ctx, t, c, gatewayGVK, ns, "neteye-gw")
+	if dnsNames, _, _ := unstructured.NestedSlice(cert.Object, "spec", "dnsNames"); len(dnsNames) != 2 || dnsNames[1] != ne.Spec.Identity.Hostname {
+		t.Errorf("gateway certificate dnsNames = %v", dnsNames)
+	}
+	defaultDeny := requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.DefaultDenyPolicyName)
+	if podSelector, _, _ := unstructured.NestedMap(defaultDeny.Object, "spec", "podSelector"); len(podSelector) != 0 {
+		t.Errorf("default deny pod selector = %v, want empty", podSelector)
+	}
+	if policyTypes, _, _ := unstructured.NestedStringSlice(defaultDeny.Object, "spec", "policyTypes"); len(policyTypes) != 2 || policyTypes[0] != "Ingress" || policyTypes[1] != "Egress" {
+		t.Errorf("default deny policy types = %v, want [Ingress Egress]", policyTypes)
+	}
+	gateway := requireExists(ctx, t, c, gatewayGVK, ns, "neteye-gw")
+	listeners, _, _ := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
+	for _, listener := range listeners {
+		listenerSpec := listener.(map[string]any)
+		namespaces, _, _ := unstructured.NestedMap(listenerSpec, "allowedRoutes", "namespaces")
+		if namespaces["from"] != "Selector" {
+			t.Errorf("allowedRoutes.namespaces.from = %v, want Selector", namespaces["from"])
+		}
+		matchLabels, _, _ := unstructured.NestedMap(namespaces, "selector", "matchLabels")
+		if matchLabels["kubernetes.io/metadata.name"] != keycloak.WorkloadNamespace {
+			t.Errorf("allowedRoutes namespace selector = %v, want %q", matchLabels, keycloak.WorkloadNamespace)
+		}
+	}
 	requireExists(ctx, t, c, httpRouteGVK, ns, resources.HTTPToHTTPSRedirectRouteName)
 
 	got := &neteye.NetEye{}
@@ -173,5 +202,27 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
-	requireExists(ctx, t, c, certificateGVK, ns, keycloak.TLSCertificateName)
+	keycloakCertificate := requireExists(ctx, t, c, certificateGVK, keycloak.WorkloadNamespace, keycloak.TLSCertificateName)
+	if owner := keycloakCertificate.GetOwnerReferences(); len(owner) != 0 {
+		t.Errorf("shared Keycloak certificate owner references = %v, want none", owner)
+	}
+	if err := unstructured.SetNestedSlice(keycloakCertificate.Object, []any{map[string]any{"type": "Ready", "status": "True"}}, "status", "conditions"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Status().Update(ctx, keycloakCertificate); err != nil {
+		t.Fatalf("update shared Keycloak certificate status: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("third reconcile: %v", err)
+	}
+	route := requireExists(ctx, t, c, httpRouteGVK, keycloak.WorkloadNamespace, keycloak.HTTPRouteName)
+	parentRefs, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs")
+	parentRef := parentRefs[0].(map[string]any)
+	if parentRef["namespace"] != ns {
+		t.Errorf("route parent namespace = %v, want %q", parentRef["namespace"], ns)
+	}
+	hostnames, _, _ := unstructured.NestedSlice(route.Object, "spec", "hostnames")
+	if len(hostnames) != 1 || hostnames[0] != ne.Spec.Identity.Hostname {
+		t.Errorf("route hostnames = %v", hostnames)
+	}
 }
