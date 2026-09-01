@@ -58,7 +58,7 @@ func startEnvtest(t *testing.T) (client.Client, *runtime.Scheme) {
 		CRDInstallOptions: envtest.CRDInstallOptions{
 			Paths: []string{
 				filepath.Join("testdata", "crds"),
-				filepath.Join("..", "bundle", "manifests", "neteyes.neteye.cloud.crd.yaml"),
+				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_neteyes.yaml"),
 			},
 		},
 	}

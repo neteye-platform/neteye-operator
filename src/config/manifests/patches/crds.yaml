@@ -1,0 +1,16 @@
+- op: replace
+  path: /spec/customresourcedefinitions
+  value:
+    owned:
+      - description: NetEye declares the product version and reconciles components in the same namespace as the NetEye custom resource.
+        displayName: NetEye
+        kind: NetEye
+        name: neteyes.neteye.cloud
+        version: v1alpha1
+    required:
+      - {displayName: cert-manager Certificate, kind: Certificate, name: certificates.cert-manager.io, version: v1}
+      - {displayName: cert-manager Issuer, kind: Issuer, name: issuers.cert-manager.io, version: v1}
+      - {displayName: Gateway API HTTPRoute, kind: HTTPRoute, name: httproutes.gateway.networking.k8s.io, version: v1}
+      - {displayName: Gateway API Gateway, kind: Gateway, name: gateways.gateway.networking.k8s.io, version: v1}
+      - {displayName: Kubernetes NetworkPolicy, kind: NetworkPolicy, name: networkpolicies.networking.k8s.io, version: v1}
+      - {displayName: Cilium NetworkPolicy, kind: CiliumNetworkPolicy, name: ciliumnetworkpolicies.cilium.io, version: v2}
