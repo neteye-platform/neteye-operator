@@ -112,8 +112,15 @@ func (r *KeycloakClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	kcc.Status.ClientUUID = result.UUID
-	r.setStatus(ctx, req.NamespacedName, kcc, neteye.ServiceStateReady, "Keycloak client is reconciled")
+	r.setStatus(ctx, req.NamespacedName, kcc, neteye.ServiceStateReady, readyMessage(kcc))
 	return ctrl.Result{RequeueAfter: r.reconciliationRequeue()}, nil
+}
+
+func readyMessage(kcc *neteye.KeycloakClient) string {
+	if !kcc.Spec.PublicClient && kcc.Spec.SecretRef == nil {
+		return "Keycloak client is reconciled; client secret is managed by Keycloak (no secretRef)"
+	}
+	return "Keycloak client is reconciled"
 }
 
 func (r *KeycloakClientReconciler) reconcileDelete(ctx context.Context, kcc *neteye.KeycloakClient, api *keycloak.AdminAPI) (ctrl.Result, error) {

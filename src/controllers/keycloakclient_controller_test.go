@@ -268,3 +268,50 @@ func containsString(values []string, want string) bool {
 	}
 	return false
 }
+
+func TestKeycloakClientReadyMessageReportsKeycloakManagedSecret(t *testing.T) {
+	stub := &stubKeycloak{clients: map[string]map[string]any{}}
+	kcc := keycloakClientCR("neteye-tenant-shared")
+	r, c := newKeycloakClientReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), kcc)
+
+	if _, err := r.Reconcile(context.Background(), requestFor(kcc)); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := &neteye.KeycloakClient{}
+	if err := c.Get(context.Background(), requestFor(kcc).NamespacedName, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Status != neteye.ServiceStateReady {
+		t.Fatalf("status = %q (%s)", updated.Status.Status, updated.Status.Message)
+	}
+	if !strings.Contains(updated.Status.Message, "managed by Keycloak") {
+		t.Errorf("message = %q", updated.Status.Message)
+	}
+}
+
+func TestKeycloakClientReadyMessagePlainWithSecretRef(t *testing.T) {
+	stub := &stubKeycloak{clients: map[string]map[string]any{}}
+	kcc := keycloakClientCR("neteye-tenant-shared")
+	kcc.Spec.SecretRef = &neteye.NetEyeSecretKeySelector{Name: "neteye-client", Key: "secret"}
+	clientSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: kcc.Namespace, Name: "neteye-client"},
+		Data:       map[string][]byte{"secret": []byte("s3cr3t")},
+	}
+	r, c := newKeycloakClientReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), clientSecret, kcc)
+
+	if _, err := r.Reconcile(context.Background(), requestFor(kcc)); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := &neteye.KeycloakClient{}
+	if err := c.Get(context.Background(), requestFor(kcc).NamespacedName, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Status != neteye.ServiceStateReady {
+		t.Fatalf("status = %q (%s)", updated.Status.Status, updated.Status.Message)
+	}
+	if strings.Contains(updated.Status.Message, "managed by Keycloak") {
+		t.Errorf("message = %q", updated.Status.Message)
+	}
+}
