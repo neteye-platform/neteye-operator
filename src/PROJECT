@@ -1,0 +1,5 @@
+domain: neteye.cloud
+layout: go.kubebuilder.io/v4
+projectName: neteye-operator
+repo: github.com/neteye-platform/neteye-operator
+version: "3"

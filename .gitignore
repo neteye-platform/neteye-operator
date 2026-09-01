@@ -1,2 +1,6 @@
 # Local build/tool outputs
 /src/bin/
+/src/config/.bundle-release.*/
+
+# Local cluster credentials
+/kubeconfig
