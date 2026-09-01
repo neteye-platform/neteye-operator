@@ -84,14 +84,3 @@ jobs:
       image-name: neteye-operator-bundle
       push: ${{ startsWith(github.ref, 'refs/tags/') }}
     secrets: inherit
-
-  build-catalog:
-    name: Build catalog image
-    needs: [unit, integration]
-    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@9fb4a55beca0a2763ade099d68abe572c900fd80 # main
-    with:
-      working-directory: src
-      dockerfile-path: src/Dockerfile.catalog
-      image-name: neteye-operator-catalog
-      push: ${{ startsWith(github.ref, 'refs/tags/') }}
-    secrets: inherit

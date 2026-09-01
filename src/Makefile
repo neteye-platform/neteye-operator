@@ -1,27 +1,5 @@
 # Image URL to use all building/pushing image targets.
-IMG ?= docker-si.wuerth-phoenix.com/neteye-operator:dev
-# Development inputs are exported as raw values. $(value ...) prevents Make from
-# evaluating a supplied literal Make function before the shell receives it.
-REGISTRY ?= 172.19.69.254:5000
-DEV_VERSION ?=
-MANAGER_IMG ?=
-BUNDLE_IMG ?=
-CATALOG_IMG ?=
-KEYCLOAK_SOURCE_IMG ?= ghcr.io/neteye-platform/neteye-keycloak:1.0.1
-KEYCLOAK_IMG ?=
-DEV_CONTEXT ?= bin/dev/context
-DEV_IMAGE_PULL_SECRET ?=
-KUBECONFIG ?=
-override export REGISTRY := $(value REGISTRY)
-override export DEV_VERSION := $(value DEV_VERSION)
-override export MANAGER_IMG := $(value MANAGER_IMG)
-override export BUNDLE_IMG := $(value BUNDLE_IMG)
-override export CATALOG_IMG := $(value CATALOG_IMG)
-override export KEYCLOAK_SOURCE_IMG := $(value KEYCLOAK_SOURCE_IMG)
-override export KEYCLOAK_IMG := $(value KEYCLOAK_IMG)
-override export DEV_CONTEXT := $(value DEV_CONTEXT)
-override export DEV_IMAGE_PULL_SECRET := $(value DEV_IMAGE_PULL_SECRET)
-override export KUBECONFIG := $(value KUBECONFIG)
+IMG ?= localhost/neteye-operator:dev
 
 # Tool versions.
 CONTROLLER_GEN_VERSION ?= v0.21.0
@@ -83,61 +61,6 @@ build: generate fmt vet ## Build the manager binary.
 .PHONY: docker-build
 docker-build: ## Build the operator container image.
 	docker build -f Dockerfile --build-arg VERSION=$(VERSION) -t $(IMG) .
-
-.PHONY: dev-render
-dev-render: ## Render an isolated bundle/catalog context for local OLM v1 development.
-	@set -eu; \
-    registry="$${REGISTRY:-172.19.69.254:5000}"; \
-	version="$${DEV_VERSION:-0.1.1-dev.$$(date -u +%Y%m%d%H%M%S).$$(git rev-parse --short HEAD 2>/dev/null || printf nogit)}"; \
-	context="$${DEV_CONTEXT:-bin/dev/context}"; \
-	keycloak="$${KEYCLOAK_IMG:-$$registry/neteye-keycloak:1.0.1}"; \
-	go run ./hack/dev-render --source-root . --output-context "$$context" --registry "$$registry" --version "$$version" --keycloak-image "$$keycloak" --image-pull-secret "$${DEV_IMAGE_PULL_SECRET:-}"
-
-.PHONY: dev-mirror-keycloak
-dev-mirror-keycloak: ## Mirror the Keycloak runtime image to the local registry.
-	@set -eu; \
-    registry="$${REGISTRY:-172.19.69.254:5000}"; \
-	source="$${KEYCLOAK_SOURCE_IMG:-ghcr.io/neteye-platform/neteye-keycloak:1.0.1}"; \
-	target="$${KEYCLOAK_IMG:-$$registry/neteye-keycloak:1.0.1}"; \
-	docker pull "$$source"; docker tag "$$source" "$$target"; docker push "$$target"
-
-.PHONY: dev-publish
-dev-publish: ## Build, render, and push local development manager, bundle, and catalog images.
-	@set -eu; \
-    registry="$${REGISTRY:-172.19.69.254:5000}"; \
-	version="$${DEV_VERSION:-0.1.1-dev.$$(date -u +%Y%m%d%H%M%S).$$(git rev-parse --short HEAD 2>/dev/null || printf nogit)}"; \
-	context="$${DEV_CONTEXT:-bin/dev/context}"; \
-	manager="$${MANAGER_IMG:-$$registry/neteye-operator:$$version}"; \
-	bundle="$${BUNDLE_IMG:-$$registry/neteye-operator-bundle:$$version}"; \
-	catalog="$${CATALOG_IMG:-$$registry/neteye-operator-catalog:$$version}"; \
-	keycloak="$${KEYCLOAK_IMG:-$$registry/neteye-keycloak:1.0.1}"; \
-	test "$$manager" = "$$registry/neteye-operator:$$version"; \
-	test "$$bundle" = "$$registry/neteye-operator-bundle:$$version"; \
-	test "$$catalog" = "$$registry/neteye-operator-catalog:$$version"; \
-	docker build -f Dockerfile --build-arg VERSION="$$version" -t "$$manager" .; docker push "$$manager"; \
-	go run ./hack/dev-render --source-root . --output-context "$$context" --registry "$$registry" --version "$$version" --keycloak-image "$$keycloak" --image-pull-secret "$${DEV_IMAGE_PULL_SECRET:-}"; \
-	docker build -f "$$PWD/Dockerfile.bundle" -t "$$bundle" "$$context"; docker push "$$bundle"; \
-	docker build -f "$$PWD/Dockerfile.catalog" -t "$$catalog" "$$context"; docker push "$$catalog"
-
-.PHONY: dev-install
-dev-install: ## Install the rendered version through OLM v1 using the existing operatorhubio catalog.
-	@set -eu; \
-	kubeconfig="$${KUBECONFIG:?set KUBECONFIG to the VM cluster kubeconfig}"; \
-	context="$${DEV_CONTEXT:-bin/dev/context}"; \
-	version_file="$$context/.dev-version"; \
-	catalog_file="$$context/.catalog-image"; \
-	test -s "$$version_file" || { printf '%s\n' "missing rendered state: $$version_file; run make dev-publish first" >&2; exit 1; }; \
-	test -s "$$catalog_file" || { printf '%s\n' "missing rendered state: $$catalog_file; run make dev-publish first" >&2; exit 1; }; \
-	version="$$(tr -d '\n' < "$$version_file")"; \
-	catalog_image="$$(tr -d '\n' < "$$catalog_file")"; \
-	go run ./hack/dev-render --validate-version "$$version"; \
-	go run ./hack/dev-render --validate-image "$$catalog_image"; \
-	KUBECONFIG="$$kubeconfig" kubectl get clustercatalog operatorhubio; \
-	KUBECONFIG="$$kubeconfig" helm upgrade --install neteye-operator ../charts --namespace neteye-system --create-namespace --set-string "operator.catalogImage=$$catalog_image" --set-string "operator.versionRange==$$version" --set-string "operator.upgradeConstraintPolicy=SelfCertified"
-
-.PHONY: dev-clean
-dev-clean: ## Remove the temporary local development render context.
-	@set -eu; context="$${DEV_CONTEXT:-bin/dev/context}"; go run ./hack/dev-render --source-root . --clean-output "$$context"
 
 .PHONY: clean
 clean: ## Remove local build outputs.
