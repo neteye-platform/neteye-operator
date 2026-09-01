@@ -40,6 +40,7 @@ kustomize-manifests: manifests kustomize operator-sdk ## Generate the Operator S
 
 .PHONY: verify-generated
 verify-generated: generate bundle bundle-validate ## Regenerate all code and OLM output, then validate the result.
+	git diff --exit-code
 
 .PHONY: fmt
 fmt: ## Run gofmt against Go code.
@@ -117,15 +118,19 @@ kustomize: $(KUSTOMIZE) ## Download kustomize locally if needed.
 
 $(KUSTOMIZE):
 	mkdir -p $(LOCALBIN)
-	curl -fsSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/$(KUSTOMIZE_VERSION)/kustomize_$(KUSTOMIZE_VERSION)_linux_amd64.tar.gz | tar -xz -C $(LOCALBIN)
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/kustomize/kustomize/v5@$(KUSTOMIZE_VERSION)
 
 .PHONY: operator-sdk
 operator-sdk: $(OPERATOR_SDK) ## Download Operator SDK locally if needed.
 
 $(OPERATOR_SDK):
 	mkdir -p $(LOCALBIN)
-	curl -fsSL https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_linux_amd64 -o $(OPERATOR_SDK)
-	chmod +x $(OPERATOR_SDK)
+	@tmp_dir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	curl -fsSL "https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_linux_amd64" -o "$$tmp_dir/operator-sdk_linux_amd64"; \
+	curl -fsSL "https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/checksums.txt" -o "$$tmp_dir/checksums.txt"; \
+	( cd "$$tmp_dir" && grep ' operator-sdk_linux_amd64$$' checksums.txt | sha256sum -c - ); \
+	install -m 0755 "$$tmp_dir/operator-sdk_linux_amd64" "$(OPERATOR_SDK)"
 
 .PHONY: envtest
 envtest: $(ENVTEST) ## Install setup-envtest (downloads apiserver/etcd on first test run).

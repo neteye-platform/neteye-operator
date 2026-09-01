@@ -99,8 +99,8 @@ validates the code and bundle output. The bundle remains AllNamespaces-only
 and preserves the validating webhook at `/validate-neteye-cloud-v1alpha1-neteye`.
 Bundle channel membership is defined only by the file-based catalog in the
 separate `neteye-operator-catalog` repository. OLM requires bundle-format
-channel metadata, so every bundle declares the supported `alpha,stable`
-taxonomy. This is not a release input and does not assign catalog membership.
+channel metadata, so every bundle declares the `preview` channel metadata.
+This is not a release input and does not assign catalog membership.
 
 ### OLM catalog
 
