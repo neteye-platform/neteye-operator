@@ -61,6 +61,46 @@ Run make targets from that directory, e.g. `make -C src build`:
 - `fmt` / `vet` / `lint` — format and static analysis (golangci-lint)
 - `test` — run unit tests
 - `docker-build` — build the container image
+- `kustomize-manifests` — regenerate the Operator SDK CSV base and render the
+  release manifest source
+- `bundle` — generate `src/bundle/` from `config/manifests/` and the API CRD
+- `bundle-validate` — validate the generated OLM bundle
+- `bundle-build` — build the bundle image with the maintained
+  `src/Dockerfile.bundle`
+
+### OLM bundle generation
+
+`src/bundle/` is generated release output; do not edit its CSV, CRD, or
+metadata by hand. The maintainable inputs are the API types and RBAC markers,
+the intentional legacy RBAC additions, and the CSV patches and sample in
+`src/config/manifests/` and `src/config/samples/`.
+
+The checked-in release version is `0.1.0-alpha2`. Generate it (or provide
+release values explicitly) from the repository root:
+
+```sh
+make bundle
+make bundle-validate
+
+# Example release override
+make bundle VERSION=0.1.0-alpha3 \
+  IMG=ghcr.io/neteye-platform/neteye-operator:0.1.0-alpha3 \
+  PACKAGE_NAME=neteye-operator
+make bundle-build BUNDLE_IMG=ghcr.io/neteye-platform/neteye-operator-bundle:0.1.0-alpha3
+```
+
+The Makefile pins and downloads Operator SDK `v1.42.3` and kustomize `v5.7.1`
+to `src/bin/`. `operator-sdk generate kustomize manifests` refreshes the source
+CSV scaffold only. `bundle` creates an untracked temporary release overlay,
+renders it directly with kustomize into `bundle/manifests/`, and renders bundle
+metadata from `config/bundle/annotations.yaml.tmpl`. The release overlay does
+not mutate tracked `config/manifests/`. `verify-generated` regenerates and
+validates the code and bundle output. The bundle remains AllNamespaces-only
+and preserves the validating webhook at `/validate-neteye-cloud-v1alpha1-neteye`.
+Bundle channel membership is defined only by the file-based catalog in the
+separate `neteye-operator-catalog` repository. OLM requires bundle-format
+channel metadata, so every bundle declares the supported `alpha,stable`
+taxonomy. This is not a release input and does not assign catalog membership.
 
 ### OLM catalog
 
