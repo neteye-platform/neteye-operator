@@ -6,14 +6,10 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"time"
 
-	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,19 +32,7 @@ type AdminAPIFactory = keycloak.AdminAPIFactory
 // resources. Keycloak exposes no watch API, so drift is corrected by requeueing
 // on ReconciliationRequeueAfter rather than by reacting to remote events.
 type KeycloakClientReconciler struct {
-	client.Client
-	Log    logr.Logger
-	Scheme *runtime.Scheme
-
-	// KeycloakNamespace is the namespace running the Keycloak instance. When
-	// empty, the shared workload namespace is used.
-	KeycloakNamespace string
-	// AdminAPIFactory defaults to keycloak.NewAdminAPI.
-	AdminAPIFactory AdminAPIFactory
-
-	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
-	FailureRequeueAfter        time.Duration
-	ReconciliationRequeueAfter time.Duration
+	KeycloakAPIReconciler
 }
 
 // +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakclients,verbs=get;list;watch;update;patch
@@ -133,18 +117,6 @@ func (r *KeycloakClientReconciler) reconcileDelete(ctx context.Context, kcc *net
 	return ctrl.Result{}, nil
 }
 
-// adminAPI builds an Admin API client bound to the in-cluster Keycloak Service,
-// authenticating as the internal administrative account when it is usable and
-// as the bootstrap admin otherwise.
-func (r *KeycloakClientReconciler) adminAPI(ctx context.Context) (*keycloak.AdminAPI, error) {
-	api, username, err := keycloak.ResolveAdminAPI(ctx, r.Client, r.keycloakNamespace(), r.AdminAPIFactory)
-	if err != nil {
-		return nil, err
-	}
-	ctrl.LoggerFrom(ctx).V(1).Info("authenticated against the Keycloak Admin API", "username", username)
-	return api, nil
-}
-
 // clientSecret resolves spec.secretRef. Public clients need no secret, so an
 // absent reference is not an error for them.
 func (r *KeycloakClientReconciler) clientSecret(ctx context.Context, kcc *neteye.KeycloakClient) (string, error) {
@@ -176,38 +148,8 @@ func (r *KeycloakClientReconciler) setStatus(ctx context.Context, key client.Obj
 		ClientUUID:         kcc.Status.ClientUUID,
 		ObservedGeneration: kcc.GetGeneration(),
 	}
-	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		current := &neteye.KeycloakClient{}
-		if err := r.Get(ctx, key, current); err != nil {
-			return client.IgnoreNotFound(err)
-		}
-		current.Status = status
-		return r.Status().Update(ctx, current)
-	})
-	if err != nil {
-		ctrl.LoggerFrom(ctx).Error(err, "unable to update KeycloakClient status")
-	}
-}
-
-func (r *KeycloakClientReconciler) keycloakNamespace() string {
-	if r.KeycloakNamespace != "" {
-		return r.KeycloakNamespace
-	}
-	return keycloak.WorkloadNamespace
-}
-
-func (r *KeycloakClientReconciler) failureRequeue() time.Duration {
-	if r.FailureRequeueAfter > 0 {
-		return r.FailureRequeueAfter
-	}
-	return DefaultFailureRequeueAfter
-}
-
-func (r *KeycloakClientReconciler) reconciliationRequeue() time.Duration {
-	if r.ReconciliationRequeueAfter > 0 {
-		return r.ReconciliationRequeueAfter
-	}
-	return DefaultReconciliationRequeueAfter
+	writeStatus(ctx, r.Client, key, func() *neteye.KeycloakClient { return &neteye.KeycloakClient{} },
+		func(current *neteye.KeycloakClient) { current.Status = status })
 }
 
 func (r *KeycloakClientReconciler) SetupWithManager(mgr ctrl.Manager) error {

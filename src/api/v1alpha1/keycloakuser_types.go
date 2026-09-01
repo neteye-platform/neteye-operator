@@ -115,9 +115,10 @@ type KeycloakUserSpec struct {
 	Credential *KeycloakUserCredentialSpec `json:"credential,omitempty"`
 
 	// DeletionPolicy decides what happens to the Keycloak account when this
-	// resource is deleted.
+	// resource is deleted. The account is removed with the resource unless
+	// Orphan is asked for explicitly.
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default="Orphan"
+	// +kubebuilder:default="Delete"
 	DeletionPolicy KeycloakUserDeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 

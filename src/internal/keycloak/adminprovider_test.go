@@ -9,9 +9,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -67,11 +69,12 @@ func resolve(t *testing.T, server *tokenServer, secrets []*corev1.Secret) (strin
 	factory := func(_ string, credentials AdminCredentials) *AdminAPI {
 		return NewAdminAPI(httpServer.URL, credentials)
 	}
-	_, username, err := ResolveAdminAPI(context.Background(), builder.Build(), WorkloadNamespace, factory)
+	provider := NewAdminProvider(builder.Build(), WorkloadNamespace, factory)
+	_, username, err := provider.Get(context.Background())
 	return username, err
 }
 
-func TestResolveAdminAPIUsesTheBootstrapAdminBeforeTheInternalOneExists(t *testing.T) {
+func TestAdminProviderUsesTheBootstrapAdminBeforeTheInternalOneExists(t *testing.T) {
 	server := &tokenServer{username: "temp-admin", password: "boot"}
 	username, err := resolve(t, server, adminSecrets("temp-admin", "boot", ""))
 	if err != nil {
@@ -82,7 +85,7 @@ func TestResolveAdminAPIUsesTheBootstrapAdminBeforeTheInternalOneExists(t *testi
 	}
 }
 
-func TestResolveAdminAPIPrefersTheInternalAdminOnceItWorks(t *testing.T) {
+func TestAdminProviderPrefersTheInternalAdminOnceItWorks(t *testing.T) {
 	server := &tokenServer{username: InternalAdminUsername, password: "internal"}
 	username, err := resolve(t, server, adminSecrets("temp-admin", "boot", "internal"))
 	if err != nil {
@@ -96,7 +99,7 @@ func TestResolveAdminAPIPrefersTheInternalAdminOnceItWorks(t *testing.T) {
 	}
 }
 
-func TestResolveAdminAPIFallsBackWhenTheInternalCredentialIsRejected(t *testing.T) {
+func TestAdminProviderFallsBackWhenTheInternalCredentialIsRejected(t *testing.T) {
 	// The Secret holds a password Keycloak never accepted: switching to it would
 	// lock the operator out, so it must fall back instead.
 	server := &tokenServer{username: "temp-admin", password: "boot"}
@@ -115,9 +118,74 @@ func TestResolveAdminAPIFallsBackWhenTheInternalCredentialIsRejected(t *testing.
 	}
 }
 
-func TestResolveAdminAPIFailsWithoutAnyCredential(t *testing.T) {
+func TestAdminProviderFailsWithoutAnyCredential(t *testing.T) {
 	server := &tokenServer{username: "temp-admin", password: "boot"}
 	if _, err := resolve(t, server, nil); err == nil {
 		t.Fatal("expected an error when no admin Secret exists")
+	}
+}
+
+func TestAdminProviderReusesTheClientAcrossReconciliations(t *testing.T) {
+	server := &tokenServer{username: InternalAdminUsername, password: "internal"}
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+
+	builder := fake.NewClientBuilder().WithScheme(internalAdminScheme(t))
+	for _, secret := range adminSecrets("temp-admin", "boot", "internal") {
+		builder = builder.WithObjects(secret)
+	}
+	provider := NewAdminProvider(builder.Build(), WorkloadNamespace, func(_ string, credentials AdminCredentials) *AdminAPI {
+		return NewAdminAPI(httpServer.URL, credentials)
+	})
+
+	for range 5 {
+		if _, _, err := provider.Get(context.Background()); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+	}
+	// One verification, not one per call: the cached token covers the rest.
+	if len(server.attempts) != 1 {
+		t.Errorf("token requests = %d, want 1 across five reconciliations", len(server.attempts))
+	}
+}
+
+func TestAdminProviderRebuildsWhenTheCredentialChanges(t *testing.T) {
+	server := &tokenServer{username: InternalAdminUsername, password: "rotated"}
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+
+	secrets := adminSecrets("temp-admin", "boot", "stale")
+	builder := fake.NewClientBuilder().WithScheme(internalAdminScheme(t))
+	for _, secret := range secrets {
+		builder = builder.WithObjects(secret)
+	}
+	c := builder.Build()
+	provider := NewAdminProvider(c, WorkloadNamespace, func(_ string, credentials AdminCredentials) *AdminAPI {
+		return NewAdminAPI(httpServer.URL, credentials)
+	})
+	provider.RetryInterval = time.Nanosecond
+
+	if _, username, err := provider.Get(context.Background()); err != nil || username != "temp-admin" {
+		t.Fatalf("first Get = %q, %v; want the bootstrap admin", username, err)
+	}
+
+	// The KeycloakUser controller rotates the password: the provider must pick
+	// the new one up instead of serving the stale client forever.
+	internal := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: WorkloadNamespace, Name: InternalAdminSecretName}
+	if err := c.Get(context.Background(), key, internal); err != nil {
+		t.Fatal(err)
+	}
+	internal.Data[InternalAdminSecretPasswordKey] = []byte("rotated")
+	if err := c.Update(context.Background(), internal); err != nil {
+		t.Fatal(err)
+	}
+
+	_, username, err := provider.Get(context.Background())
+	if err != nil {
+		t.Fatalf("Get after rotation: %v", err)
+	}
+	if username != InternalAdminUsername {
+		t.Errorf("authenticated as %q, want the internal admin after the rotation", username)
 	}
 }

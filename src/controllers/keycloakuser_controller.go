@@ -8,15 +8,11 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
-	"time"
 
-	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,19 +41,7 @@ const (
 // resources. As for KeycloakClient, Keycloak exposes no watch API, so drift is
 // corrected by requeueing rather than by reacting to remote events.
 type KeycloakUserReconciler struct {
-	client.Client
-	Log    logr.Logger
-	Scheme *runtime.Scheme
-
-	// KeycloakNamespace is the namespace running the Keycloak instance. When
-	// empty, the shared workload namespace is used.
-	KeycloakNamespace string
-	// AdminAPIFactory defaults to keycloak.NewAdminAPI.
-	AdminAPIFactory AdminAPIFactory
-
-	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
-	FailureRequeueAfter        time.Duration
-	ReconciliationRequeueAfter time.Duration
+	KeycloakAPIReconciler
 }
 
 // +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakusers,verbs=get;list;watch;create;update;patch
@@ -150,7 +134,9 @@ func (r *KeycloakUserReconciler) reconcileDelete(ctx context.Context, kcu *netey
 	if !controllerutil.ContainsFinalizer(kcu, KeycloakUserFinalizer) {
 		return ctrl.Result{}, nil
 	}
-	if kcu.Spec.DeletionPolicy == neteye.KeycloakUserDeletionPolicyDelete {
+	// Delete is the default, so an unset policy — a resource built in code, or
+	// one predating the field — removes the account too.
+	if kcu.Spec.DeletionPolicy != neteye.KeycloakUserDeletionPolicyOrphan {
 		if err := keycloak.DeleteUser(ctx, api, kcu.Spec); err != nil {
 			log.Error(err, "unable to delete the Keycloak user", "username", kcu.Spec.Username, "requeueAfter", r.failureRequeue())
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
@@ -244,20 +230,6 @@ func (r *KeycloakUserReconciler) storePassword(ctx context.Context, kcu *neteye.
 	return nil
 }
 
-// adminAPI builds an Admin API client bound to the in-cluster Keycloak Service,
-// authenticating as the internal administrative account when it is usable and
-// as the bootstrap admin otherwise. The account this controller reconciles is
-// the very one that supplies those credentials, so the fallback is what makes
-// the first reconciliation possible at all.
-func (r *KeycloakUserReconciler) adminAPI(ctx context.Context) (*keycloak.AdminAPI, error) {
-	api, username, err := keycloak.ResolveAdminAPI(ctx, r.Client, r.keycloakNamespace(), r.AdminAPIFactory)
-	if err != nil {
-		return nil, err
-	}
-	ctrl.LoggerFrom(ctx).V(1).Info("authenticated against the Keycloak Admin API", "username", username)
-	return api, nil
-}
-
 func (r *KeycloakUserReconciler) setStatus(ctx context.Context, key client.ObjectKey, kcu *neteye.KeycloakUser, state neteye.ServiceState, message string) {
 	status := neteye.KeycloakUserStatus{
 		Status:             state,
@@ -267,38 +239,8 @@ func (r *KeycloakUserReconciler) setStatus(ctx context.Context, key client.Objec
 		CredentialRotation: kcu.Status.CredentialRotation,
 		ObservedGeneration: kcu.GetGeneration(),
 	}
-	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		current := &neteye.KeycloakUser{}
-		if err := r.Get(ctx, key, current); err != nil {
-			return client.IgnoreNotFound(err)
-		}
-		current.Status = status
-		return r.Status().Update(ctx, current)
-	})
-	if err != nil {
-		ctrl.LoggerFrom(ctx).Error(err, "unable to update KeycloakUser status")
-	}
-}
-
-func (r *KeycloakUserReconciler) keycloakNamespace() string {
-	if r.KeycloakNamespace != "" {
-		return r.KeycloakNamespace
-	}
-	return keycloak.WorkloadNamespace
-}
-
-func (r *KeycloakUserReconciler) failureRequeue() time.Duration {
-	if r.FailureRequeueAfter > 0 {
-		return r.FailureRequeueAfter
-	}
-	return DefaultFailureRequeueAfter
-}
-
-func (r *KeycloakUserReconciler) reconciliationRequeue() time.Duration {
-	if r.ReconciliationRequeueAfter > 0 {
-		return r.ReconciliationRequeueAfter
-	}
-	return DefaultReconciliationRequeueAfter
+	writeStatus(ctx, r.Client, key, func() *neteye.KeycloakUser { return &neteye.KeycloakUser{} },
+		func(current *neteye.KeycloakUser) { current.Status = status })
 }
 
 func (r *KeycloakUserReconciler) SetupWithManager(mgr ctrl.Manager) error {

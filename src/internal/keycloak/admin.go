@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,10 @@ type AdminAPI struct {
 	Credentials AdminCredentials
 	HTTPClient  *http.Client
 
+	// The token is cached across calls and refreshed shortly before it expires.
+	// A single client is shared by concurrent reconciliations, so the cache is
+	// guarded.
+	mu          sync.Mutex
 	token       string
 	tokenExpiry time.Time
 }
@@ -70,6 +75,8 @@ func (a *AdminAPI) httpClient() *http.Client {
 // authenticate fetches an admin token with the direct access grant on the
 // master realm, reusing the cached token until it is about to expire.
 func (a *AdminAPI) authenticate(ctx context.Context) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.token != "" && time.Now().Add(adminTokenLeeway).Before(a.tokenExpiry) {
 		return a.token, nil
 	}
@@ -162,7 +169,9 @@ func (a *AdminAPI) do(ctx context.Context, method, path string, in any, out any)
 		// The token may have been revoked by a Keycloak restart; drop it so the
 		// next call re-authenticates instead of replaying a dead token.
 		if resp.StatusCode == http.StatusUnauthorized {
+			a.mu.Lock()
 			a.token = ""
+			a.mu.Unlock()
 		}
 		return &apiError{Method: method, Path: path, StatusCode: resp.StatusCode, Status: resp.Status, Body: truncate(raw)}
 	}

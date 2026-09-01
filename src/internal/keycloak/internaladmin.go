@@ -95,7 +95,7 @@ func internalAdminSpec() neteye.KeycloakUserSpec {
 // as the internal admin, so the last usable credential is never taken away.
 func (c *Component) EnsureBootstrapAdminDisabled(ctx context.Context, namespace string) error {
 	log := ctrl.LoggerFrom(ctx)
-	api, username, err := ResolveAdminAPI(ctx, c.client, namespace, c.AdminAPIFactory)
+	api, username, err := c.admin(namespace).Get(ctx)
 	if err != nil {
 		return err
 	}

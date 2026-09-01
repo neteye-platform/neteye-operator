@@ -111,10 +111,11 @@ spec:
                 - secretRef
                 type: object
               deletionPolicy:
-                default: Orphan
+                default: Delete
                 description: |-
                   DeletionPolicy decides what happens to the Keycloak account when this
-                  resource is deleted.
+                  resource is deleted. The account is removed with the resource unless
+                  Orphan is asked for explicitly.
                 enum:
                 - Orphan
                 - Delete

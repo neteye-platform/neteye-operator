@@ -114,12 +114,14 @@ func newKeycloakClientReconciler(t *testing.T, stub *stubKeycloak, objects ...cl
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).
 		WithStatusSubresource(&neteye.KeycloakClient{}).Build()
 	r := &KeycloakClientReconciler{
-		Client:            c,
-		Log:               logr.Discard(),
-		Scheme:            s,
-		KeycloakNamespace: keycloak.WorkloadNamespace,
-		AdminAPIFactory: func(_ string, credentials keycloak.AdminCredentials) *keycloak.AdminAPI {
-			return keycloak.NewAdminAPI(server.URL, credentials)
+		KeycloakAPIReconciler: KeycloakAPIReconciler{
+			Client:            c,
+			Log:               logr.Discard(),
+			Scheme:            s,
+			KeycloakNamespace: keycloak.WorkloadNamespace,
+			AdminAPIFactory: func(_ string, credentials keycloak.AdminCredentials) *keycloak.AdminAPI {
+				return keycloak.NewAdminAPI(server.URL, credentials)
+			},
 		},
 	}
 	return r, c
@@ -248,7 +250,7 @@ func TestKeycloakClientReconcileDeletesClient(t *testing.T) {
 }
 
 func TestKeycloakClientRequeueOverrides(t *testing.T) {
-	r := &KeycloakClientReconciler{FailureRequeueAfter: time.Second, ReconciliationRequeueAfter: 2 * time.Second}
+	r := &KeycloakClientReconciler{KeycloakAPIReconciler: KeycloakAPIReconciler{FailureRequeueAfter: time.Second, ReconciliationRequeueAfter: 2 * time.Second}}
 	if r.failureRequeue() != time.Second {
 		t.Errorf("failureRequeue = %s", r.failureRequeue())
 	}

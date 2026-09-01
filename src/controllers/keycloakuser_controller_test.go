@@ -132,12 +132,14 @@ func newKeycloakUserReconciler(t *testing.T, stub *stubKeycloakUsers, objects ..
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).
 		WithStatusSubresource(&neteye.KeycloakUser{}).Build()
 	r := &KeycloakUserReconciler{
-		Client:            c,
-		Log:               logr.Discard(),
-		Scheme:            s,
-		KeycloakNamespace: keycloak.WorkloadNamespace,
-		AdminAPIFactory: func(_ string, credentials keycloak.AdminCredentials) *keycloak.AdminAPI {
-			return keycloak.NewAdminAPI(server.URL, credentials)
+		KeycloakAPIReconciler: KeycloakAPIReconciler{
+			Client:            c,
+			Log:               logr.Discard(),
+			Scheme:            s,
+			KeycloakNamespace: keycloak.WorkloadNamespace,
+			AdminAPIFactory: func(_ string, credentials keycloak.AdminCredentials) *keycloak.AdminAPI {
+				return keycloak.NewAdminAPI(server.URL, credentials)
+			},
 		},
 	}
 	return r, c
@@ -237,7 +239,7 @@ func TestKeycloakUserReconcileAdoptsExistingAccount(t *testing.T) {
 	}
 }
 
-func TestKeycloakUserReconcileDeleteOrphansByDefault(t *testing.T) {
+func TestKeycloakUserReconcileDeletesTheAccountByDefault(t *testing.T) {
 	stub := newStubKeycloakUsers()
 	stub.users["svc"] = map[string]any{"id": "user-svc", "username": "svc", "enabled": true}
 	now := metav1.Now()
@@ -255,8 +257,31 @@ func TestKeycloakUserReconcileDeleteOrphansByDefault(t *testing.T) {
 	if _, err := r.Reconcile(context.Background(), requestFor(kcu)); err != nil {
 		t.Fatal(err)
 	}
+	if _, ok := stub.users["svc"]; ok {
+		t.Fatal("the default deletion policy must remove the account from Keycloak")
+	}
+}
+
+func TestKeycloakUserReconcileOrphanPolicyKeepsTheAccount(t *testing.T) {
+	stub := newStubKeycloakUsers()
+	stub.users["svc"] = map[string]any{"id": "user-svc", "username": "svc", "enabled": true}
+	now := metav1.Now()
+	kcu := &neteye.KeycloakUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:         "neteye-tenant-shared",
+			Name:              "svc",
+			Finalizers:        []string{KeycloakUserFinalizer},
+			DeletionTimestamp: &now,
+		},
+		Spec: neteye.KeycloakUserSpec{Username: "svc", DeletionPolicy: neteye.KeycloakUserDeletionPolicyOrphan},
+	}
+	r, _ := newKeycloakUserReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), kcu)
+
+	if _, err := r.Reconcile(context.Background(), requestFor(kcu)); err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := stub.users["svc"]; !ok {
-		t.Fatal("the default deletion policy must leave the account in Keycloak")
+		t.Fatal("the Orphan policy must leave the account in Keycloak")
 	}
 }
 

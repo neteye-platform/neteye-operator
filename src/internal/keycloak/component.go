@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -65,6 +66,18 @@ type Component struct {
 	// AdminAPIFactory builds the Admin API client. Tests substitute it to point
 	// at a stub server; when nil, NewAdminAPI is used.
 	AdminAPIFactory AdminAPIFactory
+
+	adminOnce     sync.Once
+	adminProvider *AdminProvider
+}
+
+// admin returns the shared Admin API provider, built on first use so that
+// AdminAPIFactory can still be set after construction.
+func (c *Component) admin(namespace string) *AdminProvider {
+	c.adminOnce.Do(func() {
+		c.adminProvider = NewAdminProvider(c.client, namespace, c.AdminAPIFactory)
+	})
+	return c.adminProvider
 }
 
 func NewComponent(client client.Client, log logr.Logger) *Component {

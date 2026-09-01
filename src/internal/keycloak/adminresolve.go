@@ -10,52 +10,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // AdminAPIFactory builds an Admin API client. Tests substitute it to point at a
 // stub server.
 type AdminAPIFactory func(baseURL string, credentials AdminCredentials) *AdminAPI
-
-// ResolveAdminAPI returns the Admin API client the operator should use, and the
-// username it authenticated as.
-//
-// It prefers the internal administrative account the platform owns, and falls
-// back to the bootstrap admin the Keycloak Operator created. The preference is
-// only honored once the internal account has been *proven* to work: the
-// credential is used to obtain a token before it is accepted. Without that
-// proof the operator could switch to an account whose password the cluster
-// stored but Keycloak never accepted, and lose access to its own Keycloak.
-func ResolveAdminAPI(ctx context.Context, c client.Client, namespace string, factory AdminAPIFactory) (*AdminAPI, string, error) {
-	log := ctrl.LoggerFrom(ctx)
-	if factory == nil {
-		factory = NewAdminAPI
-	}
-	baseURL := InClusterBaseURL(namespace)
-
-	internal, err := internalAdminCredentials(ctx, c, namespace)
-	if err != nil {
-		return nil, "", err
-	}
-	if internal != nil {
-		api := factory(baseURL, *internal)
-		err := api.Verify(ctx)
-		if err == nil {
-			return api, internal.Username, nil
-		}
-		// Not fatal: the account may not exist yet, or its password may have
-		// been changed outside the cluster. The bootstrap admin still works,
-		// and the KeycloakUser controller repairs the account meanwhile.
-		log.V(1).Info("internal admin credentials were rejected; falling back to the bootstrap admin", "username", internal.Username, "reason", err.Error())
-	}
-
-	bootstrap, err := bootstrapAdminCredentials(ctx, c, namespace)
-	if err != nil {
-		return nil, "", err
-	}
-	return factory(baseURL, *bootstrap), bootstrap.Username, nil
-}
 
 // internalAdminCredentials reads the password of the account the platform owns.
 // A missing Secret is not an error: it just means the account has not been
