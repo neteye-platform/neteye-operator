@@ -1,0 +1,25 @@
+resources:
+- bases/neteye-operator.clusterserviceversion.yaml
+- ../crd/bases/neteye.cloud_neteyes.yaml
+patches:
+- path: patches/metadata.yaml
+- path: patches/install-modes.yaml
+- path: patches/webhook.yaml
+- path: patches/crds.yaml
+  target:
+    group: operators.coreos.com
+    kind: ClusterServiceVersion
+    name: neteye-operator.v0.0.0
+    version: v1alpha1
+- path: patches/deployment.yaml
+  target:
+    group: operators.coreos.com
+    kind: ClusterServiceVersion
+    name: neteye-operator.v0.0.0
+    version: v1alpha1
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+images:
+- name: controller
+  newName: localhost/neteye-operator
+  newTag: dev

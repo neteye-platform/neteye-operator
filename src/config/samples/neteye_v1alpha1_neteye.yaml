@@ -1,0 +1,25 @@
+apiVersion: neteye.cloud/v1alpha1
+kind: NetEye
+metadata:
+  name: neteye-sample
+  namespace: neteye-tenant-shared
+spec:
+  version: "4.50"
+  gateway:
+    name: neteye
+    className: cilium
+    annotations:
+      lbipam.cilium.io/ips: 192.0.2.10
+    tlsSecretName: neteyelocal-wildcard-tls
+  internalCertificateIssuerRef: neteye-internal-issuer
+  identity:
+    replicas: 1
+    hostname: keycloak.example.com
+    podExtraEnvVars:
+      - JAVA_OPTS_APPEND=-Djava.net.preferIPv6Addresses=true
+    dbConnection:
+      host: mariadb.example.com
+      port: 3306
+      dbName: keycloak
+      usernameSecret: {name: keycloak-db-secret, key: username}
+      passwordSecret: {name: keycloak-db-secret, key: password}
