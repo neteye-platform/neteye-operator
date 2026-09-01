@@ -47,7 +47,52 @@ CRD_GROUP = "neteye.cloud"
 CRD_VERSION = "v1"
 CRD_PLURAL = "keycloakauthflows"
 
+FINALIZER = "neteye.cloud/keycloakauthflow"
+
 TOKEN = None
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+def string_id(value):
+    if value is None:
+        raise ValueError("Expected identifier, got None")
+
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+
+    if not isinstance(value, str):
+        value = str(value)
+
+    return value
+
+
+def url_part(value):
+    return quote(
+        string_id(value),
+        safe="",
+    )
+
+
+def execution_name(execution):
+    return (
+        execution.get("alias")
+        or execution.get("displayName")
+        or execution.get("providerId")
+        or execution.get("id")
+    )
+
+
+def desired_execution_name(desired):
+    if "flow" in desired:
+        return desired["flow"]["alias"]
+
+    return (
+        desired.get("alias")
+        or desired.get("authenticator")
+    )
 
 
 # =============================================================================
@@ -63,8 +108,12 @@ def load_kubernetes():
         print("Using local Kubernetes configuration")
 
 
+def get_kubernetes_api():
+    return client.CustomObjectsApi()
+
+
 def get_authflows():
-    api = client.CustomObjectsApi()
+    api = get_kubernetes_api()
 
     result = api.list_namespaced_custom_object(
         group=CRD_GROUP,
@@ -73,16 +122,130 @@ def get_authflows():
         plural=CRD_PLURAL,
     )
 
+    items = result.get("items", [])
+
     print(
         f"[DEBUG] Kubernetes namespace={NAMESPACE}, "
-        f"found {len(result.get('items', []))} KeycloakAuthFlow(s)"
+        f"found {len(items)} KeycloakAuthFlow(s)"
     )
 
-    return result.get("items", [])
+    return items
+
+
+def ensure_finalizer(resource):
+    api = get_kubernetes_api()
+
+    metadata = resource.get(
+        "metadata",
+        {},
+    )
+
+    name = metadata.get("name")
+
+    if not name:
+        raise RuntimeError(
+            "Cannot add finalizer: resource has no metadata.name"
+        )
+
+    finalizers = list(
+        metadata.get("finalizers") or []
+    )
+
+    if FINALIZER in finalizers:
+        print(
+            f"[DEBUG] Finalizer '{FINALIZER}' already exists "
+            f"on '{name}'"
+        )
+        return
+
+    print(
+        f"[DEBUG] Adding finalizer '{FINALIZER}' "
+        f"to '{name}'"
+    )
+
+    finalizers.append(FINALIZER)
+
+    body = {
+        "metadata": {
+            "finalizers": finalizers,
+        }
+    }
+
+    api.patch_namespaced_custom_object(
+        group=CRD_GROUP,
+        version=CRD_VERSION,
+        namespace=NAMESPACE,
+        plural=CRD_PLURAL,
+        name=name,
+        body=body,
+    )
+
+    print(
+        f"[DEBUG] Finalizer '{FINALIZER}' added "
+        f"to '{name}'"
+    )
+
+
+def remove_finalizer(resource):
+    api = get_kubernetes_api()
+
+    metadata = resource.get(
+        "metadata",
+        {},
+    )
+
+    name = metadata.get("name")
+
+    if not name:
+        raise RuntimeError(
+            "Cannot remove finalizer: resource has no metadata.name"
+        )
+
+    finalizers = list(
+        metadata.get("finalizers") or []
+    )
+
+    if FINALIZER not in finalizers:
+        print(
+            f"[DEBUG] Finalizer '{FINALIZER}' is already absent "
+            f"from '{name}'"
+        )
+        return
+
+    print(
+        f"[DEBUG] Removing finalizer '{FINALIZER}' "
+        f"from '{name}'"
+    )
+
+    new_finalizers = [
+        item
+        for item in finalizers
+        if item != FINALIZER
+    ]
+
+    body = {
+        "metadata": {
+            "finalizers": new_finalizers,
+        }
+    }
+
+    api.patch_namespaced_custom_object(
+        group=CRD_GROUP,
+        version=CRD_VERSION,
+        namespace=NAMESPACE,
+        plural=CRD_PLURAL,
+        name=name,
+        body=body,
+    )
+
+    print(
+        f"[DEBUG] Finalizer '{FINALIZER}' removed "
+        f"from '{name}'"
+    )
 
 
 # =============================================================================
-# Keycloak
+# Keycloak authentication
 # =============================================================================
 
 def authenticate():
@@ -90,11 +253,13 @@ def authenticate():
 
     url = (
         f"{KEYCLOAK_URL}/realms/"
-        f"{quote(KEYCLOAK_TOKEN_REALM, safe='')}"
+        f"{url_part(KEYCLOAK_TOKEN_REALM)}"
         "/protocol/openid-connect/token"
     )
 
-    print(f"[DEBUG] Authenticating against: {url}")
+    print(
+        f"[DEBUG] Authenticating against: {url}"
+    )
 
     response = requests.post(
         url,
@@ -121,16 +286,25 @@ def kc_request(method, path, **kwargs):
     if TOKEN is None:
         authenticate()
 
-    headers = kwargs.pop("headers", {})
+    headers = kwargs.pop(
+        "headers",
+        {},
+    )
+
     headers["Authorization"] = f"Bearer {TOKEN}"
 
     url = f"{KEYCLOAK_URL}{path}"
 
-    # Don't print Authorization header.
-    print(f"[DEBUG] Keycloak request: {method} {url}")
+    print(
+        f"[DEBUG] Keycloak request: "
+        f"{method} {url}"
+    )
 
     if "json" in kwargs:
-        print(f"[DEBUG] Request JSON: {kwargs['json']}")
+        print(
+            f"[DEBUG] Request JSON: "
+            f"{kwargs['json']}"
+        )
 
     response = requests.request(
         method,
@@ -143,15 +317,21 @@ def kc_request(method, path, **kwargs):
 
     print(
         f"[DEBUG] Keycloak response: "
-        f"{response.status_code} {response.reason}"
+        f"{response.status_code} "
+        f"{response.reason}"
     )
 
     if response.text:
-        print(f"[DEBUG] Response body: {response.text}")
+        print(
+            f"[DEBUG] Response body: "
+            f"{response.text}"
+        )
 
-    # Re-authenticate once if the token expired.
     if response.status_code == 401:
-        print("[DEBUG] Token expired, authenticating again")
+
+        print(
+            "[DEBUG] Token expired, authenticating again"
+        )
 
         authenticate()
 
@@ -168,16 +348,21 @@ def kc_request(method, path, **kwargs):
 
         print(
             f"[DEBUG] Retry response: "
-            f"{response.status_code} {response.reason}"
+            f"{response.status_code} "
+            f"{response.reason}"
         )
 
         if response.text:
-            print(f"[DEBUG] Retry response body: {response.text}")
+            print(
+                f"[DEBUG] Retry response body: "
+                f"{response.text}"
+            )
 
     if not response.ok:
         raise RuntimeError(
             f"{method} {path} failed: "
-            f"{response.status_code}: {response.text}"
+            f"{response.status_code}: "
+            f"{response.text}"
         )
 
     return response
@@ -186,25 +371,28 @@ def kc_request(method, path, **kwargs):
 def authentication_path(realm, suffix=""):
     return (
         f"/admin/realms/"
-        f"{quote(realm, safe='')}"
+        f"{url_part(realm)}"
         f"/authentication{suffix}"
     )
 
 
 # =============================================================================
-# Flows
+# Authentication flows
 # =============================================================================
 
 def get_flows(realm):
-    print(f"[DEBUG] Getting authentication flows for realm '{realm}'")
-
     return kc_request(
         "GET",
-        authentication_path(realm, "/flows"),
+        authentication_path(
+            realm,
+            "/flows",
+        ),
     ).json()
 
 
 def get_flow(realm, alias):
+    alias = string_id(alias)
+
     print(
         f"[DEBUG] Looking for flow "
         f"realm='{realm}', alias='{alias}'"
@@ -213,34 +401,77 @@ def get_flow(realm, alias):
     flows = get_flows(realm)
 
     for flow in flows:
-        print(
-            f"[DEBUG] Found flow: "
-            f"alias='{flow.get('alias')}', "
-            f"id='{flow.get('id')}', "
-            f"providerId='{flow.get('providerId')}'"
-        )
 
         if flow.get("alias") == alias:
-            print(f"[DEBUG] Matched flow '{alias}'")
+
+            print(
+                f"[DEBUG] Matched flow "
+                f"alias='{alias}', "
+                f"id='{flow.get('id')}', "
+                f"topLevel='{flow.get('topLevel')}'"
+            )
+
             return flow
 
-    print(f"[DEBUG] Flow '{alias}' not found")
+    print(
+        f"[DEBUG] Flow '{alias}' was not found"
+    )
 
     return None
 
 
-def create_root_flow(realm, desired):
-    alias = desired["alias"]
-    provider = desired.get("provider", "basic-flow")
+def get_flow_by_id(realm, flow_id):
+    flow_id = string_id(flow_id)
 
     print(
-        f"[DEBUG] Creating root flow: "
-        f"alias='{alias}', provider='{provider}'"
+        f"[DEBUG] Getting authentication flow "
+        f"by ID='{flow_id}'"
+    )
+
+    response = kc_request(
+        "GET",
+        authentication_path(
+            realm,
+            f"/flows/{url_part(flow_id)}",
+        ),
+    )
+
+    flow = response.json()
+
+    print(
+        f"[DEBUG] Flow by ID: "
+        f"id='{flow.get('id')}', "
+        f"alias='{flow.get('alias')}', "
+        f"providerId='{flow.get('providerId')}', "
+        f"topLevel='{flow.get('topLevel')}', "
+        f"builtIn='{flow.get('builtIn')}'"
+    )
+
+    return flow
+
+
+def create_root_flow(realm, desired):
+    alias = string_id(
+        desired["alias"]
+    )
+
+    provider = desired.get(
+        "provider",
+        "basic-flow",
+    )
+
+    print(
+        f"[DEBUG] Creating root flow "
+        f"alias='{alias}', "
+        f"provider='{provider}'"
     )
 
     kc_request(
         "POST",
-        authentication_path(realm, "/flows"),
+        authentication_path(
+            realm,
+            "/flows",
+        ),
         json={
             "alias": alias,
             "providerId": provider,
@@ -251,39 +482,198 @@ def create_root_flow(realm, desired):
 
 
 def ensure_root_flow(realm, desired):
-    alias = desired["alias"]
+    alias = string_id(
+        desired["alias"]
+    )
 
-    flow = get_flow(realm, alias)
+    flow = get_flow(
+        realm,
+        alias,
+    )
 
-    if not flow:
-        create_root_flow(realm, desired)
+    if flow is None:
 
-        flow = get_flow(realm, alias)
+        create_root_flow(
+            realm,
+            desired,
+        )
 
-        if not flow:
+        flow = get_flow(
+            realm,
+            alias,
+        )
+
+        if flow is None:
             raise RuntimeError(
-                f"Flow '{alias}' was created but cannot be found"
+                f"Flow '{alias}' was created "
+                f"but cannot be found"
             )
 
     return flow
 
 
-def create_subflow(realm, parent_alias, desired):
-    alias = desired["alias"]
-    provider = desired.get("provider", "basic-flow")
+# =============================================================================
+# RAW execution retrieval
+# =============================================================================
+
+def get_raw_executions(realm, flow_alias):
+    flow_alias = string_id(flow_alias)
 
     print(
-        f"[DEBUG] Creating subflow:"
-        f" parent='{parent_alias}',"
-        f" alias='{alias}',"
-        f" provider='{provider}'"
+        f"[DEBUG] Getting RAW executions "
+        f"for flow realm='{realm}', "
+        f"alias='{flow_alias}'"
+    )
+
+    response = kc_request(
+        "GET",
+        authentication_path(
+            realm,
+            f"/flows/{url_part(flow_alias)}/executions",
+        ),
+    )
+
+    executions = response.json()
+
+    print(
+        f"[DEBUG] Raw executions returned "
+        f"for '{flow_alias}': {len(executions)}"
+    )
+
+    for execution in executions:
+
+        print(
+            f"[DEBUG]   id='{execution.get('id')}', "
+            f"providerId='{execution.get('providerId')}', "
+            f"displayName='{execution.get('displayName')}', "
+            f"alias='{execution.get('alias')}', "
+            f"authenticationFlow='{execution.get('authenticationFlow')}', "
+            f"flowId='{execution.get('flowId')}', "
+            f"requirement='{execution.get('requirement')}', "
+            f"level='{execution.get('level')}', "
+            f"index='{execution.get('index')}', "
+            f"priority='{execution.get('priority')}'"
+        )
+
+    return executions
+
+
+def get_direct_executions(realm, flow_alias):
+    raw = get_raw_executions(
+        realm,
+        flow_alias,
+    )
+
+    direct = [
+        execution
+        for execution in raw
+        if execution.get("level", 0) == 0
+    ]
+
+    print(
+        f"[DEBUG] Direct executions of "
+        f"'{flow_alias}': {len(direct)} execution(s)"
+    )
+
+    for execution in direct:
+
+        print(
+            f"[DEBUG]   DIRECT: "
+            f"id='{execution.get('id')}', "
+            f"displayName='{execution.get('displayName')}', "
+            f"providerId='{execution.get('providerId')}', "
+            f"alias='{execution.get('alias')}', "
+            f"authenticationFlow='{execution.get('authenticationFlow')}', "
+            f"flowId='{execution.get('flowId')}', "
+            f"requirement='{execution.get('requirement')}', "
+            f"index='{execution.get('index')}'"
+        )
+
+    return direct
+
+
+# =============================================================================
+# Subflow handling
+# =============================================================================
+
+def find_subflow_execution(
+    executions,
+    alias,
+):
+    alias = string_id(alias)
+
+    print(
+        f"[DEBUG] Looking for subflow execution "
+        f"with alias/displayName='{alias}'"
+    )
+
+    for execution in executions:
+
+        if not execution.get("authenticationFlow"):
+            continue
+
+        display_name = execution.get(
+            "displayName"
+        )
+
+        execution_alias = execution.get(
+            "alias"
+        )
+
+        print(
+            f"[DEBUG]   Subflow candidate: "
+            f"id='{execution.get('id')}', "
+            f"displayName='{display_name}', "
+            f"alias='{execution_alias}', "
+            f"flowId='{execution.get('flowId')}'"
+        )
+
+        if display_name == alias:
+            print(
+                f"[DEBUG] Matched subflow by displayName: "
+                f"id='{execution.get('id')}'"
+            )
+            return execution
+
+        if execution_alias == alias:
+            print(
+                f"[DEBUG] Matched subflow by alias: "
+                f"id='{execution.get('id')}'"
+            )
+            return execution
+
+    return None
+
+
+def create_subflow(
+    realm,
+    parent_alias,
+    desired,
+):
+    parent_alias = string_id(parent_alias)
+
+    alias = string_id(
+        desired["alias"]
+    )
+
+    provider = desired.get(
+        "provider",
+        "basic-flow",
+    )
+
+    print(
+        f"[DEBUG] Creating subflow "
+        f"parent='{parent_alias}', "
+        f"alias='{alias}', "
+        f"provider='{provider}'"
     )
 
     kc_request(
         "POST",
         authentication_path(
             realm,
-            f"/flows/{quote(parent_alias, safe='')}/executions/flow",
+            f"/flows/{url_part(parent_alias)}"
+            "/executions/flow",
         ),
         json={
             "alias": alias,
@@ -293,192 +683,262 @@ def create_subflow(realm, parent_alias, desired):
     )
 
 
-# =============================================================================
-# Executions
-# =============================================================================
+def ensure_subflow(
+    realm,
+    parent_alias,
+    desired,
+):
+    parent_alias = string_id(parent_alias)
 
-def get_executions(realm, flow_alias):
-    """
-    Get all executions belonging to a flow.
-
-    flow_alias is the Keycloak flow alias. This is also valid for
-    subflows once the subflow already exists.
-    """
-
-    print(
-        f"[DEBUG] Getting executions for flow "
-        f"realm='{realm}', alias='{flow_alias}'"
+    alias = string_id(
+        desired["alias"]
     )
 
-    response = kc_request(
-        "GET",
-        authentication_path(
+    print(
+        f"[DEBUG] Ensuring subflow "
+        f"parent='{parent_alias}', "
+        f"alias='{alias}'"
+    )
+
+    parent_executions = get_direct_executions(
+        realm,
+        parent_alias,
+    )
+
+    nested_execution = find_subflow_execution(
+        parent_executions,
+        alias,
+    )
+
+    if nested_execution:
+
+        flow_id = nested_execution.get(
+            "flowId"
+        )
+
+        if not flow_id:
+            raise RuntimeError(
+                f"Subflow '{alias}' exists under "
+                f"'{parent_alias}' but has no flowId"
+            )
+
+        flow = get_flow_by_id(
             realm,
-            f"/flows/{quote(flow_alias, safe='')}/executions",
-        ),
-    )
-
-    executions = response.json()
-
-    print(
-        f"[DEBUG] Found {len(executions)} execution(s) "
-        f"for flow '{flow_alias}'"
-    )
-
-    for execution in executions:
-        print(
-            f"[DEBUG]   Execution: "
-            f"id='{execution.get('id')}', "
-            f"providerId='{execution.get('providerId')}', "
-            f"displayName='{execution.get('displayName')}', "
-            f"alias='{execution.get('alias')}', "
-            f"authenticationFlow='{execution.get('authenticationFlow')}', "
-            f"flowId='{execution.get('flowId')}'"
+            flow_id,
         )
 
-    return executions
-
-
-def execution_name(execution):
-    return (
-        execution.get("alias")
-        or execution.get("displayName")
-        or execution.get("providerId")
-        or execution.get("id")
-    )
-
-
-def desired_execution_name(desired):
-    if "flow" in desired:
-        return desired["flow"]["alias"]
-
-    return desired.get("alias") or desired.get("authenticator")
-
-
-def find_matching_execution(executions, desired):
-    print(
-        f"[DEBUG] Searching for matching execution:"
-        f" desired={desired}"
-    )
-
-    if "flow" in desired:
-        alias = desired["flow"]["alias"]
-
-        print(
-            f"[DEBUG] Looking for subflow execution "
-            f"with alias/displayName='{alias}'"
+        actual_alias = flow.get(
+            "alias"
         )
+
+        if actual_alias != alias:
+            raise RuntimeError(
+                f"Subflow execution '{alias}' points "
+                f"to flow '{actual_alias}'"
+            )
+
+        return flow
+
+    existing_flow = get_flow(
+        realm,
+        alias,
+    )
+
+    if existing_flow:
+
+        raise RuntimeError(
+            f"Flow '{alias}' already exists globally "
+            f"but is not attached to '{parent_alias}'"
+        )
+
+    create_subflow(
+        realm,
+        parent_alias,
+        desired,
+    )
+
+    parent_executions = get_direct_executions(
+        realm,
+        parent_alias,
+    )
+
+    nested_execution = find_subflow_execution(
+        parent_executions,
+        alias,
+    )
+
+    if not nested_execution:
+        raise RuntimeError(
+            f"Subflow '{alias}' was created but "
+            f"its execution was not found"
+        )
+
+    flow_id = nested_execution.get(
+        "flowId"
+    )
+
+    if not flow_id:
+        raise RuntimeError(
+            f"Subflow '{alias}' has no flowId"
+        )
+
+    flow = get_flow_by_id(
+        realm,
+        flow_id,
+    )
+
+    if flow.get("alias") != alias:
+
+        raise RuntimeError(
+            f"Created subflow alias mismatch: "
+            f"expected='{alias}', "
+            f"actual='{flow.get('alias')}'"
+        )
+
+    return flow
+
+
+# =============================================================================
+# Execution matching
+# =============================================================================
+
+def find_matching_execution(
+    executions,
+    desired,
+):
+    print(
+        f"[DEBUG] Searching for matching execution: "
+        f"desired={desired}"
+    )
+
+    # -------------------------------------------------------------------------
+    # Subflow
+    # -------------------------------------------------------------------------
+
+    if "flow" in desired:
+
+        alias = string_id(
+            desired["flow"]["alias"]
+        )
+
+        return find_subflow_execution(
+            executions,
+            alias,
+        )
+
+    # -------------------------------------------------------------------------
+    # Normal authenticator
+    # -------------------------------------------------------------------------
+
+    authenticator = desired.get(
+        "authenticator"
+    )
+
+    desired_alias = desired.get(
+        "alias"
+    )
+
+    desired_alias = (
+        string_id(desired_alias)
+        if desired_alias
+        else None
+    )
+
+    # -------------------------------------------------------------------------
+    # First try execution alias.
+    # -------------------------------------------------------------------------
+
+    if desired_alias:
 
         for execution in executions:
-            if not execution.get("authenticationFlow"):
+
+            if execution.get(
+                "authenticationFlow"
+            ):
                 continue
 
-            if execution.get("displayName") == alias:
+            if execution.get(
+                "alias"
+            ) == desired_alias:
+
                 print(
-                    f"[DEBUG] Matched subflow by displayName: "
+                    f"[DEBUG] Matched normal execution "
+                    f"by execution alias: "
                     f"id='{execution.get('id')}'"
                 )
+
                 return execution
 
-            if execution.get("alias") == alias:
-                print(
-                    f"[DEBUG] Matched subflow by alias: "
-                    f"id='{execution.get('id')}'"
-                )
-                return execution
+    # -------------------------------------------------------------------------
+    # Then match by providerId.
+    # -------------------------------------------------------------------------
 
-        print("[DEBUG] No matching subflow execution found")
-
-        return None
-
-    alias = desired.get("alias")
-
-    if alias:
-        print(
-            f"[DEBUG] Looking for normal execution "
-            f"with alias='{alias}'"
-        )
+    if authenticator:
 
         for execution in executions:
-            if execution.get("alias") == alias:
-                print(
-                    f"[DEBUG] Matched execution by alias: "
-                    f"id='{execution.get('id')}'"
-                )
-                return execution
 
-    authenticator = desired.get("authenticator")
+            if execution.get(
+                "authenticationFlow"
+            ):
+                continue
 
-    print(
-        f"[DEBUG] Looking for normal execution "
-        f"with providerId='{authenticator}'"
-    )
+            if execution.get(
+                "providerId"
+            ) != authenticator:
+                continue
 
-    for execution in executions:
-        if execution.get("authenticationFlow"):
-            continue
-
-        if execution.get("providerId") == authenticator:
             print(
-                f"[DEBUG] Matched execution by providerId: "
+                f"[DEBUG] Matched normal execution "
+                f"by providerId='{authenticator}': "
                 f"id='{execution.get('id')}'"
             )
+
             return execution
 
-    print("[DEBUG] No matching execution found")
+    print(
+        "[DEBUG] No matching execution found"
+    )
 
     return None
 
 
-def create_execution(realm, flow_alias, desired):
-    authenticator = desired["authenticator"]
+# =============================================================================
+# Create authenticator execution
+# =============================================================================
 
-    print()
-    print("[DEBUG] ============================================================")
-    print("[DEBUG] CREATE EXECUTION")
-    print("[DEBUG] ============================================================")
-    print(f"[DEBUG] Realm:       {realm}")
-    print(f"[DEBUG] Flow alias:  {flow_alias}")
-    print(f"[DEBUG] Authenticator/provider: {authenticator}")
-    print(f"[DEBUG] Desired execution: {desired}")
-    print("[DEBUG] ============================================================")
-
-    path = authentication_path(
-        realm,
-        f"/flows/{quote(flow_alias, safe='')}/executions/execution",
+def create_execution(
+    realm,
+    flow_alias,
+    desired,
+):
+    flow_alias = string_id(
+        flow_alias
     )
 
-    payload = {
-        "provider": authenticator,
-    }
-
-    print(f"[DEBUG] POST path: {path}")
-    print(f"[DEBUG] POST payload: {payload}")
-
-    response = kc_request(
-        "POST",
-        path,
-        json=payload,
+    authenticator = string_id(
+        desired["authenticator"]
     )
 
     print(
-        f"[DEBUG] Execution creation succeeded: "
-        f"status={response.status_code}"
+        f"[DEBUG] Creating authenticator "
+        f"'{authenticator}' in flow '{flow_alias}'"
     )
 
-    if response.text:
-        print(
-            f"[DEBUG] Execution creation response: "
-            f"{response.text}"
-        )
-
-    print("[DEBUG] ============================================================")
-
-    return response
+    return kc_request(
+        "POST",
+        authentication_path(
+            realm,
+            f"/flows/{url_part(flow_alias)}"
+            "/executions/execution",
+        ),
+        json={
+            "provider": authenticator,
+        },
+    )
 
 
 # =============================================================================
-# Requirements
+# Requirement
 # =============================================================================
 
 def reconcile_requirement(
@@ -487,29 +947,23 @@ def reconcile_requirement(
     execution,
     desired,
 ):
-    if "requirement" not in desired:
-        print(
-            f"[DEBUG] No requirement specified for "
-            f"{execution_name(execution)}"
-        )
+    desired_requirement = desired.get(
+        "requirement"
+    )
+
+    if desired_requirement is None:
         return
 
-    desired_requirement = desired["requirement"]
-    current_requirement = execution.get("requirement")
-
-    print(
-        f"[DEBUG] Requirement check for "
-        f"{execution_name(execution)}: "
-        f"current='{current_requirement}', "
-        f"desired='{desired_requirement}'"
+    current_requirement = execution.get(
+        "requirement"
     )
 
     if current_requirement == desired_requirement:
         return
 
     print(
-        f"      Updating requirement for "
-        f"{execution_name(execution)}: "
+        f"[DEBUG] Updating requirement for "
+        f"'{execution_name(execution)}': "
         f"{current_requirement} -> "
         f"{desired_requirement}"
     )
@@ -518,7 +972,8 @@ def reconcile_requirement(
         "PUT",
         authentication_path(
             realm,
-            f"/flows/{quote(flow_alias, safe='')}/executions",
+            f"/flows/{url_part(flow_alias)}"
+            "/executions",
         ),
         json={
             "id": execution["id"],
@@ -531,17 +986,19 @@ def reconcile_requirement(
 # Authenticator configuration
 # =============================================================================
 
-def get_authenticator_config(realm, config_id):
-    print(
-        f"[DEBUG] Getting authenticator config "
-        f"id='{config_id}'"
+def get_authenticator_config(
+    realm,
+    config_id,
+):
+    config_id = string_id(
+        config_id
     )
 
     return kc_request(
         "GET",
         authentication_path(
             realm,
-            f"/config/{quote(config_id, safe='')}",
+            f"/config/{url_part(config_id)}",
         ),
     ).json()
 
@@ -551,33 +1008,47 @@ def create_authenticator_config(
     execution,
     desired_config,
 ):
-    execution_id = execution["id"]
-
-    print()
-    print("[DEBUG] ============================================================")
-    print("[DEBUG] CREATE AUTHENTICATOR CONFIG")
-    print("[DEBUG] ============================================================")
-    print(f"[DEBUG] Execution ID: {execution_id}")
-    print(f"[DEBUG] Config alias: {desired_config['alias']}")
-    print(
-        f"[DEBUG] Config values: "
-        f"{desired_config.get('values', {})}"
+    execution_id = string_id(
+        execution["id"]
     )
-    print("[DEBUG] ============================================================")
+
+    config_alias = string_id(
+        desired_config["alias"]
+    )
+
+    values = desired_config.get(
+        "values",
+        {},
+    )
+
+    print(
+        f"[DEBUG] Creating authenticator config "
+        f"execution='{execution_id}', "
+        f"alias='{config_alias}'"
+    )
 
     response = kc_request(
         "POST",
         authentication_path(
             realm,
-            f"/executions/{quote(execution_id, safe='')}/config",
+            f"/executions/{url_part(execution_id)}"
+            "/config",
         ),
         json={
-            "alias": desired_config["alias"],
-            "config": desired_config.get("values", {}),
+            "alias": config_alias,
+            "config": values,
         },
     )
 
-    return response.json()
+    if response.text:
+
+        try:
+            return response.json()
+
+        except ValueError:
+            return None
+
+    return None
 
 
 def reconcile_authenticator_config(
@@ -585,43 +1056,104 @@ def reconcile_authenticator_config(
     execution,
     desired,
 ):
-    print(
-        f"[DEBUG] Checking authenticator config for "
-        f"execution id='{execution.get('id')}', "
-        f"provider='{execution.get('providerId')}', "
-        f"alias='{execution.get('alias')}'"
+    desired_config = desired.get(
+        "config"
     )
-
-    desired_config = desired.get("config")
 
     if not desired_config:
-        print("[DEBUG] No config declared in CR")
         return
 
-    config_alias = desired_config["alias"]
-    desired_values = desired_config.get("values", {})
-
-    print(
-        f"[DEBUG] Desired config alias='{config_alias}'"
-    )
-    print(
-        f"[DEBUG] Desired config values={desired_values}"
+    desired_config_alias = string_id(
+        desired_config["alias"]
     )
 
-    execution_id = execution["id"]
-
-    config_id = execution.get("authenticationConfig")
-
-    print(
-        f"[DEBUG] Execution id='{execution_id}' "
-        f"has authenticationConfig='{config_id}'"
+    desired_values = desired_config.get(
+        "values",
+        {},
     )
 
-    if not config_id:
-        print(
-            "[DEBUG] Execution has no authenticationConfig. "
-            "Creating one."
+    execution_id = execution.get(
+        "id"
+    )
+
+    config_id = execution.get(
+        "authenticationConfig"
+    )
+
+    print(
+        f"[DEBUG] Config reconciliation: "
+        f"execution='{execution_id}', "
+        f"provider='{execution.get('providerId')}', "
+        f"authenticationConfig='{config_id}', "
+        f"desiredAlias='{desired_config_alias}'"
+    )
+
+    # -------------------------------------------------------------------------
+    # Existing configuration
+    # -------------------------------------------------------------------------
+
+    if config_id:
+
+        current_config = get_authenticator_config(
+            realm,
+            config_id,
         )
+
+        current_alias = current_config.get(
+            "alias"
+        )
+
+        current_values = current_config.get(
+            "config",
+            {},
+        )
+
+        print(
+            f"[DEBUG] Existing config: "
+            f"alias='{current_alias}', "
+            f"values={current_values}"
+        )
+
+        if (
+            current_alias != desired_config_alias
+            or current_values != desired_values
+        ):
+
+            print(
+                "[DEBUG] Updating existing "
+                "authenticator config"
+            )
+
+            kc_request(
+                "PUT",
+                authentication_path(
+                    realm,
+                    f"/config/{url_part(config_id)}",
+                ),
+                json={
+                    "alias": desired_config_alias,
+                    "config": desired_values,
+                },
+            )
+
+        else:
+
+            print(
+                "[DEBUG] Authenticator config "
+                "already matches desired state"
+            )
+
+        return
+
+    # -------------------------------------------------------------------------
+    # No configuration ID.
+    # -------------------------------------------------------------------------
+
+    print(
+        "[DEBUG] Execution has no authenticationConfig"
+    )
+
+    try:
 
         create_authenticator_config(
             realm,
@@ -629,88 +1161,173 @@ def reconcile_authenticator_config(
             desired_config,
         )
 
-        return
+    except RuntimeError as exc:
 
-    print(
-        f"[DEBUG] Existing authenticationConfig found: "
-        f"{config_id}"
-    )
+        error_text = str(exc)
 
-    current_config = get_authenticator_config(
-        realm,
-        config_id,
-    )
-
-    print(
-        f"[DEBUG] Current authenticator config: "
-        f"{current_config}"
-    )
-
-    current_alias = current_config.get("alias")
-    current_values = current_config.get("config", {})
-
-    print(
-        f"[DEBUG] Current config alias='{current_alias}'"
-    )
-    print(
-        f"[DEBUG] Current config values={current_values}"
-    )
-
-    if (
-        current_alias != config_alias
-        or current_values != desired_values
-    ):
+        if "already exists" not in error_text.lower():
+            raise
 
         print(
-            f"      Updating authenticator config: "
-            f"{config_alias}"
-        )
-
-        kc_request(
-            "PUT",
-            authentication_path(
-                realm,
-                f"/config/{quote(config_id, safe='')}",
-            ),
-            json={
-                "alias": config_alias,
-                "config": desired_values,
-            },
-        )
-
-    else:
-        print(
-            "[DEBUG] Authenticator config already matches desired state"
+            "[DEBUG] Config already exists according to "
+            "Keycloak; will refresh execution state"
         )
 
 
 # =============================================================================
-# Delete
+# Delete execution
 # =============================================================================
 
-def delete_execution(realm, execution):
-    name = execution_name(execution)
-
-    print(
-        f"      Deleting undesired execution: "
-        f"{name}"
+def delete_execution(
+    realm,
+    execution,
+):
+    execution_id = string_id(
+        execution["id"]
     )
 
     print(
         f"[DEBUG] Deleting execution "
-        f"id='{execution.get('id')}', "
-        f"providerId='{execution.get('providerId')}', "
-        f"alias='{execution.get('alias')}', "
-        f"displayName='{execution.get('displayName')}'"
+        f"id='{execution_id}', "
+        f"name='{execution_name(execution)}', "
+        f"provider='{execution.get('providerId')}', "
+        f"flowId='{execution.get('flowId')}'"
     )
 
     kc_request(
         "DELETE",
         authentication_path(
             realm,
-            f"/executions/{quote(execution['id'], safe='')}",
+            f"/executions/{url_part(execution_id)}",
         ),
     )
+
+
+# =============================================================================
+# Delete flow
+# =============================================================================
+
+def delete_keycloak_flow(
+    realm,
+    alias,
+):
+    alias = string_id(alias)
+
+    print()
+    print("=" * 80)
+    print("[DEBUG] DELETING KEYCLOAK FLOW")
+    print("=" * 80)
+    print(f"[DEBUG] Realm: {realm}")
+    print(f"[DEBUG] Flow:  {alias}")
+    print("=" * 80)
+
+    # -------------------------------------------------------------------------
+    # Find flow by alias.
+    #
+    # IMPORTANT:
+    # Keycloak's DELETE endpoint expects the FLOW ID,
+    # not the alias.
+    # -------------------------------------------------------------------------
+
+    flow = get_flow(
+        realm,
+        alias,
+    )
+
+    if flow is None:
+
+        print(
+            f"[DEBUG] Flow '{alias}' does not exist "
+            f"in Keycloak."
+        )
+
+        print(
+            "[DEBUG] Nothing to delete."
+        )
+
+        return True
+
+    flow_id = flow.get(
+        "id"
+    )
+
+    if not flow_id:
+
+        raise RuntimeError(
+            f"Flow '{alias}' exists but has no ID"
+        )
+
+    print(
+        f"[DEBUG] Found flow to delete: "
+        f"alias='{flow.get('alias')}', "
+        f"id='{flow_id}', "
+        f"topLevel='{flow.get('topLevel')}', "
+        f"builtIn='{flow.get('builtIn')}'"
+    )
+
+    # -------------------------------------------------------------------------
+    # Never delete built-in Keycloak flows.
+    # -------------------------------------------------------------------------
+
+    if flow.get("builtIn"):
+
+        raise RuntimeError(
+            f"Refusing to delete built-in Keycloak "
+            f"flow '{alias}'"
+        )
+
+    # -------------------------------------------------------------------------
+    # DELETE USING FLOW ID.
+    # -------------------------------------------------------------------------
+
+    print(
+        f"[DEBUG] Sending DELETE for flow ID='{flow_id}'"
+    )
+
+    kc_request(
+        "DELETE",
+        authentication_path(
+            realm,
+            f"/flows/{url_part(flow_id)}",
+        ),
+    )
+
+    print(
+        f"[DEBUG] DELETE request completed for "
+        f"flow ID='{flow_id}'"
+    )
+
+    # -------------------------------------------------------------------------
+    # Verify deletion.
+    #
+    # We deliberately search by alias again.
+    # If Keycloak still returns the flow, we do NOT remove
+    # the Kubernetes finalizer.
+    # -------------------------------------------------------------------------
+
+    print(
+        f"[DEBUG] Verifying deletion of "
+        f"flow alias='{alias}'"
+    )
+
+    remaining_flow = get_flow(
+        realm,
+        alias,
+    )
+
+    if remaining_flow is not None:
+
+        raise RuntimeError(
+            f"Keycloak flow '{alias}' still exists "
+            f"after DELETE"
+        )
+
+    print(
+        f"[DEBUG] Confirmed Keycloak flow "
+        f"'{alias}' has been deleted"
+    )
+
+    return True
 
 
 # =============================================================================
@@ -722,8 +1339,8 @@ def sort_executions(executions):
         executions,
         key=lambda execution: (
             execution.get(
-                "priority",
-                execution.get("index", 0),
+                "index",
+                0,
             )
         ),
     )
@@ -734,15 +1351,19 @@ def reconcile_order(
     flow_alias,
     desired_executions,
 ):
+    flow_alias = string_id(flow_alias)
+
     print(
         f"[DEBUG] Reconciling execution order "
         f"for flow '{flow_alias}'"
     )
 
-    for desired_index, desired in enumerate(desired_executions):
+    for desired_index, desired in enumerate(
+        desired_executions
+    ):
 
         current = sort_executions(
-            get_executions(
+            get_direct_executions(
                 realm,
                 flow_alias,
             )
@@ -754,11 +1375,13 @@ def reconcile_order(
         )
 
         if not execution:
+
             print(
-                f"[DEBUG] Cannot order desired execution "
+                f"[DEBUG] Cannot order "
                 f"'{desired_execution_name(desired)}' "
                 f"because it was not found"
             )
+
             continue
 
         current_index = next(
@@ -773,23 +1396,18 @@ def reconcile_order(
         if current_index is None:
             continue
 
-        execution_id = execution["id"]
-
-        print(
-            f"[DEBUG] Execution "
-            f"'{execution_name(execution)}' "
-            f"id='{execution_id}' "
-            f"current_index={current_index}, "
-            f"desired_index={desired_index}"
+        execution_id = string_id(
+            execution["id"]
         )
 
         while current_index > desired_index:
+
             kc_request(
                 "POST",
                 authentication_path(
                     realm,
                     f"/executions/"
-                    f"{quote(execution_id, safe='')}"
+                    f"{url_part(execution_id)}"
                     "/raise-priority",
                 ),
             )
@@ -797,12 +1415,13 @@ def reconcile_order(
             current_index -= 1
 
         while current_index < desired_index:
+
             kc_request(
                 "POST",
                 authentication_path(
                     realm,
                     f"/executions/"
-                    f"{quote(execution_id, safe='')}"
+                    f"{url_part(execution_id)}"
                     "/lower-priority",
                 ),
             )
@@ -819,214 +1438,53 @@ def reconcile_flow(
     desired,
     parent_alias=None,
 ):
-    alias = desired["alias"]
+    alias = string_id(
+        desired["alias"]
+    )
 
     print()
     print("=" * 80)
-    print(f"[DEBUG] Reconciling flow: {alias}")
-    print(f"[DEBUG] Realm: {realm}")
-    print(f"[DEBUG] Parent flow: {parent_alias}")
+    print("[DEBUG] RECONCILING FLOW")
+    print("=" * 80)
+    print(f"[DEBUG] Alias:  {alias}")
+    print(f"[DEBUG] Parent: {parent_alias}")
     print("=" * 80)
 
     # -------------------------------------------------------------------------
-    # Make sure flow exists
+    # Ensure flow exists.
     # -------------------------------------------------------------------------
 
     if parent_alias is None:
-        # Root flow.
+
         flow = ensure_root_flow(
             realm,
             desired,
         )
 
     else:
-        # ---------------------------------------------------------------------
-        # IMPORTANT:
-        #
-        # For a subflow, do NOT blindly create the flow just because
-        # get_flow() cannot find it.
-        #
-        # The parent flow may already contain a subflow execution pointing
-        # to this flow. Keycloak also requires flow aliases to be globally
-        # unique, so blindly calling create_subflow() can result in:
-        #
-        #   409 New flow alias name already exists
-        #
-        # The parent execution is the authoritative way to determine whether
-        # this subflow is already attached.
-        # ---------------------------------------------------------------------
 
-        print(
-            f"[DEBUG] Resolving subflow execution "
-            f"'{alias}' inside parent '{parent_alias}'"
-        )
-
-        parent_executions = get_executions(
+        flow = ensure_subflow(
             realm,
             parent_alias,
+            desired,
         )
 
-        nested_execution = None
+    flow_id = flow.get(
+        "id"
+    )
 
-        for execution in parent_executions:
-            if not execution.get("authenticationFlow"):
-                continue
-
-            execution_alias = (
-                execution.get("alias")
-                or execution.get("displayName")
-            )
-
-            print(
-                f"[DEBUG] Parent subflow candidate: "
-                f"id='{execution.get('id')}', "
-                f"alias='{execution.get('alias')}', "
-                f"displayName='{execution.get('displayName')}', "
-                f"authenticationFlow='{execution.get('authenticationFlow')}'"
-            )
-
-            if execution_alias == alias:
-                nested_execution = execution
-                break
-
-        # ---------------------------------------------------------------------
-        # Existing subflow execution found.
-        # ---------------------------------------------------------------------
-
-        if nested_execution:
-
-            print(
-                f"[DEBUG] Subflow '{alias}' is already attached to "
-                f"parent '{parent_alias}'"
-            )
-
-            print(
-                f"[DEBUG] Subflow execution id="
-                f"'{nested_execution.get('id')}'"
-            )
-
-            # We deliberately do NOT call create_subflow() here.
-            #
-            # The subflow already exists and is already attached.
-            flow = get_flow(
-                realm,
-                alias,
-            )
-
-            if flow:
-                print(
-                    f"[DEBUG] Existing subflow definition found: "
-                    f"id='{flow.get('id')}', "
-                    f"alias='{flow.get('alias')}'"
-                )
-            else:
-                print(
-                    f"[DEBUG] WARNING: subflow execution exists, "
-                    f"but flow definition '{alias}' was not returned "
-                    f"by GET /authentication/flows"
-                )
-
-        else:
-
-            # -----------------------------------------------------------------
-            # No subflow execution exists under the parent.
-            #
-            # Before creating anything, check whether a flow with this alias
-            # already exists globally.
-            # -----------------------------------------------------------------
-
-            print(
-                f"[DEBUG] No existing subflow execution found under "
-                f"'{parent_alias}'"
-            )
-
-            existing_flow = get_flow(
-                realm,
-                alias,
-            )
-
-            if existing_flow:
-
-                print(
-                    f"[DEBUG] Flow '{alias}' already exists globally "
-                    f"but is not attached to '{parent_alias}'"
-                )
-
-                print(
-                    "[DEBUG] Creating it again would cause a Keycloak "
-                    "409 alias conflict."
-                )
-
-                raise RuntimeError(
-                    f"Flow '{alias}' already exists in Keycloak but is "
-                    f"not attached as a subflow of '{parent_alias}'. "
-                    f"Manual cleanup or explicit adoption is required."
-                )
-
-            # -----------------------------------------------------------------
-            # Completely new subflow.
-            # -----------------------------------------------------------------
-
-            print(
-                f"[DEBUG] Subflow '{alias}' does not exist. "
-                f"Creating it under '{parent_alias}'."
-            )
-
-            create_subflow(
-                realm,
-                parent_alias,
-                desired,
-            )
-
-            # Re-read parent executions because Keycloak generated
-            # the execution ID.
-            parent_executions = get_executions(
-                realm,
-                parent_alias,
-            )
-
-            nested_execution = None
-
-            for execution in parent_executions:
-
-                if not execution.get("authenticationFlow"):
-                    continue
-
-                execution_alias = (
-                    execution.get("alias")
-                    or execution.get("displayName")
-                )
-
-                if execution_alias == alias:
-                    nested_execution = execution
-                    break
-
-            if not nested_execution:
-                raise RuntimeError(
-                    f"Subflow '{alias}' was created under "
-                    f"'{parent_alias}', but its execution "
-                    f"could not be found"
-                )
-
-            print(
-                f"[DEBUG] Newly created subflow execution: "
-                f"id='{nested_execution.get('id')}'"
-            )
-
-            flow = get_flow(
-                realm,
-                alias,
-            )
-
-            if not flow:
-                raise RuntimeError(
-                    f"Subflow '{alias}' was created but its "
-                    f"flow definition cannot be found"
-                )
+    print(
+        f"[DEBUG] Flow ID: {flow_id}"
+    )
 
     # -------------------------------------------------------------------------
-    # Desired executions
+    # Get ONLY executions directly belonging to this flow.
     # -------------------------------------------------------------------------
+
+    current_executions = get_direct_executions(
+        realm,
+        alias,
+    )
 
     desired_executions = desired.get(
         "executions",
@@ -1034,50 +1492,39 @@ def reconcile_flow(
     )
 
     print(
-        f"[DEBUG] Desired executions for '{alias}': "
+        f"[DEBUG] Desired DIRECT executions "
+        f"for '{alias}': "
         f"{len(desired_executions)}"
-    )
-
-    for index, desired_execution in enumerate(
-        desired_executions
-    ):
-        print(
-            f"[DEBUG]   Desired execution #{index}: "
-            f"{desired_execution}"
-        )
-
-    current_executions = get_executions(
-        realm,
-        alias,
     )
 
     desired_ids = set()
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Reconcile desired executions
-    # -------------------------------------------------------------------------
+    # =========================================================================
 
-    for desired_index, desired_execution in enumerate(
-        desired_executions
-    ):
+    for desired_execution in desired_executions:
 
         print()
-        print(
-            f"[DEBUG] Processing desired execution "
-            f"#{desired_index}: {desired_execution}"
-        )
+        print("=" * 80)
 
         # =====================================================================
-        # Subflow
+        # SUBFLOW
         # =====================================================================
 
         if "flow" in desired_execution:
 
-            nested = desired_execution["flow"]
+            nested = desired_execution[
+                "flow"
+            ]
+
+            nested_alias = string_id(
+                nested["alias"]
+            )
 
             print(
-                f"[DEBUG] Desired execution is a subflow: "
-                f"{nested}"
+                f"[DEBUG] Desired execution is "
+                f"SUBFLOW '{nested_alias}'"
             )
 
             execution = find_matching_execution(
@@ -1088,8 +1535,8 @@ def reconcile_flow(
             if not execution:
 
                 print(
-                    f"[DEBUG] Subflow execution "
-                    f"'{nested['alias']}' does not exist. "
+                    f"[DEBUG] Subflow '{nested_alias}' "
+                    f"is missing from '{alias}'. "
                     f"Creating it."
                 )
 
@@ -1099,7 +1546,7 @@ def reconcile_flow(
                     nested,
                 )
 
-                current_executions = get_executions(
+                current_executions = get_direct_executions(
                     realm,
                     alias,
                 )
@@ -1110,16 +1557,11 @@ def reconcile_flow(
                 )
 
             if not execution:
+
                 raise RuntimeError(
                     f"Could not find subflow "
-                    f"'{nested['alias']}' "
-                    f"inside '{alias}'"
+                    f"'{nested_alias}' inside '{alias}'"
                 )
-
-            print(
-                f"[DEBUG] Subflow execution resolved: "
-                f"id='{execution.get('id')}'"
-            )
 
             desired_ids.add(
                 execution["id"]
@@ -1132,7 +1574,6 @@ def reconcile_flow(
                 desired_execution,
             )
 
-            # Recursively reconcile the contents of the existing subflow.
             reconcile_flow(
                 realm,
                 nested,
@@ -1142,13 +1583,16 @@ def reconcile_flow(
             continue
 
         # =====================================================================
-        # Normal authenticator execution
+        # NORMAL AUTHENTICATOR
         # =====================================================================
 
+        authenticator = desired_execution.get(
+            "authenticator"
+        )
+
         print(
-            f"[DEBUG] Desired execution is an authenticator: "
-            f"provider='{desired_execution.get('authenticator')}', "
-            f"alias='{desired_execution.get('alias')}'"
+            f"[DEBUG] Desired execution is "
+            f"AUTHENTICATOR '{authenticator}'"
         )
 
         execution = find_matching_execution(
@@ -1159,8 +1603,9 @@ def reconcile_flow(
         if not execution:
 
             print(
-                "[DEBUG] Execution does not exist. "
-                "Calling create_execution()."
+                f"[DEBUG] Authenticator "
+                f"'{authenticator}' is missing "
+                f"from '{alias}'. Creating it."
             )
 
             create_execution(
@@ -1169,11 +1614,7 @@ def reconcile_flow(
                 desired_execution,
             )
 
-            print(
-                "[DEBUG] Re-reading executions after creation"
-            )
-
-            current_executions = get_executions(
+            current_executions = get_direct_executions(
                 realm,
                 alias,
             )
@@ -1184,6 +1625,7 @@ def reconcile_flow(
             )
 
         if not execution:
+
             raise RuntimeError(
                 f"Could not find execution "
                 f"'{desired_execution_name(desired_execution)}' "
@@ -1196,12 +1638,17 @@ def reconcile_flow(
             f"providerId='{execution.get('providerId')}', "
             f"alias='{execution.get('alias')}', "
             f"displayName='{execution.get('displayName')}', "
-            f"authenticationConfig='{execution.get('authenticationConfig')}'"
+            f"authenticationConfig="
+            f"'{execution.get('authenticationConfig')}'"
         )
 
         desired_ids.add(
             execution["id"]
         )
+
+        # ---------------------------------------------------------------------
+        # Requirement
+        # ---------------------------------------------------------------------
 
         reconcile_requirement(
             realm,
@@ -1210,49 +1657,170 @@ def reconcile_flow(
             desired_execution,
         )
 
+        # ---------------------------------------------------------------------
+        # Configuration
+        # ---------------------------------------------------------------------
+
         reconcile_authenticator_config(
             realm,
             execution,
             desired_execution,
         )
 
-    # -------------------------------------------------------------------------
-    # PRUNE
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # PRUNE DIRECT EXECUTIONS
+    # =========================================================================
 
+    print()
     print(
-        f"[DEBUG] Checking for undesired executions "
-        f"attached to '{alias}'"
+        f"[DEBUG] Pruning undesired DIRECT executions "
+        f"from '{alias}'"
     )
 
-    current_executions = get_executions(
+    current_executions = get_direct_executions(
         realm,
         alias,
     )
 
     for execution in current_executions:
 
-        if execution["id"] not in desired_ids:
+        execution_id = execution.get(
+            "id"
+        )
 
-            print(
-                f"[DEBUG] Execution id='{execution['id']}' "
-                f"is not in desired state"
-            )
+        if execution_id in desired_ids:
+            continue
 
-            delete_execution(
-                realm,
-                execution,
-            )
+        print(
+            f"[DEBUG] Execution is NOT desired: "
+            f"id='{execution_id}', "
+            f"name='{execution_name(execution)}', "
+            f"provider='{execution.get('providerId')}', "
+            f"authenticationFlow="
+            f"'{execution.get('authenticationFlow')}', "
+            f"flowId='{execution.get('flowId')}'"
+        )
 
-    # -------------------------------------------------------------------------
-    # Ordering
-    # -------------------------------------------------------------------------
+        delete_execution(
+            realm,
+            execution,
+        )
+
+    # =========================================================================
+    # ORDER
+    # =========================================================================
 
     reconcile_order(
         realm,
         alias,
         desired_executions,
     )
+
+
+# =============================================================================
+# Resource deletion reconciliation
+# =============================================================================
+
+def reconcile_resource_deletion(
+    resource,
+):
+    metadata = resource.get(
+        "metadata",
+        {},
+    )
+
+    spec = resource.get(
+        "spec",
+        {},
+    )
+
+    resource_name = metadata.get(
+        "name",
+        "<unknown>",
+    )
+
+    deletion_timestamp = metadata.get(
+        "deletionTimestamp"
+    )
+
+    realm = spec.get(
+        "realm"
+    )
+
+    alias = spec.get(
+        "alias"
+    )
+
+    print()
+    print("=" * 80)
+    print("[DEBUG] RESOURCE DELETION REQUESTED")
+    print("=" * 80)
+    print(f"[DEBUG] Resource: {resource_name}")
+    print(f"[DEBUG] Realm:    {realm}")
+    print(f"[DEBUG] Flow:     {alias}")
+    print(
+        f"[DEBUG] DeletionTimestamp: "
+        f"{deletion_timestamp}"
+    )
+    print(
+        f"[DEBUG] Finalizers: "
+        f"{metadata.get('finalizers', [])}"
+    )
+    print("=" * 80)
+
+    if not realm:
+
+        raise RuntimeError(
+            f"Cannot delete Keycloak resource "
+            f"'{resource_name}': spec.realm is missing"
+        )
+
+    if not alias:
+
+        raise RuntimeError(
+            f"Cannot delete Keycloak resource "
+            f"'{resource_name}': spec.alias is missing"
+        )
+
+    # -------------------------------------------------------------------------
+    # Delete from Keycloak.
+    #
+    # This function:
+    #   1. Finds the flow by alias.
+    #   2. Gets its ID.
+    #   3. Deletes using the ID.
+    #   4. Verifies that the flow disappeared.
+    #
+    # If any step fails, an exception is raised and the finalizer remains.
+    # -------------------------------------------------------------------------
+
+    delete_keycloak_flow(
+        realm,
+        alias,
+    )
+
+    # -------------------------------------------------------------------------
+    # Only remove finalizer AFTER Keycloak deletion is confirmed.
+    # -------------------------------------------------------------------------
+
+    print(
+        f"[DEBUG] Keycloak deletion confirmed "
+        f"for resource '{resource_name}'"
+    )
+
+    remove_finalizer(
+        resource
+    )
+
+    print(
+        f"[DEBUG] Finalizer removed. "
+        f"Kubernetes can now delete '{resource_name}'."
+    )
+
+
+# =============================================================================
+# Main reconciliation
+# =============================================================================
 
 def reconcile():
     resources = get_authflows()
@@ -1281,33 +1849,116 @@ def reconcile():
             "<unknown>",
         )
 
-        realm = spec.get("realm")
-        alias = spec.get("alias")
+        deletion_timestamp = metadata.get(
+            "deletionTimestamp"
+        )
+
+        realm = spec.get(
+            "realm"
+        )
+
+        alias = spec.get(
+            "alias"
+        )
 
         print()
         print("=" * 80)
-        print(f"Resource: {resource_name}")
-        print(f"Realm:    {realm}")
-        print(f"Flow:     {alias}")
+        print(
+            f"Resource: {resource_name}"
+        )
+
+        if deletion_timestamp:
+
+            print(
+                f"[DEBUG] Resource '{resource_name}' "
+                f"is being deleted"
+            )
+
+        else:
+
+            print(
+                f"Realm:    {realm}"
+            )
+
+            print(
+                f"Flow:     {alias}"
+            )
+
         print("=" * 80)
 
+        # =====================================================================
+        # DELETION PATH
+        # =====================================================================
+
+        if deletion_timestamp:
+
+            try:
+
+                reconcile_resource_deletion(
+                    resource
+                )
+
+                print(
+                    f"Successfully deleted "
+                    f"Keycloak resources for "
+                    f"'{resource_name}'"
+                )
+
+            except Exception as exc:
+
+                print(
+                    f"ERROR deleting "
+                    f"{resource_name}: {exc}",
+                    file=sys.stderr,
+                )
+
+                print(
+                    f"[DEBUG] Finalizer will remain. "
+                    f"Deletion will be retried."
+                )
+
+                success = False
+
+            continue
+
+        # =====================================================================
+        # NORMAL RECONCILIATION
+        # =====================================================================
+
         if not realm:
+
             print(
                 "ERROR: spec.realm is missing",
                 file=sys.stderr,
             )
+
             success = False
             continue
 
         if not alias:
+
             print(
                 "ERROR: spec.alias is missing",
                 file=sys.stderr,
             )
+
             success = False
             continue
 
         try:
+
+            # -----------------------------------------------------------------
+            # Add finalizer BEFORE managing Keycloak.
+            # -----------------------------------------------------------------
+
+            ensure_finalizer(
+                resource
+            )
+
+            # -----------------------------------------------------------------
+            # Reconcile Keycloak.
+            # -----------------------------------------------------------------
+
             reconcile_flow(
                 realm,
                 spec,
@@ -1319,6 +1970,7 @@ def reconcile():
             )
 
         except Exception as exc:
+
             print(
                 f"ERROR reconciling "
                 f"{resource_name}: {exc}",
@@ -1331,21 +1983,26 @@ def reconcile():
 
 
 # =============================================================================
-# Main
+# Entry point
 # =============================================================================
 
 def main():
+
     load_kubernetes()
 
     while True:
 
         try:
+
             authenticate()
+
             reconcile()
 
         except Exception as exc:
+
             print(
-                f"Reconciliation failed: {exc}",
+                f"Reconciliation failed: "
+                f"{exc}",
                 file=sys.stderr,
             )
 

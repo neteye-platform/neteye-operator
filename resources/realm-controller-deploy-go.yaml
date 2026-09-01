@@ -1,0 +1,50 @@
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-realm-controller
+  namespace: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak-realm-controller
+  template:
+    metadata:
+      labels:
+        app: keycloak-realm-controller
+    spec:
+      serviceAccountName: keycloak-realm-controller
+      nodeName: neteye-cluster01.neteyelocal
+      containers:
+        - name: controller
+          image: 127.0.0.1:5000/neteye-keycloak-realm-controller-go:latest
+          imagePullPolicy: Always
+          env:
+            - name: KEYCLOAK_URL
+              value: "https://keycloak-cluster-service.keycloak.svc:8443"
+
+            - name: KEYCLOAK_TOKEN_REALM
+              value: "master"
+
+            - name: KEYCLOAK_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin
+                  key: username
+
+            - name: KEYCLOAK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin
+                  key: password
+
+            - name: KEYCLOAK_VERIFY_SSL
+              value: "false"
+
+            - name: KEYCLOAK_TIMEOUT
+              value: "30"
+            
+            - name: NAMESPACE
+              value: keycloak
