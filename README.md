@@ -75,8 +75,7 @@ metadata by hand. The maintainable inputs are the API types and RBAC markers,
 the intentional legacy RBAC additions, and the CSV patches and sample in
 `src/config/manifests/` and `src/config/samples/`.
 
-The checked-in release version is `0.1.0-alpha2`. Generate it (or provide
-release values explicitly) from the repository root:
+Generate it from the repository root:
 
 ```sh
 make bundle

@@ -1,13 +1,13 @@
 # Image URL to use all building/pushing image targets.
-IMG ?= localhost/neteye-operator:dev
-BUNDLE_IMG ?= localhost/neteye-operator-bundle:$(VERSION)
+IMG ?= ghcr.io/neteye-platform/neteye-operator:$(VERSION)
+BUNDLE_IMG ?= ghcr.io/neteye-platform/neteye-operator-bundle:$(VERSION)
 
 # Tool versions.
 CONTROLLER_GEN_VERSION ?= v0.21.0
 GOLANGCI_LINT_VERSION ?= v2.13.2
 KUSTOMIZE_VERSION ?= v5.7.1
 OPERATOR_SDK_VERSION ?= v1.42.3
-VERSION ?= 0.1.0-alpha2
+VERSION ?= 0.1.0-alpha3
 PACKAGE_NAME ?= neteye-operator
 LD_FLAGS ?= -X main.version=$(VERSION)
 
