@@ -30,7 +30,7 @@ const KeycloakClientFinalizer = "neteye.cloud/keycloak-client"
 
 // AdminAPIFactory builds the Admin API client used to talk to Keycloak. Tests
 // substitute it to point at a stub server.
-type AdminAPIFactory func(baseURL string, credentials keycloak.AdminCredentials) *keycloak.AdminAPI
+type AdminAPIFactory = keycloak.AdminAPIFactory
 
 // KeycloakClientReconciler keeps Keycloak clients matching their KeycloakClient
 // resources. Keycloak exposes no watch API, so drift is corrected by requeueing
@@ -133,26 +133,16 @@ func (r *KeycloakClientReconciler) reconcileDelete(ctx context.Context, kcc *net
 	return ctrl.Result{}, nil
 }
 
-// adminAPI reads the Keycloak admin credentials and builds an Admin API client
-// bound to the in-cluster Keycloak Service.
+// adminAPI builds an Admin API client bound to the in-cluster Keycloak Service,
+// authenticating as the internal administrative account when it is usable and
+// as the bootstrap admin otherwise.
 func (r *KeycloakClientReconciler) adminAPI(ctx context.Context) (*keycloak.AdminAPI, error) {
-	namespace := r.keycloakNamespace()
-	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: namespace, Name: keycloak.AdminSecretName}
-	if err := r.Get(ctx, key, secret); err != nil {
-		return nil, fmt.Errorf("get keycloak admin secret %q in namespace %q: %w", keycloak.AdminSecretName, namespace, err)
+	api, username, err := keycloak.ResolveAdminAPI(ctx, r.Client, r.keycloakNamespace(), r.AdminAPIFactory)
+	if err != nil {
+		return nil, err
 	}
-	username := string(secret.Data[keycloak.AdminSecretUsernameKey])
-	password := string(secret.Data[keycloak.AdminSecretPasswordKey])
-	if username == "" || password == "" {
-		return nil, fmt.Errorf("keycloak admin secret %q in namespace %q is missing the %q or %q key", keycloak.AdminSecretName, namespace, keycloak.AdminSecretUsernameKey, keycloak.AdminSecretPasswordKey)
-	}
-
-	factory := r.AdminAPIFactory
-	if factory == nil {
-		factory = keycloak.NewAdminAPI
-	}
-	return factory(keycloak.InClusterBaseURL(namespace), keycloak.AdminCredentials{Username: username, Password: password}), nil
+	ctrl.LoggerFrom(ctx).V(1).Info("authenticated against the Keycloak Admin API", "username", username)
+	return api, nil
 }
 
 // clientSecret resolves spec.secretRef. Public clients need no secret, so an

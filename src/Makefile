@@ -40,6 +40,8 @@ GENERATED_CRD ?= bundle/manifests/neteye.cloud_neteyes.yaml
 NETEYE_CRD ?= bundle/manifests/neteyes.neteye.cloud.crd.yaml
 GENERATED_KEYCLOAK_CLIENT_CRD ?= bundle/manifests/neteye.cloud_keycloakclients.yaml
 KEYCLOAK_CLIENT_CRD ?= bundle/manifests/keycloakclients.neteye.cloud.crd.yaml
+GENERATED_KEYCLOAK_USER_CRD ?= bundle/manifests/neteye.cloud_keycloakusers.yaml
+KEYCLOAK_USER_CRD ?= bundle/manifests/keycloakusers.neteye.cloud.crd.yaml
 
 .PHONY: all
 all: build
@@ -53,10 +55,11 @@ manifests: controller-gen ## Generate CRD manifests into the OLM bundle manifest
 	$(CONTROLLER_GEN) crd:crdVersions=v1 paths="./api/..." output:crd:artifacts:config=bundle/manifests
 	mv $(GENERATED_CRD) $(NETEYE_CRD)
 	mv $(GENERATED_KEYCLOAK_CLIENT_CRD) $(KEYCLOAK_CLIENT_CRD)
+	mv $(GENERATED_KEYCLOAK_USER_CRD) $(KEYCLOAK_USER_CRD)
 
 .PHONY: verify-generated
 verify-generated: generate manifests ## Regenerate code/manifests and fail if generated files are not committed.
-	git diff --exit-code -- api/v1alpha1/zz_generated.deepcopy.go $(NETEYE_CRD) $(KEYCLOAK_CLIENT_CRD)
+	git diff --exit-code -- api/v1alpha1/zz_generated.deepcopy.go $(NETEYE_CRD) $(KEYCLOAK_CLIENT_CRD) $(KEYCLOAK_USER_CRD)
 
 .PHONY: fmt
 fmt: ## Run gofmt against Go code.

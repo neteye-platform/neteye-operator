@@ -61,6 +61,10 @@ const (
 type Component struct {
 	client client.Client
 	log    logr.Logger
+
+	// AdminAPIFactory builds the Admin API client. Tests substitute it to point
+	// at a stub server; when nil, NewAdminAPI is used.
+	AdminAPIFactory AdminAPIFactory
 }
 
 func NewComponent(client client.Client, log logr.Logger) *Component {

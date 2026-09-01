@@ -294,6 +294,25 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
 	}
 
+	// The instance is up, so the Admin API is reachable and the KeycloakUser
+	// controller can make progress on the administrative account the platform
+	// owns. Declaring it here is what replaces the Ansible role creating it with
+	// the bootstrap admin.
+	if err := r.KeycloakComponent.EnsureInternalAdminUser(ctx, keycloak.WorkloadNamespace); err != nil {
+		log.Error(err, "failed to declare the Keycloak internal admin user", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the Keycloak internal admin user: %v", err), image)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure keycloak internal admin user: %w", err)
+	}
+
+	// Once the internal admin is usable the bootstrap account has served its
+	// purpose, exactly as in the Ansible role. This is a no-op until then.
+	if err := r.KeycloakComponent.EnsureBootstrapAdminDisabled(ctx, keycloak.WorkloadNamespace); err != nil {
+		// Not fatal: the platform works with the bootstrap account still enabled,
+		// so this is reported and retried rather than failing the reconciliation.
+		log.Error(err, "failed to disable the Keycloak bootstrap admin", "namespace", keycloak.WorkloadNamespace)
+	}
+
 	log.Info("Keycloak reconciled and ready", "namespace", ne.Namespace, "name", owner.Name)
 	return ctrl.Result{}, nil
 }

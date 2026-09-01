@@ -91,6 +91,28 @@ metadata:
               "microprofile-jwt"
             ]
           }
+        },
+        {
+          "apiVersion": "neteye.cloud/v1alpha1",
+          "kind": "KeycloakUser",
+          "metadata": {
+            "name": "neteye-internal-keycloak-admin"
+          },
+          "spec": {
+            "realm": "master",
+            "username": "neteye-internal-keycloak-admin",
+            "enabled": true,
+            "realmRoles": [
+              "admin"
+            ],
+            "credential": {
+              "secretRef": {
+                "name": "neteye-internal-keycloak-admin",
+                "key": "password"
+              },
+              "generate": true
+            }
+          }
         }
       ]
     capabilities: Basic Install
@@ -115,6 +137,13 @@ spec:
         displayName: Keycloak Client
         kind: KeycloakClient
         name: keycloakclients.neteye.cloud
+        version: v1alpha1
+      - description: >-
+          KeycloakUser declares a Keycloak account the platform owns and keeps
+          reconciled in the identity service.
+        displayName: Keycloak User
+        kind: KeycloakUser
+        name: keycloakusers.neteye.cloud
         version: v1alpha1
     required:
       - displayName: cert-manager Certificate
@@ -172,6 +201,8 @@ spec:
                 - get
                 - list
                 - watch
+                - create
+                - update
             - apiGroups:
                 - ""
               resources:
@@ -368,6 +399,31 @@ spec:
                 - neteye.cloud
               resources:
                 - keycloakclients/finalizers
+              verbs:
+                - update
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - keycloakusers
+              verbs:
+                - create
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - keycloakusers/status
+              verbs:
+                - get
+                - patch
+                - update
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - keycloakusers/finalizers
               verbs:
                 - update
           serviceAccountName: neteye-operator

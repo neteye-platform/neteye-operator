@@ -115,6 +115,15 @@ func (a *AdminAPI) authenticate(ctx context.Context) (string, error) {
 	return a.token, nil
 }
 
+// Verify proves the credentials are accepted by Keycloak, by obtaining a token
+// with them. Callers use it before trusting an account they did not just create.
+func (a *AdminAPI) Verify(ctx context.Context) error {
+	if _, err := a.authenticate(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
 // do performs an authenticated Admin API call. When out is non-nil the response
 // body is decoded into it.
 func (a *AdminAPI) do(ctx context.Context, method, path string, in any, out any) error {
@@ -155,7 +164,7 @@ func (a *AdminAPI) do(ctx context.Context, method, path string, in any, out any)
 		if resp.StatusCode == http.StatusUnauthorized {
 			a.token = ""
 		}
-		return fmt.Errorf("%s %s: unexpected status %s: %s", method, path, resp.Status, truncate(raw))
+		return &apiError{Method: method, Path: path, StatusCode: resp.StatusCode, Status: resp.Status, Body: truncate(raw)}
 	}
 	if out == nil || len(bytes.TrimSpace(raw)) == 0 {
 		return nil
@@ -164,6 +173,20 @@ func (a *AdminAPI) do(ctx context.Context, method, path string, in any, out any)
 		return fmt.Errorf("decode %s %s response: %w", method, path, err)
 	}
 	return nil
+}
+
+// apiError reports a non-2xx Admin API response. Callers that treat a missing
+// resource as an absence rather than a failure match on StatusCode.
+type apiError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Status     string
+	Body       string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("%s %s: unexpected status %s: %s", e.Method, e.Path, e.Status, e.Body)
 }
 
 // representation is a Keycloak REST representation. The operator keeps them as

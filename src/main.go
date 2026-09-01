@@ -136,6 +136,16 @@ func main() {
 		setupLog.Error(err, "unable to create KeycloakClient controller")
 		os.Exit(1)
 	}
+	if err := (&controllers.KeycloakUserReconciler{
+		Client:                     mgr.GetClient(),
+		Log:                        ctrl.Log.WithName("keycloak-user-reconciler"),
+		Scheme:                     mgr.GetScheme(),
+		FailureRequeueAfter:        failureRequeue,
+		ReconciliationRequeueAfter: reconciliationRequeue,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create KeycloakUser controller")
+		os.Exit(1)
+	}
 	if err := neteye.SetupNetEyeWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create NetEye webhook")
 		os.Exit(1)

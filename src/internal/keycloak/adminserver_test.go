@@ -206,8 +206,12 @@ func withID(client representation, uuid string) representation {
 
 func decode(r *http.Request) representation {
 	body := representation{}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSON(r, &body)
 	return body
+}
+
+func decodeJSON(r *http.Request, out any) error {
+	return json.NewDecoder(r.Body).Decode(out)
 }
 
 func writeJSON(w http.ResponseWriter, payload any) {
