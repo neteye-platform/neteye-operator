@@ -4,9 +4,6 @@ on:
   pull_request:
     branches:
       - "**"
-    paths:
-      - "src/**"
-      - ".github/workflows/go-checks.yaml"
 
 permissions:
   contents: read
