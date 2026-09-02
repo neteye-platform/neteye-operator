@@ -117,3 +117,9 @@ repos:
         language: script
         files: ^hack/check-version-consistency(_test)?\.sh$
         pass_filenames: false
+      - id: release-source-tests
+        name: release-source-tests
+        entry: hack/check-release-source_test.sh
+        language: script
+        files: ^hack/check-release-source(_test)?\.sh$
+        pass_filenames: false
