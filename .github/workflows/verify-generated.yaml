@@ -6,8 +6,8 @@ on:
       - "**"
     paths:
       - "src/**"
+      - "Makefile"
       - ".github/workflows/verify-generated.yaml"
-
 permissions:
   contents: read
 
@@ -33,8 +33,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: src/bin
-          key: ${{ runner.os }}-controller-gen-${{ hashFiles('src/Makefile') }}
-
+          key: ${{ runner.os }}-controller-gen-${{ hashFiles('src/Makefile', 'src/go.mod', 'src/go.sum') }}
       - name: Regenerate deepcopy and CRD manifests
         run: make generate manifests
 
