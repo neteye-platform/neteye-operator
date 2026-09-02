@@ -266,8 +266,6 @@ spec:
                   capabilities:
                     drop:
                     - ALL
-              imagePullSecrets:
-              - name: neteye-registry-pull-secret
               securityContext:
                 runAsNonRoot: true
                 seccompProfile:
