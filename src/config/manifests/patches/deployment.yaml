@@ -70,7 +70,6 @@ spec:
               metadata: {labels: {app.kubernetes.io/name: neteye-operator}}
               spec:
                 serviceAccountName: neteye-operator
-                imagePullSecrets: [{name: neteye-registry-pull-secret}]
                 securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
                 containers:
                   - name: manager
