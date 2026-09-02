@@ -164,9 +164,10 @@ spec:
                 type: string
               secretRef:
                 description: |-
-                  SecretRef references the Secret key holding the client secret. It is
-                  required for confidential clients, and the Secret must exist in the same
-                  namespace as this resource.
+                  SecretRef references the Secret key holding the client secret, which must
+                  exist in the same namespace as this resource. When omitted on a
+                  confidential client the secret stays whatever Keycloak generated and the
+                  operator never touches it, so no Pod can mount it from the cluster.
                 properties:
                   key:
                     description: Key is the key inside the Secret containing the database

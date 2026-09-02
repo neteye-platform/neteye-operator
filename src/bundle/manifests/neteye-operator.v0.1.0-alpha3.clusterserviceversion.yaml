@@ -16,6 +16,12 @@ spec:
       kind: NetEye
       name: neteyes.neteye.cloud
       version: v1alpha1
+    - description: KeycloakClient declares an OpenID Connect client the operator keeps
+        continuously reconciled in the identity service.
+      displayName: Keycloak Client
+      kind: KeycloakClient
+      name: keycloakclients.neteye.cloud
+      version: v1alpha1
     required:
     - displayName: cert-manager Certificate
       kind: Certificate
