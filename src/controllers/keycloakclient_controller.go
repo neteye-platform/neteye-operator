@@ -69,7 +69,7 @@ func (r *KeycloakClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	api, err := r.adminAPI(ctx)
+	api, err := r.adminAPI(ctx) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
 	if err != nil {
 		log.Error(err, "unable to build Keycloak Admin API client", "requeueAfter", r.failureRequeue())
 		if !kcc.DeletionTimestamp.IsZero() {

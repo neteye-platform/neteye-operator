@@ -7,6 +7,7 @@ import (
 	"context"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -18,7 +19,7 @@ const DefaultDenyPolicyName = "neteye-default-deny"
 // EnsureDefaultDenyNetworkPolicy reconciles the shared namespace-wide Cilium
 // default-deny baseline. Workload-specific Cilium allow policies compose with
 // this baseline without requiring native NetworkPolicy egress exceptions.
-func EnsureDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namespace string) error {
+func EnsureDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namespace string, owner metav1.OwnerReference) error {
 	if err := deleteLegacyDefaultDenyNetworkPolicy(ctx, c, namespace); err != nil {
 		return err
 	}
@@ -27,6 +28,7 @@ func EnsureDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namesp
 		Name:      DefaultDenyPolicyName,
 		Namespace: namespace,
 		Spec:      defaultDenyNetworkPolicySpec(),
+		Owner:     &owner,
 	})
 	return err
 }
