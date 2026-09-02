@@ -1,0 +1,75 @@
+name: Verify Generated
+
+on:
+  pull_request:
+    branches:
+      - "**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  code:
+    name: Deepcopy & CRD
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Cache controller-gen
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src/bin
+          key: ${{ runner.os }}-controller-gen-${{ hashFiles('src/Makefile', 'src/go.mod', 'src/go.sum') }}
+      - name: Regenerate deepcopy and CRD manifests
+        run: make generate manifests
+
+      - name: Fail if generated files are out of date
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Generated code/CRD is out of date. Run 'make generate manifests' and commit the result."
+            git status --porcelain
+            git diff
+            exit 1
+          fi
+
+  bundle:
+    name: OLM bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Cache bundle tooling
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src/bin
+          key: ${{ runner.os }}-bundle-tools-${{ hashFiles('src/Makefile') }}
+
+      - name: Regenerate and validate OLM bundle
+        run: make bundle bundle-validate
+
+      - name: Fail if bundle is out of date
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::OLM bundle is out of date. Run 'make bundle' and commit the result."
+            git status --porcelain
+            git diff
+            exit 1
+          fi
