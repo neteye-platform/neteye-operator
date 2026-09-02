@@ -80,7 +80,6 @@ jobs:
       - name: Summary
         run: |
           CHART_NAME="$(helm show chart "${CHART_DIR}" | awk '/^name:/ {print $2}')"
-          CHART_VERSION="$(helm show chart "${CHART_DIR}" | awk '/^version:/ {print $2}')"
 
           {
             echo "### Published Helm Chart"
