@@ -27,6 +27,8 @@ const (
 	OperatorNamespace   = "keycloak-system"
 	WorkloadNamespace   = "neteye-tenant-shared"
 	HTTPRouteName       = "keycloak"
+	RouteHostname       = "keycloak.neteyelocal"
+	GatewayListenerName = "keycloak"
 	TLSCertificateName  = "keycloak-tls"
 	TLSSecretName       = "keycloak-tls-secret"
 	InstanceName        = "neteye-kc"
@@ -142,7 +144,7 @@ func clusterExtensionSpec() map[string]any {
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
 func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
 	ctx = logf.IntoContext(ctx, c.log)
-	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, identity.Hostname, []string{identity.Hostname}, issuerRef, &owner); err != nil {
+	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, RouteHostname, []string{RouteHostname}, issuerRef, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
 	}
 	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), &owner); err != nil {
@@ -164,7 +166,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := c.EnsureInstance(ctx, namespace, image, identity, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
-	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayRef, []string{"keycloak.rke2.neteyelocal"}, ServiceName, HTTPPort, &owner); err != nil {
+	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayRef, GatewayListenerName, []string{RouteHostname}, ServiceName, HTTPPort, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure http route: %w", err)
 	}
 	return true, "Keycloak is Ready", nil

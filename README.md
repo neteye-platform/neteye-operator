@@ -61,42 +61,54 @@ Run make targets from that directory, e.g. `make -C src build`:
 - `fmt` / `vet` / `lint` — format and static analysis (golangci-lint)
 - `test` — run unit tests
 - `docker-build` — build the container image
+- `kustomize-manifests` — regenerate the Operator SDK CSV base and render the
+  release manifest source
+- `bundle` — generate `src/bundle/` from `config/manifests/` and the API CRD
+- `bundle-validate` — validate the generated OLM bundle
+- `bundle-build` — build the bundle image with the maintained
+  `src/Dockerfile.bundle`
 
-### Local OLM v1 workflow
+### OLM bundle generation
 
-For local development, publish unique prerelease images to a registry reachable
-by both the VM and Kubernetes. The default is `172.19.69.254:5000`:
+`src/bundle/` is generated release output; do not edit its CSV, CRD, or
+metadata by hand. The maintainable inputs are the API types and RBAC markers,
+the intentional legacy RBAC additions, and the CSV patches and sample in
+`src/config/manifests/` and `src/config/samples/`.
+
+Generate it from the repository root:
 
 ```sh
-make -C src dev-mirror-keycloak  # optional; run when the registry lacks Keycloak
-make -C src dev-publish
-KUBECONFIG=/path/to/dev-vm.kubeconfig make -C src dev-install
+make bundle
+make bundle-validate
+
+# Example release override
+make bundle VERSION=0.1.0-alpha3 \
+  IMG=ghcr.io/neteye-platform/neteye-operator:0.1.0-alpha3 \
+  PACKAGE_NAME=neteye-operator
+make bundle-build BUNDLE_IMG=ghcr.io/neteye-platform/neteye-operator-bundle:0.1.0-alpha3
 ```
 
-`dev-publish` creates a temporary, self-contained `src/bin/dev/context` and
-does not modify the committed bundle or catalog. It records the rendered
-version and catalog image there, and the later `dev-install` reads that state
-so it installs the exact artifact just published. It uses a timestamp and short
-Git SHA prerelease by default. Supply another unique plain SemVer prerelease
-with `DEV_VERSION=0.1.1-dev.20260819.abc1234`. Override the registry with
-`REGISTRY=172.19.69.254:5000`, and set `DEV_IMAGE_PULL_SECRET=name` when the
-rendered CSV needs an image pull secret. Keycloak is not mirrored automatically:
-run `dev-mirror-keycloak` separately or provide `KEYCLOAK_IMG`.
+The Makefile pins and downloads Operator SDK `v1.42.3` and kustomize `v5.7.1`
+to `src/bin/`. `operator-sdk generate kustomize manifests` refreshes the source
+CSV scaffold only. `bundle` creates an untracked temporary release overlay,
+renders it directly with kustomize into `bundle/manifests/`, and renders bundle
+metadata from `config/bundle/annotations.yaml.tmpl`. The release overlay does
+not mutate tracked `config/manifests/`. `verify-generated` regenerates and
+validates the code and bundle output. The bundle remains AllNamespaces-only
+and preserves the validating webhook at `/validate-neteye-cloud-v1alpha1-neteye`.
+Bundle channel membership is defined only by the file-based catalog in the
+separate `neteye-operator-catalog` repository. OLM requires bundle-format
+channel metadata, so every bundle declares the `preview` channel metadata.
+This is not a release input and does not assign catalog membership.
 
-An HTTP registry is suitable only for an isolated, trusted lab network with no
-registry credentials; configure it as insecure for Docker, Kubernetes node
-image pulls, and the catalogd/operator-controller runtime. Use TLS for every
-other environment. The registry must be reachable from the VM and Kubernetes
-nodes. This workflow requires OLM v1 and
-an existing `operatorhubio` `ClusterCatalog` (checked by `dev-install`). It does
-not use classic OLM `CatalogSource`/`Subscription` commands.
+### OLM catalog
 
-`dev-install` passes the rendered version as an exact OLM constraint
-(`=<version>`), rather than selecting a newly generated timestamp version. It
-requires `KUBECONFIG` and passes it explicitly to `kubectl` and Helm. Because
-the temporary development catalog has only the current bundle, `dev-install`
-uses OLM's `SelfCertified` upgrade policy. Normal chart installs retain
-`CatalogProvided`; CRD upgrade-safety preflight remains `Strict` in both cases.
+The file-based OLM catalog and its catalog image build are maintained in the
+separate `neteye-operator-catalog` repository. This repository builds the
+operator and its OLM bundle image; release automation publishes that bundle
+before the catalog repository references it. The catalog repository publishes
+its `:latest` image from `main`; the Helm chart's `ClusterCatalog` polls that
+mutable image while each catalog entry references an immutable bundle version.
 
 Pre-commit hooks are configured in `.pre-commit-config.yaml` (run via
 [`prek`](https://github.com/j178/prek) or `pre-commit`). Set `LOG_LEVEL`
@@ -111,7 +123,7 @@ src/
   internal/
     keycloak/        # shared Keycloak component (ClusterExtension + instance)
     resources/       # generic apply / ownership / readiness helpers
-  bundle/ catalog/   # OLM bundle and file-based catalog
+  bundle/            # OLM bundle built from this operator's API
 charts/              # Helm chart (installs the operator via OLM)
 ```
 
