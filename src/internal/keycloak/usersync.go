@@ -151,10 +151,8 @@ func reconcileRealmRoles(ctx context.Context, api *AdminAPI, realm, userID strin
 	}
 
 	changed := false
-	declared := make(map[string]struct{}, len(desired))
 	missing := make([]representation, 0, len(desired))
 	for _, name := range desired {
-		declared[name] = struct{}{}
 		if _, ok := assigned[name]; ok {
 			continue
 		}
@@ -174,19 +172,8 @@ func reconcileRealmRoles(ctx context.Context, api *AdminAPI, realm, userID strin
 		changed = true
 	}
 
-	extra := make([]representation, 0, len(assigned))
-	for name, role := range assigned {
-		if _, ok := declared[name]; ok {
-			continue
-		}
-		extra = append(extra, representation{"id": stringValue(role, "id"), "name": name})
-	}
-	if len(extra) > 0 {
-		if err := api.RemoveUserRealmRoles(ctx, realm, userID, extra); err != nil {
-			return changed, fmt.Errorf("remove realm roles: %w", err)
-		}
-		changed = true
-	}
+	// Roles the spec does not declare are left mapped: an adopted account keeps
+	// whatever an administrator granted it outside this resource.
 	return changed, nil
 }
 
@@ -200,9 +187,7 @@ func reconcileUserGroups(ctx context.Context, api *AdminAPI, realm, userID strin
 	}
 
 	changed := false
-	declared := make(map[string]struct{}, len(desired))
 	for _, groupPath := range desired {
-		declared[groupPath] = struct{}{}
 		if _, ok := assigned[groupPath]; ok {
 			continue
 		}
@@ -219,14 +204,6 @@ func reconcileUserGroups(ctx context.Context, api *AdminAPI, realm, userID strin
 		changed = true
 	}
 
-	for groupPath, groupID := range assigned {
-		if _, ok := declared[groupPath]; ok {
-			continue
-		}
-		if err := api.RemoveUserFromGroup(ctx, realm, userID, groupID); err != nil {
-			return changed, fmt.Errorf("remove user from group %q: %w", groupPath, err)
-		}
-		changed = true
-	}
+	// Group memberships outside the declared list are kept, as for realm roles.
 	return changed, nil
 }

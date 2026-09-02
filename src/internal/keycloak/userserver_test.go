@@ -152,20 +152,6 @@ func (f *fakeKeycloakUsers) serveRoleMappings(w http.ResponseWriter, r *http.Req
 		}
 		w.WriteHeader(http.StatusNoContent)
 
-	case http.MethodDelete:
-		removed := map[string]struct{}{}
-		for _, role := range decodeList(r) {
-			removed[stringValue(role, "name")] = struct{}{}
-		}
-		kept := []string{}
-		for _, name := range f.roleMap[userID] {
-			if _, drop := removed[name]; !drop {
-				kept = append(kept, name)
-			}
-		}
-		f.roleMap[userID] = kept
-		w.WriteHeader(http.StatusNoContent)
-
 	default:
 		http.Error(w, "unexpected role mapping request", http.StatusNotFound)
 	}
@@ -183,16 +169,6 @@ func (f *fakeKeycloakUsers) serveGroups(w http.ResponseWriter, r *http.Request, 
 
 	case len(segments) == 4 && r.Method == http.MethodPut:
 		f.groupMap[userID] = append(f.groupMap[userID], f.groupPath(segments[3]))
-		w.WriteHeader(http.StatusNoContent)
-
-	case len(segments) == 4 && r.Method == http.MethodDelete:
-		kept := []string{}
-		for _, path := range f.groupMap[userID] {
-			if path != f.groupPath(segments[3]) {
-				kept = append(kept, path)
-			}
-		}
-		f.groupMap[userID] = kept
 		w.WriteHeader(http.StatusNoContent)
 
 	default:

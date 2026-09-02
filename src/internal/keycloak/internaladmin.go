@@ -81,7 +81,7 @@ func internalAdminSpec() neteye.KeycloakUserSpec {
 			},
 			Generate: true,
 		},
-		DeletionPolicy: neteye.KeycloakUserDeletionPolicyOrphan,
+		DeletionPolicy: neteye.KeycloakDeletionPolicyOrphan,
 	}
 }
 

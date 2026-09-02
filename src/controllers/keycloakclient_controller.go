@@ -35,7 +35,7 @@ type KeycloakClientReconciler struct {
 	KeycloakAPIReconciler
 }
 
-// +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakclients,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakclients,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakclients/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakclients/finalizers,verbs=update
 
@@ -105,11 +105,18 @@ func (r *KeycloakClientReconciler) reconcileDelete(ctx context.Context, kcc *net
 	if !controllerutil.ContainsFinalizer(kcc, KeycloakClientFinalizer) {
 		return ctrl.Result{}, nil
 	}
-	if err := keycloak.DeleteClient(ctx, api, kcc.Spec); err != nil {
-		log.Error(err, "unable to delete the Keycloak client", "clientId", kcc.Spec.ClientID, "requeueAfter", r.failureRequeue())
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+	// Delete is the default, so an unset policy removes the client too. Orphan is
+	// what the platform's own client declares: the resource can come and go
+	// without destroying a client secret its consumers still hold.
+	if kcc.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
+		if err := keycloak.DeleteClient(ctx, api, kcc.Spec); err != nil {
+			log.Error(err, "unable to delete the Keycloak client", "clientId", kcc.Spec.ClientID, "requeueAfter", r.failureRequeue())
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
+		log.Info("keycloak client deleted", "clientId", kcc.Spec.ClientID, "realm", kcc.Spec.Realm)
+	} else {
+		log.Info("keycloak client orphaned by deletion policy", "clientId", kcc.Spec.ClientID, "realm", kcc.Spec.Realm)
 	}
-	log.Info("keycloak client deleted", "clientId", kcc.Spec.ClientID, "realm", kcc.Spec.Realm)
 	controllerutil.RemoveFinalizer(kcc, KeycloakClientFinalizer)
 	if err := r.Update(ctx, kcc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove keycloak client finalizer: %w", err)

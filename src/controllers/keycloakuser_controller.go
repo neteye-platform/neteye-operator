@@ -136,7 +136,7 @@ func (r *KeycloakUserReconciler) reconcileDelete(ctx context.Context, kcu *netey
 	}
 	// Delete is the default, so an unset policy — a resource built in code, or
 	// one predating the field — removes the account too.
-	if kcu.Spec.DeletionPolicy != neteye.KeycloakUserDeletionPolicyOrphan {
+	if kcu.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
 		if err := keycloak.DeleteUser(ctx, api, kcu.Spec); err != nil {
 			log.Error(err, "unable to delete the Keycloak user", "username", kcu.Spec.Username, "requeueAfter", r.failureRequeue())
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil

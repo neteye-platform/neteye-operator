@@ -7,17 +7,23 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// KeycloakUserDeletionPolicy decides what happens to the Keycloak account when
-// the resource declaring it is deleted.
+// KeycloakDeletionPolicy decides what happens to the resource Keycloak owns when
+// the custom resource declaring it is deleted. It is shared by KeycloakUser and
+// KeycloakClient so the two types answer deletion the same way.
+//
+// No schema default is declared on purpose: an empty value means Delete, and
+// keeping it out of the CRD lets the meaning change without OLM rejecting the
+// upgrade as an unsafe default change.
 // +kubebuilder:validation:Enum=Orphan;Delete
-type KeycloakUserDeletionPolicy string
+type KeycloakDeletionPolicy string
 
 const (
-	// KeycloakUserDeletionPolicyOrphan leaves the account in Keycloak.
-	KeycloakUserDeletionPolicyOrphan KeycloakUserDeletionPolicy = "Orphan"
+	// KeycloakDeletionPolicyOrphan leaves the Keycloak resource in place.
+	KeycloakDeletionPolicyOrphan KeycloakDeletionPolicy = "Orphan"
 
-	// KeycloakUserDeletionPolicyDelete removes the account from Keycloak.
-	KeycloakUserDeletionPolicyDelete KeycloakUserDeletionPolicy = "Delete"
+	// KeycloakDeletionPolicyDelete removes it from Keycloak, and is what an
+	// unset policy means.
+	KeycloakDeletionPolicyDelete KeycloakDeletionPolicy = "Delete"
 )
 
 // KeycloakUserCredentialSpec declares how the account password is managed. The
@@ -95,16 +101,18 @@ type KeycloakUserSpec struct {
 	// +kubebuilder:validation:Optional
 	LastName string `json:"lastName,omitempty"`
 
-	// RealmRoles lists the realm roles assigned to the account. A nil list means
-	// the role mappings are not managed here and are left alone; a declared list
-	// is authoritative and roles outside it are unassigned. The roles must
-	// already exist in the realm.
+	// RealmRoles lists the realm roles the account must have. Roles listed here
+	// are assigned if missing; roles the account already has and this list does
+	// not name are left alone, so an account adopted from an existing Keycloak
+	// never loses permissions granted elsewhere. Removing a role from the list
+	// therefore does not unassign it. The roles must already exist in the realm.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:example={"admin"}
 	RealmRoles []string `json:"realmRoles,omitempty"`
 
-	// Groups lists the group paths the account belongs to, following the same
-	// nil-versus-empty contract as RealmRoles. The groups must already exist.
+	// Groups lists the group paths the account must belong to, added if missing
+	// and never removed, following the same contract as RealmRoles. The groups
+	// must already exist.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:example={"/neteye-admins"}
 	Groups []string `json:"groups,omitempty"`
@@ -118,8 +126,7 @@ type KeycloakUserSpec struct {
 	// resource is deleted. The account is removed with the resource unless
 	// Orphan is asked for explicitly.
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default="Delete"
-	DeletionPolicy KeycloakUserDeletionPolicy `json:"deletionPolicy,omitempty"`
+	DeletionPolicy KeycloakDeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 
 // KeycloakUserStatus defines the observed state of a KeycloakUser.

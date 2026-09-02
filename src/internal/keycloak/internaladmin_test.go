@@ -61,7 +61,7 @@ func TestEnsureInternalAdminUserDeclaresTheAccount(t *testing.T) {
 	if user.Spec.Credential.SecretRef.Name == AdminSecretName {
 		t.Error("the internal admin must not share the bootstrap admin Secret")
 	}
-	if user.Spec.DeletionPolicy != neteye.KeycloakUserDeletionPolicyOrphan {
+	if user.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
 		t.Errorf("deletionPolicy = %q, want Orphan", user.Spec.DeletionPolicy)
 	}
 }

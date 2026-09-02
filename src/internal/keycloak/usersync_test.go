@@ -103,6 +103,8 @@ func TestReconcileUserCorrectsDriftOnManagedFieldsOnly(t *testing.T) {
 
 	enabled := true
 	spec := neteye.KeycloakUserSpec{Username: "svc", Enabled: &enabled, RealmRoles: []string{}}
+	// An empty list no longer unassigns anything: the operator only adds what it
+	// declares.
 	result, err := ReconcileUser(context.Background(), api, spec, UserCredential{})
 	if err != nil {
 		t.Fatalf("ReconcileUser: %v", err)
@@ -117,8 +119,8 @@ func TestReconcileUserCorrectsDriftOnManagedFieldsOnly(t *testing.T) {
 	if stringValue(user, "lastName") != "Owner" {
 		t.Error("a field the spec does not declare must survive the update")
 	}
-	if got := fake.roleMap[result.UserID]; len(got) != 0 {
-		t.Errorf("realm roles = %v, want an authoritative empty list", got)
+	if got := fake.roleMap[result.UserID]; len(got) != 1 || got[0] != "admin" {
+		t.Errorf("realm roles = %v, want the role granted outside the spec kept", got)
 	}
 }
 

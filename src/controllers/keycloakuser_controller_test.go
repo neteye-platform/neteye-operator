@@ -273,7 +273,7 @@ func TestKeycloakUserReconcileOrphanPolicyKeepsTheAccount(t *testing.T) {
 			Finalizers:        []string{KeycloakUserFinalizer},
 			DeletionTimestamp: &now,
 		},
-		Spec: neteye.KeycloakUserSpec{Username: "svc", DeletionPolicy: neteye.KeycloakUserDeletionPolicyOrphan},
+		Spec: neteye.KeycloakUserSpec{Username: "svc", DeletionPolicy: neteye.KeycloakDeletionPolicyOrphan},
 	}
 	r, _ := newKeycloakUserReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), kcu)
 
@@ -296,7 +296,7 @@ func TestKeycloakUserReconcileDeletePolicyDeletesAccount(t *testing.T) {
 			Finalizers:        []string{KeycloakUserFinalizer},
 			DeletionTimestamp: &now,
 		},
-		Spec: neteye.KeycloakUserSpec{Username: "svc", DeletionPolicy: neteye.KeycloakUserDeletionPolicyDelete},
+		Spec: neteye.KeycloakUserSpec{Username: "svc", DeletionPolicy: neteye.KeycloakDeletionPolicyDelete},
 	}
 	r, _ := newKeycloakUserReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), kcu)
 

@@ -249,6 +249,54 @@ func TestKeycloakClientReconcileDeletesClient(t *testing.T) {
 	}
 }
 
+func TestKeycloakClientReconcileOrphanPolicyKeepsTheClient(t *testing.T) {
+	stub := &stubKeycloak{clients: map[string]map[string]any{
+		"neteye": {"id": "uuid-neteye", "clientId": "neteye"},
+	}}
+	now := metav1.Now()
+	kcc := &neteye.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:         "neteye-tenant-shared",
+			Name:              "neteye",
+			Finalizers:        []string{KeycloakClientFinalizer},
+			DeletionTimestamp: &now,
+		},
+		Spec: neteye.KeycloakClientSpec{ClientID: "neteye", DeletionPolicy: neteye.KeycloakDeletionPolicyOrphan},
+	}
+	r, _ := newKeycloakClientReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), kcc)
+
+	if _, err := r.Reconcile(context.Background(), requestFor(kcc)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stub.clients["neteye"]; !ok {
+		t.Fatal("the Orphan policy must leave the client — and its secret — in Keycloak")
+	}
+}
+
+func TestKeycloakClientReconcileDeletesTheClientByDefault(t *testing.T) {
+	stub := &stubKeycloak{clients: map[string]map[string]any{
+		"neteye-test": {"id": "uuid-neteye-test", "clientId": "neteye-test"},
+	}}
+	now := metav1.Now()
+	kcc := &neteye.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:         "neteye-tenant-shared",
+			Name:              "neteye-test",
+			Finalizers:        []string{KeycloakClientFinalizer},
+			DeletionTimestamp: &now,
+		},
+		Spec: neteye.KeycloakClientSpec{ClientID: "neteye-test"},
+	}
+	r, _ := newKeycloakClientReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), kcc)
+
+	if _, err := r.Reconcile(context.Background(), requestFor(kcc)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stub.clients["neteye-test"]; ok {
+		t.Fatal("an unset policy means Delete")
+	}
+}
+
 func TestKeycloakClientRequeueOverrides(t *testing.T) {
 	r := &KeycloakClientReconciler{KeycloakAPIReconciler: KeycloakAPIReconciler{FailureRequeueAfter: time.Second, ReconciliationRequeueAfter: 2 * time.Second}}
 	if r.failureRequeue() != time.Second {

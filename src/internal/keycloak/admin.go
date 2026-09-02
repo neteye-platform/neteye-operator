@@ -271,12 +271,6 @@ func (a *AdminAPI) UpdateProtocolMapper(ctx context.Context, realm, uuid, mapper
 	return a.do(ctx, http.MethodPut, path, mapper, nil)
 }
 
-// DeleteProtocolMapper detaches a protocol mapper from a client.
-func (a *AdminAPI) DeleteProtocolMapper(ctx context.Context, realm, uuid, mapperID string) error {
-	path := fmt.Sprintf("/admin/realms/%s/clients/%s/protocol-mappers/models/%s", url.PathEscape(realm), url.PathEscape(uuid), url.PathEscape(mapperID))
-	return a.do(ctx, http.MethodDelete, path, nil, nil)
-}
-
 // ListRealmClientScopes returns every client scope defined in the realm, keyed
 // by scope name.
 func (a *AdminAPI) ListRealmClientScopes(ctx context.Context, realm string) (map[string]string, error) {
@@ -311,12 +305,6 @@ func (a *AdminAPI) ListClientScopes(ctx context.Context, realm, uuid, kind strin
 func (a *AdminAPI) AddClientScope(ctx context.Context, realm, uuid, kind, scopeID string) error {
 	path := fmt.Sprintf("/admin/realms/%s/clients/%s/%s-client-scopes/%s", url.PathEscape(realm), url.PathEscape(uuid), kind, url.PathEscape(scopeID))
 	return a.do(ctx, http.MethodPut, path, nil, nil)
-}
-
-// RemoveClientScope unassigns a client scope from a client.
-func (a *AdminAPI) RemoveClientScope(ctx context.Context, realm, uuid, kind, scopeID string) error {
-	path := fmt.Sprintf("/admin/realms/%s/clients/%s/%s-client-scopes/%s", url.PathEscape(realm), url.PathEscape(uuid), kind, url.PathEscape(scopeID))
-	return a.do(ctx, http.MethodDelete, path, nil, nil)
 }
 
 func stringValue(rep representation, key string) string {

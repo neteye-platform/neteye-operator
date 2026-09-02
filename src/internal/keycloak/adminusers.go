@@ -102,12 +102,6 @@ func (a *AdminAPI) AddUserRealmRoles(ctx context.Context, realm, userID string, 
 	return a.do(ctx, http.MethodPost, path, roles, nil)
 }
 
-// RemoveUserRealmRoles unmaps realm roles from the account.
-func (a *AdminAPI) RemoveUserRealmRoles(ctx context.Context, realm, userID string, roles []representation) error {
-	path := fmt.Sprintf("/admin/realms/%s/users/%s/role-mappings/realm", url.PathEscape(realm), url.PathEscape(userID))
-	return a.do(ctx, http.MethodDelete, path, roles, nil)
-}
-
 // GetGroupByPath returns the group representation at path, for example
 // /neteye-admins, or nil when the realm has no such group.
 func (a *AdminAPI) GetGroupByPath(ctx context.Context, realm, groupPath string) (representation, error) {
@@ -146,16 +140,59 @@ func (a *AdminAPI) AddUserToGroup(ctx context.Context, realm, userID, groupID st
 	return a.do(ctx, http.MethodPut, path, nil, nil)
 }
 
-// RemoveUserFromGroup removes the account from a group.
-func (a *AdminAPI) RemoveUserFromGroup(ctx context.Context, realm, userID, groupID string) error {
-	path := fmt.Sprintf("/admin/realms/%s/users/%s/groups/%s", url.PathEscape(realm), url.PathEscape(userID), url.PathEscape(groupID))
-	return a.do(ctx, http.MethodDelete, path, nil, nil)
-}
-
 // isNotFound reports whether err came from a 404 response. Keycloak answers a
 // missing role or group with 404, which callers treat as "absent" rather than
 // as a failure.
 func isNotFound(err error) bool {
 	var apiErr *apiError
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
+}
+
+// GetServiceAccountUser returns the user representation Keycloak maintains for
+// a client service account, or nil when the client has none.
+func (a *AdminAPI) GetServiceAccountUser(ctx context.Context, realm, clientUUID string) (representation, error) {
+	var user representation
+	path := fmt.Sprintf("/admin/realms/%s/clients/%s/service-account-user", url.PathEscape(realm), url.PathEscape(clientUUID))
+	if err := a.do(ctx, http.MethodGet, path, nil, &user); err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return user, nil
+}
+
+// GetClientRole returns a role defined by a client, or nil when it does not
+// exist.
+func (a *AdminAPI) GetClientRole(ctx context.Context, realm, clientUUID, name string) (representation, error) {
+	var role representation
+	path := fmt.Sprintf("/admin/realms/%s/clients/%s/roles/%s", url.PathEscape(realm), url.PathEscape(clientUUID), url.PathEscape(name))
+	if err := a.do(ctx, http.MethodGet, path, nil, &role); err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return role, nil
+}
+
+// ListUserClientRoles returns the roles of one client mapped to a user, keyed
+// by role name.
+func (a *AdminAPI) ListUserClientRoles(ctx context.Context, realm, userID, clientUUID string) (map[string]representation, error) {
+	var roles []representation
+	path := fmt.Sprintf("/admin/realms/%s/users/%s/role-mappings/clients/%s", url.PathEscape(realm), url.PathEscape(userID), url.PathEscape(clientUUID))
+	if err := a.do(ctx, http.MethodGet, path, nil, &roles); err != nil {
+		return nil, err
+	}
+	byName := make(map[string]representation, len(roles))
+	for _, role := range roles {
+		byName[stringValue(role, "name")] = role
+	}
+	return byName, nil
+}
+
+// AddUserClientRoles maps roles of one client to a user.
+func (a *AdminAPI) AddUserClientRoles(ctx context.Context, realm, userID, clientUUID string, roles []representation) error {
+	path := fmt.Sprintf("/admin/realms/%s/users/%s/role-mappings/clients/%s", url.PathEscape(realm), url.PathEscape(userID), url.PathEscape(clientUUID))
+	return a.do(ctx, http.MethodPost, path, roles, nil)
 }

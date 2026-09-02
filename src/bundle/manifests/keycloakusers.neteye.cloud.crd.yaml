@@ -111,7 +111,6 @@ spec:
                 - secretRef
                 type: object
               deletionPolicy:
-                default: Delete
                 description: |-
                   DeletionPolicy decides what happens to the Keycloak account when this
                   resource is deleted. The account is removed with the resource unless
@@ -139,8 +138,9 @@ spec:
                 type: string
               groups:
                 description: |-
-                  Groups lists the group paths the account belongs to, following the same
-                  nil-versus-empty contract as RealmRoles. The groups must already exist.
+                  Groups lists the group paths the account must belong to, added if missing
+                  and never removed, following the same contract as RealmRoles. The groups
+                  must already exist.
                 example:
                 - /neteye-admins
                 items:
@@ -160,10 +160,11 @@ spec:
                 type: string
               realmRoles:
                 description: |-
-                  RealmRoles lists the realm roles assigned to the account. A nil list means
-                  the role mappings are not managed here and are left alone; a declared list
-                  is authoritative and roles outside it are unassigned. The roles must
-                  already exist in the realm.
+                  RealmRoles lists the realm roles the account must have. Roles listed here
+                  are assigned if missing; roles the account already has and this list does
+                  not name are left alone, so an account adopted from an existing Keycloak
+                  never loses permissions granted elsewhere. Removing a role from the list
+                  therefore does not unassign it. The roles must already exist in the realm.
                 example:
                 - admin
                 items:

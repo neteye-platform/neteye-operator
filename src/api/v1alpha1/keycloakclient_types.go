@@ -41,6 +41,14 @@ type KeycloakServiceAccountSpec struct {
 	// credentials grant.
 	// +kubebuilder:default=false
 	Enabled bool `json:"enabled"`
+
+	// ClientRoles assigns client roles to the service account user, keyed by the
+	// clientId owning the roles. Listed roles are granted if missing and never
+	// revoked, so adopting a service account never strips permissions granted
+	// outside this resource. Both the clients and the roles must already exist.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:example={"master-realm":{"view-users","query-users","query-groups"}}
+	ClientRoles map[string][]string `json:"clientRoles,omitempty"`
 }
 
 // KeycloakClientSpec declares the desired state of one OpenID Connect client in
@@ -113,17 +121,29 @@ type KeycloakClientSpec struct {
 	// +kubebuilder:validation:Optional
 	SecretRef *NetEyeSecretKeySelector `json:"secretRef,omitempty"`
 
-	// ProtocolMappers lists the protocol mappers reconciled on the client.
+	// ProtocolMappers lists the protocol mappers the client must have. Each one
+	// is created if missing and kept matching this spec; mappers not listed here
+	// are left untouched rather than removed.
 	// +kubebuilder:validation:Optional
 	ProtocolMappers []KeycloakProtocolMapper `json:"protocolMappers,omitempty"`
 
-	// DefaultClientScopes lists the client scopes always applied to tokens.
+	// DefaultClientScopes lists client scopes that must always apply to tokens.
+	// They are assigned if missing; scopes not listed are left assigned.
 	// +kubebuilder:validation:Optional
 	DefaultClientScopes []string `json:"defaultClientScopes,omitempty"`
 
-	// OptionalClientScopes lists the client scopes applied only when requested.
+	// OptionalClientScopes lists client scopes that must be available on request.
+	// They are assigned if missing; scopes not listed are left assigned.
 	// +kubebuilder:validation:Optional
 	OptionalClientScopes []string `json:"optionalClientScopes,omitempty"`
+
+	// DeletionPolicy decides what happens to the Keycloak client when this
+	// resource is deleted. The client is removed with the resource unless Orphan
+	// is asked for explicitly, which is what a client the platform declares for
+	// itself uses so that deleting the resource never destroys a client secret
+	// its consumers still hold.
+	// +kubebuilder:validation:Optional
+	DeletionPolicy KeycloakDeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 
 // KeycloakClientStatus defines the observed state of a KeycloakClient.
