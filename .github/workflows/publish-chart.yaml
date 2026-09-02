@@ -1,0 +1,91 @@
+name: Publish Helm Chart
+
+on:
+  pull_request:
+    branches:
+      - "**"
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  helm-lint:
+    name: Helm lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.4
+
+      - name: Lint chart
+        run: helm lint ./charts --strict
+
+  helm-template:
+    name: Helm template
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.4
+
+      - name: Render chart
+        run: helm template neteye-operator ./charts
+
+  publish-chart:
+    name: Publish chart to GHCR
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs:
+      - helm-lint
+      - helm-template
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      REGISTRY: ghcr.io
+      CHART_DIR: charts
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.4
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login "${{ env.REGISTRY }}" -u "${{ github.actor }}" --password-stdin
+
+      - name: Package chart
+        run: helm package "${CHART_DIR}" --destination .helm-packages
+
+      - name: Push chart to GHCR
+        id: push
+        run: |
+          PACKAGE="$(ls .helm-packages/*.tgz)"
+          helm push "${PACKAGE}" "oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts"
+
+      - name: Summary
+        run: |
+          CHART_NAME="$(helm show chart "${CHART_DIR}" | awk '/^name:/ {print $2}')"
+
+          {
+            echo "### Published Helm Chart"
+            echo "- **Chart**: \`oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${CHART_NAME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
