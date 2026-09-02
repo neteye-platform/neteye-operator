@@ -3,6 +3,7 @@
 # Declare variables to be passed into your templates.
 
 operator:
+  namespace: neteye-system
   packageName: neteye-operator
   catalogName: neteye-catalog
   catalogImage: ghcr.io/neteye-platform/neteye-operator-catalog:latest
@@ -11,14 +12,8 @@ operator:
   upgradeConstraintPolicy: CatalogProvided
   pollIntervalMinutes: 10
 
-namespace:
-  operators: neteye-system
-  system: neteye-system
-  olm: olmv1-system
-  keycloakOperator: keycloak-system
-  tenantShared: neteye-tenant-shared
-
 keycloak:
+  namespace: keycloak-system
   enabled: true
   packageName: keycloak-operator
   channel: fast
