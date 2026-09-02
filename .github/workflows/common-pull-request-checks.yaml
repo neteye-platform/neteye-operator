@@ -7,6 +7,10 @@ on:
 
 permissions: write-all
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   common-pull-request-checks:
     uses: neteye-platform/repo-commons/.github/workflows/common-pull-request-checks.yaml@7742c5e2a5092511fef6e00e2872f278f5f2bf36 # main

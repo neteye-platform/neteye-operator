@@ -6,19 +6,30 @@ on:
       - main
     paths:
       - ".github/workflows/publish-olm-chart.yaml"
+  workflow_dispatch:
+    inputs:
+      olm_version:
+        description: "OLM release to package (e.g. v1.11.0)"
+        required: false
+        default: "v1.11.0"
 
 permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
   CHART_NAME: olmv1
-  OLM_VERSION: v1.11.0
+  OLM_VERSION: ${{ inputs.olm_version || 'v1.11.0' }}
 
 jobs:
   publish-chart:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
