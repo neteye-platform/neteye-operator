@@ -18,6 +18,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -124,7 +125,7 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if result, err := r.reconcileBaseResources(ctx, ne); shouldReturn(result, err) {
 		return result, err
 	}
-	if err := resources.EnsureDefaultDenyNetworkPolicy(ctx, r.Client, keycloak.WorkloadNamespace); err != nil {
+	if err := resources.EnsureDefaultDenyNetworkPolicy(ctx, r.Client, keycloak.WorkloadNamespace, ownerReferenceFor(ne)); err != nil {
 		log.Error(err, "failed to ensure shared default-deny network policy", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared default-deny network policy: %w", err)
@@ -150,7 +151,7 @@ func (r *NetEyeReconciler) reconcileElasticStack(ctx context.Context, ne *neteye
 	}
 	outcome := r.ElasticStackReconciler.Reconcile(ctx, elasticstack.Request{
 		Namespace: keycloak.WorkloadNamespace, Config: ne.Spec.ElasticStack, IdentityHostname: ne.Spec.Identity.Hostname, CollectorImage: collectorImage,
-		GatewayNamespace: ne.Namespace, GatewayName: ne.Spec.Gateway.Name, Owner: ownerReferenceFor(ne),
+		GatewayNamespace: keycloak.WorkloadNamespace, GatewayName: ne.Spec.Gateway.Name, IssuerRef: issuerRefFor(ne), Owner: ownerReferenceFor(ne),
 	})
 	ne.Status.ServicesStatus.ElasticStack = &neteye.NetEyeElasticStackStatus{Status: outcome.Module.Status, Message: outcome.Module.Message, OTelCollector: outcome.Collector}
 	if outcome.Phase != "" {
@@ -211,43 +212,43 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 	gateway := ne.Spec.Gateway
 	issuerRef := issuerRefFor(ne)
 	owner := ownerReferenceFor(ne)
-	if err := resources.EnsureIssuerExists(ctx, r.Client, ne.Namespace, issuerRef); err != nil {
+	if err := resources.EnsureIssuerExists(ctx, r.Client, keycloak.WorkloadNamespace, issuerRef); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.V(1).Info("required cert-manager Issuer is missing", "namespace", ne.Namespace, "issuer", issuerRef.Name, "requeueAfter", r.failureRequeue())
-			setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("cert-manager Issuer '%q' was not found in namespace %q; create it before creating or reconciling this NetEye resource", issuerRef.Name, ne.Namespace))
+			log.V(1).Info("required cert-manager Issuer is missing", "namespace", keycloak.WorkloadNamespace, "issuer", issuerRef.Name, "requeueAfter", r.failureRequeue())
+			setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("cert-manager Issuer '%q' was not found in namespace %q; create it before creating or reconciling this NetEye resource", issuerRef.Name, keycloak.WorkloadNamespace))
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
-		log.Error(err, "failed to ensure cert-manager Issuer exists", "namespace", ne.Namespace, "issuer", issuerRef.Name, "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure cert-manager Issuer '%q' exists in namespace %q: %v", issuerRef.Name, ne.Namespace, err))
+		log.Error(err, "failed to ensure cert-manager Issuer exists", "namespace", keycloak.WorkloadNamespace, "issuer", issuerRef.Name, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure cert-manager Issuer '%q' exists in namespace %q: %v", issuerRef.Name, keycloak.WorkloadNamespace, err))
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure issuer exists: %w", err)
 	}
-	if err := resources.EnsureGatewayTLSCertificate(ctx, r.Client, ne.Namespace, gateway.TLSSecretName, ne.Spec.Identity.Hostname, issuerRef, owner); err != nil {
-		log.Error(err, "failed to ensure gateway TLS certificate exists", "namespace", ne.Namespace, "tlsSecretName", gateway.TLSSecretName, "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure gateway TLS certificate '%q' exists in namespace %q: %v", gateway.TLSSecretName, ne.Namespace, err))
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure gateway tls certificate: %w", err)
-	}
-	if err := resources.EnsureGateway(ctx, r.Client, ne.Namespace, gateway.Name, gateway.ClassName, gateway.Annotations, gateway.TLSSecretName, owner); err != nil {
-		log.Error(err, "failed to ensure gateway exists", "namespace", ne.Namespace, "gatewayName", gateway.Name, "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure gateway '%q' exists in namespace %q: %v", gateway.Name, ne.Namespace, err))
+	if err := resources.EnsureGateway(ctx, r.Client, keycloak.WorkloadNamespace, gateway.Name, gateway.ClassName, gateway.Annotations, gatewayListeners(ne), owner); err != nil {
+		log.Error(err, "failed to ensure gateway exists", "namespace", keycloak.WorkloadNamespace, "gatewayName", gateway.Name, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure gateway '%q' exists in namespace %q: %v", gateway.Name, keycloak.WorkloadNamespace, err))
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure gateway: %w", err)
 	}
-	if err := resources.EnsureHTTPToHTTPSRedirectRoute(ctx, r.Client, ne.Namespace, gateway.Name, owner); err != nil {
-		log.Error(err, "failed to ensure HTTP to HTTPS redirect route exists", "namespace", ne.Namespace, "gatewayName", gateway.Name, "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure HTTP to HTTPS redirect route exists for gateway '%q' in namespace %q: %v", gateway.Name, ne.Namespace, err))
+	if err := resources.EnsureHTTPToHTTPSRedirectRoute(ctx, r.Client, keycloak.WorkloadNamespace, gateway.Name, owner); err != nil {
+		log.Error(err, "failed to ensure HTTP to HTTPS redirect route exists", "namespace", keycloak.WorkloadNamespace, "gatewayName", gateway.Name, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure HTTP to HTTPS redirect route exists for gateway '%q' in namespace %q: %v", gateway.Name, keycloak.WorkloadNamespace, err))
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure HTTP to HTTPS redirect route: %w", err)
 	}
-	gatewayCertificateReady, gatewayCertificateMessage, err := resources.IsCertificateReady(ctx, r.Client, ne.Namespace, gateway.TLSSecretName)
-	if err != nil {
-		log.Error(err, "failed to check gateway TLS certificate readiness", "namespace", ne.Namespace, "tlsSecretName", gateway.TLSSecretName, "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to check gateway TLS certificate readiness for secret '%q' in namespace %q: %v", gateway.TLSSecretName, ne.Namespace, err))
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("check gateway tls certificate readiness: %w", err)
-	}
-	if !gatewayCertificateReady {
-		log.V(1).Info("gateway tls certificate is not ready", "reason", gatewayCertificateMessage, "requeueAfter", r.waitForProgressingRequeue())
-		setPhase(ne, neteye.PhaseNotReady, gatewayCertificateMessage)
-		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
-	}
 	return ctrl.Result{}, nil
+}
+
+// gatewayListeners returns the per-component HTTPS listeners exposed on the
+// shared Gateway. The identity listener is always present; the Elastic Stack
+// listeners are only added when the feature module is enabled.
+func gatewayListeners(ne *neteye.NetEye) []resources.GatewayListener {
+	listeners := []resources.GatewayListener{
+		{Name: keycloak.GatewayListenerName, Hostname: keycloak.RouteHostname, TLSSecretName: keycloak.TLSSecretName, RouteKind: resources.RouteKindHTTP},
+	}
+	if ne.Spec.ElasticStack != nil && ne.Spec.ElasticStack.Enabled {
+		listeners = append(listeners,
+			resources.GatewayListener{Name: elasticstack.GRPCListenerName, Hostname: elasticstack.GRPCRouteHostname, TLSSecretName: elasticstack.GRPCTLSSecretName, RouteKind: resources.RouteKindGRPC},
+			resources.GatewayListener{Name: elasticstack.CrossTenantListenerName, Hostname: elasticstack.CrossTenantRouteHostname, TLSSecretName: elasticstack.CrossTenantTLSSecretName, RouteKind: resources.RouteKindHTTP},
+		)
+	}
+	return listeners
 }
 
 func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.NetEye, image string) (ctrl.Result, error) {
@@ -267,7 +268,7 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure cert-manager Issuer '%q' exists in namespace %q: %v", issuerRef.Name, keycloak.WorkloadNamespace, err))
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared Keycloak issuer exists: %w", err)
 	}
-	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, ne.Spec.Identity, ne.Namespace, ne.Spec.Gateway.Name, issuerRef)
+	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, ne.Spec.Identity, keycloak.WorkloadNamespace, ne.Spec.Gateway.Name, issuerRef, owner)
 	if err != nil {
 		log.Error(err, "failed to ensure keycloak resources", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
@@ -332,8 +333,12 @@ func (r *NetEyeReconciler) ensureClusterAuthority(ctx context.Context, ne *netey
 			return fmt.Errorf("get NetEye cluster authority lease: %w", err)
 		}
 		lease = &coordinationv1.Lease{
-			ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: clusterAuthorityLeaseName},
-			Spec:       coordinationv1.LeaseSpec{HolderIdentity: ptr.To(string(ne.UID))},
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace:       keycloak.WorkloadNamespace,
+				Name:            clusterAuthorityLeaseName,
+				OwnerReferences: []metav1.OwnerReference{ownerReferenceFor(ne)},
+			},
+			Spec: coordinationv1.LeaseSpec{HolderIdentity: ptr.To(string(ne.UID))},
 		}
 		createErr := r.Create(ctx, lease)
 		if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
@@ -347,6 +352,14 @@ func (r *NetEyeReconciler) ensureClusterAuthority(ctx context.Context, ne *netey
 	}
 	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != string(ne.UID) {
 		return fmt.Errorf("shared NetEye platform components are managed by another NetEye resource")
+	}
+	if owner := metav1.GetControllerOf(lease); owner == nil || owner.UID != ne.UID {
+		if err := controllerutil.SetControllerReference(ne, lease, r.Scheme); err != nil {
+			return fmt.Errorf("set NetEye owner reference on cluster authority lease: %w", err)
+		}
+		if err := r.Update(ctx, lease); err != nil {
+			return fmt.Errorf("update cluster authority lease owner reference: %w", err)
+		}
 	}
 	return nil
 }

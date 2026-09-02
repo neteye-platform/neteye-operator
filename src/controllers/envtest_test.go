@@ -58,7 +58,9 @@ func startEnvtest(t *testing.T) (client.Client, *runtime.Scheme) {
 		CRDInstallOptions: envtest.CRDInstallOptions{
 			Paths: []string{
 				filepath.Join("testdata", "crds"),
-				filepath.Join("..", "bundle", "manifests", "neteyes.neteye.cloud.crd.yaml"),
+				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_neteyes.yaml"),
+				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakclients.yaml"),
+				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakusers.yaml"),
 			},
 		},
 	}
@@ -111,7 +113,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	for _, resource := range []struct {
 		gvk  schema.GroupVersionKind
 		name string
-	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
+	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {certificateGVK, elasticstack.GRPCTLSCertName}, {certificateGVK, elasticstack.CrossTenantTLSCertName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
 		requireExists(ctx, t, c, resource.gvk, keycloak.WorkloadNamespace, resource.name)
 	}
 	variables := &corev1.ConfigMap{}
@@ -142,6 +144,8 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	if err := c.Status().Update(ctx, deployment); err != nil {
 		t.Fatalf("mark collector deployment ready: %v", err)
 	}
+	markReady(ctx, t, c, requireExists(ctx, t, c, certificateGVK, keycloak.WorkloadNamespace, elasticstack.GRPCTLSCertName))
+	markReady(ctx, t, c, requireExists(ctx, t, c, certificateGVK, keycloak.WorkloadNamespace, elasticstack.CrossTenantTLSCertName))
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}); err != nil {
 		t.Fatalf("reconcile ready collector deployment: %v", err)
 	}
@@ -183,7 +187,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	for _, resource := range []struct {
 		gvk  schema.GroupVersionKind
 		name string
-	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
+	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {certificateGVK, elasticstack.GRPCTLSCertName}, {certificateGVK, elasticstack.CrossTenantTLSCertName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
 		object := newUnstructured(resource.gvk, keycloak.WorkloadNamespace, resource.name)
 		if err := c.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
 			t.Errorf("%s %s still exists or lookup failed: %v", resource.gvk.Kind, resource.name, err)
@@ -212,7 +216,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	for _, resource := range []struct {
 		gvk  schema.GroupVersionKind
 		name string
-	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
+	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {certificateGVK, elasticstack.GRPCTLSCertName}, {certificateGVK, elasticstack.CrossTenantTLSCertName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
 		object := newUnstructured(resource.gvk, keycloak.WorkloadNamespace, resource.name)
 		if err := c.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
 			t.Errorf("%s %s still exists after block removal or lookup failed: %v", resource.gvk.Kind, resource.name, err)
@@ -233,16 +237,12 @@ func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeEla
 	if err := c.Create(ctx, newUnstructured(issuerGVK, namespace, "internal-issuer")); err != nil {
 		t.Fatal(err)
 	}
-	ne := &neteye.NetEye{ObjectMeta: metav1.ObjectMeta{Name: "platform", Namespace: namespace}, Spec: neteye.NetEyeSpec{Version: neteye.CurrentNetEyeVersion, InternalCertificateIssuerRef: "internal-issuer", Gateway: neteye.NetEyeGatewaySpec{Name: "neteye", ClassName: "cilium", TLSSecretName: "gateway-tls"}, Identity: neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", DBConnection: neteye.NetEyeDBConnectionSpec{Host: "mariadb.example.com", DBName: "keycloak", UsernameSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"}, PasswordSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"}}}, ElasticStack: elasticConfig}}
+	ne := &neteye.NetEye{ObjectMeta: metav1.ObjectMeta{Name: "platform", Namespace: namespace}, Spec: neteye.NetEyeSpec{Version: neteye.CurrentNetEyeVersion, InternalCertificateIssuerRef: "internal-issuer", Gateway: neteye.NetEyeGatewaySpec{Name: "neteye", ClassName: "cilium"}, Identity: neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", DBConnection: neteye.NetEyeDBConnectionSpec{Host: "mariadb.example.com", DBName: "keycloak", UsernameSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"}, PasswordSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"}}}, ElasticStack: elasticConfig}}
 	if err := c.Create(ctx, ne); err != nil {
 		t.Fatal(err)
 	}
 	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard()), ElasticStackReconciler: elasticstack.NewReconciler(elasticstack.NewComponent(c, logr.Discard()))}
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}
-	if _, err := r.Reconcile(ctx, request); err != nil {
-		t.Fatal(err)
-	}
-	markReady(ctx, t, c, requireExists(ctx, t, c, certificateGVK, namespace, "gateway-tls"))
 	if _, err := r.Reconcile(ctx, request); err != nil {
 		t.Fatal(err)
 	}
@@ -294,19 +294,13 @@ func requireExists(ctx context.Context, t *testing.T, c client.Client, gvk schem
 func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	c, s := startEnvtest(t)
 	ctx := context.Background()
-	const ns = "neteye-envtest"
+	ns := keycloak.WorkloadNamespace
 
 	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
 		t.Fatalf("create namespace: %v", err)
 	}
-	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: keycloak.WorkloadNamespace}}); err != nil {
-		t.Fatalf("create shared Keycloak namespace: %v", err)
-	}
 	if err := c.Create(ctx, newUnstructured(issuerGVK, ns, "internal-issuer")); err != nil {
 		t.Fatalf("create issuer: %v", err)
-	}
-	if err := c.Create(ctx, newUnstructured(issuerGVK, keycloak.WorkloadNamespace, "internal-issuer")); err != nil {
-		t.Fatalf("create shared Keycloak issuer: %v", err)
 	}
 
 	ne := &neteye.NetEye{
@@ -315,9 +309,8 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 			Version:                      neteye.CurrentNetEyeVersion,
 			InternalCertificateIssuerRef: "internal-issuer",
 			Gateway: neteye.NetEyeGatewaySpec{
-				Name:          "neteye-gw",
-				ClassName:     "cilium",
-				TLSSecretName: "gateway-tls",
+				Name:      "neteye-gw",
+				ClassName: "cilium",
 			},
 			Identity: neteye.NetEyeIdentitySpec{
 				Hostname: "keycloak.example.com",
@@ -342,56 +335,6 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "platform"}}
 
-	// First pass: the gateway TLS certificate is not ready yet, so the operator
-	// provisions the base resources and reports NotReady.
-	res, err := r.Reconcile(ctx, req)
-	if err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	if res.RequeueAfter != DefaultWaitForProgressingRequeueAfter {
-		t.Errorf("requeueAfter = %v, want %v", res.RequeueAfter, DefaultWaitForProgressingRequeueAfter)
-	}
-
-	cert := requireExists(ctx, t, c, certificateGVK, ns, "gateway-tls")
-	if owner := cert.GetOwnerReferences(); len(owner) != 1 || owner[0].Name != "platform" {
-		t.Errorf("gateway certificate owner references = %v", owner)
-	}
-	if dnsNames, _, _ := unstructured.NestedSlice(cert.Object, "spec", "dnsNames"); len(dnsNames) != 2 || dnsNames[1] != ne.Spec.Identity.Hostname {
-		t.Errorf("gateway certificate dnsNames = %v", dnsNames)
-	}
-	gateway := requireExists(ctx, t, c, gatewayGVK, ns, "neteye-gw")
-	listeners, _, _ := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
-	for _, listener := range listeners {
-		listenerSpec := listener.(map[string]any)
-		namespaces, _, _ := unstructured.NestedMap(listenerSpec, "allowedRoutes", "namespaces")
-		if namespaces["from"] != "Selector" {
-			t.Errorf("allowedRoutes.namespaces.from = %v, want Selector", namespaces["from"])
-		}
-		matchLabels, _, _ := unstructured.NestedMap(namespaces, "selector", "matchLabels")
-		if matchLabels["kubernetes.io/metadata.name"] != keycloak.WorkloadNamespace {
-			t.Errorf("allowedRoutes namespace selector = %v, want %q", matchLabels, keycloak.WorkloadNamespace)
-		}
-	}
-	requireExists(ctx, t, c, httpRouteGVK, ns, resources.HTTPToHTTPSRedirectRouteName)
-
-	got := &neteye.NetEye{}
-	if err := c.Get(ctx, req.NamespacedName, got); err != nil {
-		t.Fatalf("get neteye: %v", err)
-	}
-	if got.Status.Phase != neteye.PhaseNotReady {
-		t.Errorf("phase = %q, want %q", got.Status.Phase, neteye.PhaseNotReady)
-	}
-
-	// Simulate cert-manager marking the gateway certificate Ready, then reconcile
-	// again: the operator should progress into the Keycloak phase and provision
-	// the identity TLS certificate.
-	if err := unstructured.SetNestedSlice(cert.Object,
-		[]any{map[string]any{"type": "Ready", "status": "True"}}, "status", "conditions"); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Status().Update(ctx, cert); err != nil {
-		t.Fatalf("update certificate status: %v", err)
-	}
 	legacyDefaultDeny := newUnstructured(networkPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
 	legacyDefaultDeny.Object["spec"] = map[string]any{
 		"podSelector": map[string]any{},
@@ -401,14 +344,43 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 		t.Fatalf("create legacy native default deny: %v", err)
 	}
 
-	if _, err := r.Reconcile(ctx, req); err != nil {
-		t.Fatalf("second reconcile: %v", err)
+	res, err := r.Reconcile(ctx, req)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
 	}
-	legacyDefaultDeny = newUnstructured(networkPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
-	if err := c.Get(ctx, client.ObjectKeyFromObject(legacyDefaultDeny), legacyDefaultDeny); !apierrors.IsNotFound(err) {
+	if res.RequeueAfter != DefaultWaitForProgressingRequeueAfter {
+		t.Errorf("requeueAfter = %v, want %v", res.RequeueAfter, DefaultWaitForProgressingRequeueAfter)
+	}
+
+	gateway := requireExists(ctx, t, c, gatewayGVK, ns, "neteye-gw")
+	assertNetEyeOwner(t, gateway)
+	listeners, _, _ := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
+	if len(listeners) != 2 {
+		t.Fatalf("gateway listeners = %d, want 2 (http + keycloak)", len(listeners))
+	}
+	for _, listener := range listeners {
+		namespaces, _, _ := unstructured.NestedMap(listener.(map[string]any), "allowedRoutes", "namespaces")
+		if namespaces["from"] != "Same" {
+			t.Errorf("allowedRoutes.namespaces.from = %v, want Same", namespaces["from"])
+		}
+	}
+	keycloakListener := gatewayListenerByName(t, listeners, keycloak.GatewayListenerName)
+	if keycloakListener["hostname"] != keycloak.RouteHostname {
+		t.Errorf("keycloak listener hostname = %v, want %q", keycloakListener["hostname"], keycloak.RouteHostname)
+	}
+	certRefs, _, _ := unstructured.NestedSlice(keycloakListener, "tls", "certificateRefs")
+	if len(certRefs) != 1 || certRefs[0].(map[string]any)["name"] != keycloak.TLSSecretName {
+		t.Errorf("keycloak listener certificateRefs = %v, want secret %q", certRefs, keycloak.TLSSecretName)
+	}
+	requireExists(ctx, t, c, httpRouteGVK, ns, resources.HTTPToHTTPSRedirectRouteName)
+
+	legacyLookup := newUnstructured(networkPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
+	if err := c.Get(ctx, client.ObjectKeyFromObject(legacyLookup), legacyLookup); !apierrors.IsNotFound(err) {
 		t.Errorf("legacy native default deny still exists or lookup failed: %v", err)
 	}
 	defaultDeny := requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
+	assertNetEyeOwner(t, defaultDeny)
+	assertNetEyeOwner(t, requireExists(ctx, t, c, schema.GroupVersionKind{Group: "coordination.k8s.io", Version: "v1", Kind: "Lease"}, keycloak.WorkloadNamespace, clusterAuthorityLeaseName))
 	if endpointSelector, _, _ := unstructured.NestedMap(defaultDeny.Object, "spec", "endpointSelector"); len(endpointSelector) != 0 {
 		t.Errorf("default deny endpoint selector = %v, want empty", endpointSelector)
 	}
@@ -424,9 +396,19 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if err != nil || !found || !reflect.DeepEqual(egress, []any{map[string]any{"toEntities": []any{"none"}}}) {
 		t.Errorf("default deny egress = %#v, want non-matching none entity", egress)
 	}
+
+	got := &neteye.NetEye{}
+	if err := c.Get(ctx, req.NamespacedName, got); err != nil {
+		t.Fatalf("get neteye: %v", err)
+	}
+	if got.Status.Phase != neteye.PhaseNotReady {
+		t.Errorf("phase = %q, want %q", got.Status.Phase, neteye.PhaseNotReady)
+	}
+
 	keycloakCertificate := requireExists(ctx, t, c, certificateGVK, keycloak.WorkloadNamespace, keycloak.TLSCertificateName)
-	if owner := keycloakCertificate.GetOwnerReferences(); len(owner) != 0 {
-		t.Errorf("shared Keycloak certificate owner references = %v, want none", owner)
+	assertNetEyeOwner(t, keycloakCertificate)
+	if dnsNames, _, _ := unstructured.NestedStringSlice(keycloakCertificate.Object, "spec", "dnsNames"); len(dnsNames) != 1 || dnsNames[0] != keycloak.RouteHostname {
+		t.Errorf("keycloak certificate dnsNames = %v, want [%s]", dnsNames, keycloak.RouteHostname)
 	}
 	if err := unstructured.SetNestedSlice(keycloakCertificate.Object, []any{map[string]any{"type": "Ready", "status": "True"}}, "status", "conditions"); err != nil {
 		t.Fatal(err)
@@ -435,16 +417,44 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 		t.Fatalf("update shared Keycloak certificate status: %v", err)
 	}
 	if _, err := r.Reconcile(ctx, req); err != nil {
-		t.Fatalf("third reconcile: %v", err)
+		t.Fatalf("second reconcile: %v", err)
 	}
 	route := requireExists(ctx, t, c, httpRouteGVK, keycloak.WorkloadNamespace, keycloak.HTTPRouteName)
+	assertNetEyeOwner(t, route)
+	assertNetEyeOwner(t, requireExists(ctx, t, c, schema.GroupVersionKind{Group: "k8s.keycloak.org", Version: "v2beta1", Kind: "Keycloak"}, keycloak.WorkloadNamespace, keycloak.InstanceName))
+	assertNetEyeOwner(t, requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.EgressPolicyName))
+	assertNetEyeOwner(t, requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.IngressPolicyName))
+	assertNetEyeOwner(t, requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.HostPolicyName))
 	parentRefs, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs")
 	parentRef := parentRefs[0].(map[string]any)
-	if parentRef["namespace"] != ns {
-		t.Errorf("route parent namespace = %v, want %q", parentRef["namespace"], ns)
+	if parentRef["namespace"] != keycloak.WorkloadNamespace {
+		t.Errorf("route parent namespace = %v, want %q", parentRef["namespace"], keycloak.WorkloadNamespace)
+	}
+	if parentRef["sectionName"] != keycloak.GatewayListenerName {
+		t.Errorf("route sectionName = %v, want %q", parentRef["sectionName"], keycloak.GatewayListenerName)
 	}
 	hostnames, _, _ := unstructured.NestedSlice(route.Object, "spec", "hostnames")
-	if len(hostnames) != 1 || hostnames[0] != "keycloak.rke2.neteyelocal" {
-		t.Errorf("route hostnames = %v, want [keycloak.rke2.neteyelocal]", hostnames)
+	if len(hostnames) != 1 || hostnames[0] != keycloak.RouteHostname {
+		t.Errorf("route hostnames = %v, want [%s]", hostnames, keycloak.RouteHostname)
 	}
+}
+
+func assertNetEyeOwner(t *testing.T, object *unstructured.Unstructured) {
+	t.Helper()
+	owners := object.GetOwnerReferences()
+	if len(owners) != 1 || owners[0].Name != "platform" || owners[0].Kind != "NetEye" || owners[0].Controller == nil || !*owners[0].Controller {
+		t.Errorf("%s %s/%s owner references = %v, want NetEye/platform controller owner", object.GetKind(), object.GetNamespace(), object.GetName(), owners)
+	}
+}
+
+func gatewayListenerByName(t *testing.T, listeners []any, name string) map[string]any {
+	t.Helper()
+	for _, listener := range listeners {
+		listenerSpec := listener.(map[string]any)
+		if listenerSpec["name"] == name {
+			return listenerSpec
+		}
+	}
+	t.Fatalf("gateway listener %q not found", name)
+	return nil
 }

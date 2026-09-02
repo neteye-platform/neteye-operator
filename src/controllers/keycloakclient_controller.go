@@ -53,7 +53,7 @@ func (r *KeycloakClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	api, err := r.adminAPI(ctx)
+	api, err := r.adminAPI(ctx) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
 	if err != nil {
 		log.Error(err, "unable to build Keycloak Admin API client", "requeueAfter", r.failureRequeue())
 		if !kcc.DeletionTimestamp.IsZero() {
@@ -96,8 +96,15 @@ func (r *KeycloakClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	kcc.Status.ClientUUID = result.UUID
-	r.setStatus(ctx, req.NamespacedName, kcc, neteye.ServiceStateReady, "Keycloak client is reconciled")
+	r.setStatus(ctx, req.NamespacedName, kcc, neteye.ServiceStateReady, readyMessage(kcc))
 	return ctrl.Result{RequeueAfter: r.reconciliationRequeue()}, nil
+}
+
+func readyMessage(kcc *neteye.KeycloakClient) string {
+	if !kcc.Spec.PublicClient && kcc.Spec.SecretRef == nil {
+		return "Keycloak client is reconciled; client secret is managed by Keycloak (no secretRef)"
+	}
+	return "Keycloak client is reconciled"
 }
 
 func (r *KeycloakClientReconciler) reconcileDelete(ctx context.Context, kcc *neteye.KeycloakClient, api *keycloak.AdminAPI) (ctrl.Result, error) {

@@ -155,14 +155,6 @@ type NetEyeGatewaySpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:example={"lbipam.cilium.io/ips":"192.0.2.10"}
 	Annotations map[string]string `json:"annotations,omitempty"`
-
-	// TLSSecretName is the Secret written by the operator-managed Gateway
-	// wildcard Certificate and used by the Gateway HTTPS listener for TLS
-	// termination.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:example="neteyelocal-wildcard-tls"
-	TLSSecretName string `json:"tlsSecretName"`
 }
 
 // netEyeVersionMap maps a NetEye version string to its component image set.

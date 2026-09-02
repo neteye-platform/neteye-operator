@@ -14,7 +14,7 @@ import (
 
 // EnsureHTTPRoute ensures a Gateway API HTTPRoute exists for a hostname and
 // routes traffic to a Service in the same namespace as the route.
-func EnsureHTTPRoute(ctx context.Context, client client.Client, namespace string, name, gatewayNamespace, gatewayRef string, hostnames []string, backendServiceName string, backendServicePort int64, owner *metav1.OwnerReference) error {
+func EnsureHTTPRoute(ctx context.Context, client client.Client, namespace string, name, gatewayNamespace, gatewayRef, sectionName string, hostnames []string, backendServiceName string, backendServicePort int64, owner *metav1.OwnerReference) error {
 	desiredSpec := map[string]any{
 		"parentRefs": []any{
 			map[string]any{
@@ -22,7 +22,7 @@ func EnsureHTTPRoute(ctx context.Context, client client.Client, namespace string
 				"kind":        "Gateway",
 				"namespace":   gatewayNamespace,
 				"name":        gatewayRef,
-				"sectionName": gatewayHTTPSListenerName,
+				"sectionName": sectionName,
 			},
 		},
 		"hostnames": stringSliceToInterfaces(hostnames),

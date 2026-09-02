@@ -115,9 +115,10 @@ type KeycloakClientSpec struct {
 	// +kubebuilder:validation:Optional
 	ServiceAccount *KeycloakServiceAccountSpec `json:"serviceAccount,omitempty"`
 
-	// SecretRef references the Secret key holding the client secret. It is
-	// required for confidential clients, and the Secret must exist in the same
-	// namespace as this resource.
+	// SecretRef references the Secret key holding the client secret, which must
+	// exist in the same namespace as this resource. When omitted on a
+	// confidential client the secret stays whatever Keycloak generated and the
+	// operator never touches it, so no Pod can mount it from the cluster.
 	// +kubebuilder:validation:Optional
 	SecretRef *NetEyeSecretKeySelector `json:"secretRef,omitempty"`
 

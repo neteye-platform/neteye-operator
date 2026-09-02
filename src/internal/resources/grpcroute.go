@@ -11,9 +11,9 @@ import (
 )
 
 // EnsureGRPCRoute ensures a Gateway API GRPCRoute with a same-namespace Service backend.
-func EnsureGRPCRoute(ctx context.Context, c client.Client, namespace, name, gatewayNamespace, gatewayName, hostname, serviceName string, port int64, owner *metav1.OwnerReference) error {
+func EnsureGRPCRoute(ctx context.Context, c client.Client, namespace, name, gatewayNamespace, gatewayName, sectionName, hostname, serviceName string, port int64, owner *metav1.OwnerReference) error {
 	_, err := Apply(ctx, c, ObjectDefinition{GVK: schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "GRPCRoute"}, Name: name, Namespace: namespace, Owner: owner, Spec: map[string]any{
-		"parentRefs": []any{map[string]any{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": gatewayNamespace, "name": gatewayName, "sectionName": gatewayHTTPSListenerName}},
+		"parentRefs": []any{map[string]any{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": gatewayNamespace, "name": gatewayName, "sectionName": sectionName}},
 		"hostnames":  []any{hostname},
 		"rules":      []any{map[string]any{"backendRefs": []any{map[string]any{"name": serviceName, "port": port, "weight": int64(100)}}}},
 	}})
