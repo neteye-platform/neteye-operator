@@ -105,3 +105,9 @@ repos:
           - github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
         types: [go]
         pass_filenames: false
+      - id: version-consistency
+        name: version-consistency
+        entry: hack/check-version-consistency.sh
+        language: script
+        files: ^(src/Makefile|charts/Chart\.yaml|src/bundle/manifests/.+\.clusterserviceversion\.yaml)$
+        pass_filenames: false

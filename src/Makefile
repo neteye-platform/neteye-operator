@@ -87,7 +87,7 @@ bundle: kustomize-manifests ## Render the versioned OLM bundle directly from the
 
 .PHONY: bundle-validate
 bundle-validate: operator-sdk ## Validate the generated on-disk OLM bundle.
-	$(OPERATOR_SDK) bundle validate ./bundle
+	$(OPERATOR_SDK) bundle validate ./bundle --select-optional name=good-practices --select-optional name=alpha-deprecated-apis
 
 .PHONY: bundle-build
 bundle-build: bundle ## Build the OLM bundle image using the maintained Dockerfile.bundle.
