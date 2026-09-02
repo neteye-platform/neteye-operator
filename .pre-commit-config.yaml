@@ -89,6 +89,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: go-mod-tidy
+        name: go-mod-tidy
+        entry: bash -c 'cd src && go mod tidy'
+        language: golang
+        language_version: "1.27.0"
+        files: ^src/(.+\.go|go\.(mod|sum))$
+        pass_filenames: false
       - id: golangci-lint
         name: golangci-lint
         entry: bash -c 'cd src && golangci-lint run'
