@@ -17,8 +17,45 @@ concurrency:
 
 env:
   ENVTEST_K8S_VERSION: "1.36.2"
+  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
+  release-metadata:
+    name: Release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Test release metadata validation
+        run: ./hack/check-version-consistency_test.sh
+
+      - name: Test release source validation
+        run: ./hack/check-release-source_test.sh
+
+      - name: Test catalog updates
+        run: python -m unittest discover -s hack -p '*_test.py' -v
+
+      - name: Validate release metadata
+        id: validate
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            ./hack/check-version-consistency.sh --tag "$REF_NAME"
+            ./hack/check-release-source.sh --tag "$REF_NAME"
+          else
+            ./hack/check-version-consistency.sh
+          fi
+          version="$(sed -n 's/^VERSION ?= //p' src/Makefile)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   unit:
     name: Unit tests
     runs-on: ubuntu-latest
@@ -70,28 +107,259 @@ jobs:
 
   build-operator:
     name: Build operator image
-    needs: [unit, integration]
+    needs: [release-metadata, unit, integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
-    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@7742c5e2a5092511fef6e00e2872f278f5f2bf36 # main
-    with:
-      working-directory: src
-      dockerfile-path: src/Dockerfile
-      image-name: neteye-operator
-      push: ${{ startsWith(github.ref, 'refs/tags/') }}
-    secrets: inherit
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GHCR
+        if: ${{ github.ref_type == 'tag' }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/neteye-operator
+          tags: |
+            type=semver,pattern={{version}}
+            type=ref,event=pr
+
+      - name: Build and publish operator image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: src
+          file: src/Dockerfile
+          push: ${{ github.ref_type == 'tag' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ needs.release-metadata.outputs.version }}
+          provenance: mode=max
+          sbom: true
 
   build-bundle:
     name: Build bundle image
-    needs: [unit, integration]
+    needs: [release-metadata, unit, integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
-    uses: neteye-platform/repo-commons/.github/workflows/build-docker-image.yaml@7742c5e2a5092511fef6e00e2872f278f5f2bf36 # main
-    with:
-      working-directory: src
-      dockerfile-path: src/Dockerfile.bundle
-      image-name: neteye-operator-bundle
-      push: ${{ startsWith(github.ref, 'refs/tags/') }}
-    secrets: inherit
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GHCR
+        if: ${{ github.ref_type == 'tag' }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/neteye-operator-bundle
+          tags: |
+            type=semver,pattern={{version}}
+            type=ref,event=pr
+
+      - name: Build and publish bundle image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: src
+          file: src/Dockerfile.bundle
+          push: ${{ github.ref_type == 'tag' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.release-metadata.outputs.version }}
+            PACKAGE_NAME=neteye-operator
+          provenance: mode=max
+          sbom: true
+
+  update-catalog:
+    name: Open catalog release PR
+    if: ${{ github.ref_type == 'tag' }}
+    needs: [release-metadata, build-operator, build-bundle]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Create read-only catalog token
+        id: catalog-read-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.NETEYE_APP_ID }}
+          private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: neteye-operator-catalog
+          permission-contents: read
+
+      - name: Checkout operator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: operator
+          persist-credentials: false
+
+      - name: Checkout catalog
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: neteye-platform/neteye-operator-catalog
+          token: ${{ steps.catalog-read-token.outputs.token }}
+          path: catalog
+          ref: main
+          persist-credentials: false
+
+      - name: Prepare catalog branch
+        id: branch
+        env:
+          BRANCH: release/neteye-operator-v${{ needs.release-metadata.outputs.version }}
+          GH_TOKEN: ${{ steps.catalog-read-token.outputs.token }}
+        working-directory: catalog
+        run: |
+          git checkout -b "$BRANCH"
+          remote_sha="$(gh api \
+            "repos/neteye-platform/neteye-operator-catalog/git/ref/heads/$BRANCH" \
+            --jq '.object.sha' 2>/dev/null || true)"
+          echo "remote-sha=$remote_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Add release to catalog
+        env:
+          BUNDLE_DIGEST: ${{ needs.build-bundle.outputs.digest }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          ./operator/hack/update_catalog.py \
+            --catalog ./catalog/catalog/index.yaml \
+            --version "$VERSION" \
+            --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle@$BUNDLE_DIGEST"
+
+      - name: Check catalog changes
+        id: changes
+        working-directory: catalog
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mapfile -t changed_files < <(git diff --name-only)
+          if [[ ${#changed_files[@]} -ne 1 || ${changed_files[0]} != "catalog/index.yaml" ]]; then
+            echo "error: catalog update modified unexpected files" >&2
+            printf '  %s\n' "${changed_files[@]}" >&2
+            exit 1
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate catalog
+        run: |
+          docker run --rm \
+            -v "$PWD/catalog/catalog:/configs:ro" \
+            "quay.io/operator-framework/opm:v1.73.0@sha256:e5a6220603fb4504d58c6e3e488386b817e3695c906a62ee0370b5faedc3799a" \
+            validate /configs
+
+      - name: Commit catalog update
+        if: ${{ steps.changes.outputs.changed == 'true' }}
+        env:
+          BRANCH: release/neteye-operator-v${{ needs.release-metadata.outputs.version }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        working-directory: catalog
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add catalog/index.yaml
+          git commit -m "feat: add v${VERSION} release"
+
+      - name: Create catalog write token
+        if: ${{ steps.changes.outputs.changed == 'true' }}
+        id: catalog-write-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.NETEYE_APP_ID }}
+          private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: neteye-operator-catalog
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open or report catalog PR
+        if: ${{ steps.changes.outputs.changed == 'true' }}
+        env:
+          BRANCH: release/neteye-operator-v${{ needs.release-metadata.outputs.version }}
+          GH_TOKEN: ${{ steps.catalog-write-token.outputs.token }}
+          PR_BODY: |
+            Automated catalog promotion for neteye-operator v${{ needs.release-metadata.outputs.version }}.
+
+            Bundle: `ghcr.io/neteye-platform/neteye-operator-bundle@${{ needs.build-bundle.outputs.digest }}`
+            Source: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+          REMOTE_SHA: ${{ steps.branch.outputs.remote-sha }}
+        run: |
+          gh auth setup-git
+          if [[ -n "$REMOTE_SHA" ]]; then
+            git -C catalog push \
+              --force-with-lease="refs/heads/$BRANCH:$REMOTE_SHA" \
+              origin "HEAD:refs/heads/$BRANCH"
+          else
+            git -C catalog push --set-upstream origin "HEAD:refs/heads/$BRANCH"
+          fi
+
+          pr_number="$(gh pr list \
+            --repo neteye-platform/neteye-operator-catalog \
+            --head "$BRANCH" \
+            --state all \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [[ -z "$pr_number" ]]; then
+            gh pr create \
+              --repo neteye-platform/neteye-operator-catalog \
+              --base main \
+              --head "$BRANCH" \
+              --title "feat: add v${VERSION} release" \
+              --body "$PR_BODY"
+          else
+            pr_state="$(gh pr view "$pr_number" \
+              --repo neteye-platform/neteye-operator-catalog \
+              --json state \
+              --jq '.state')"
+            if [[ $pr_state == "OPEN" ]]; then
+              gh pr view "$pr_number" \
+                --repo neteye-platform/neteye-operator-catalog \
+                --json url \
+                --jq '"Catalog PR already open: \(.url)"'
+            elif [[ $pr_state == "CLOSED" ]]; then
+              gh pr reopen "$pr_number" --repo neteye-platform/neteye-operator-catalog
+            else
+              echo "error: catalog PR $pr_number is already merged but the release is absent from main" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Report existing catalog release
+        if: ${{ steps.changes.outputs.changed == 'false' }}
+        env:
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: echo "Catalog already contains neteye-operator v${VERSION}."

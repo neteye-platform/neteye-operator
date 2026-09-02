@@ -110,6 +110,53 @@ before the catalog repository references it. The catalog repository publishes
 its `:latest` image from `main`; the Helm chart's `ClusterCatalog` polls that
 mutable image while each catalog entry references an immutable bundle version.
 
+### Releases
+
+Releases are prepared in a pull request and published from an annotated SemVer
+tag. The tagged commit must be reachable from `main` or from the matching
+`release/<major>.<minor>` branch derived from the tag. For example, `v1.2.4`
+may be published from `main` or `release/1.2`, but not from another release
+train. Update `VERSION` in `src/Makefile`, `version` in `charts/Chart.yaml`, and
+the chart's operator `versionRange` and `channel` in `charts/values.yaml`, then
+regenerate the bundle:
+
+```sh
+make bundle bundle-validate
+./hack/check-version-consistency.sh
+```
+
+Use the `alpha` catalog channel for prerelease versions and `stable` for GA
+versions. The release workflow rejects tags that do not exactly match the
+checked-in version or do not come from an allowed release source.
+
+After validation, the workflow builds and publishes the operator and bundle
+images with SBOM and provenance attestations. It passes the release version to
+both image builds and records the resulting bundle digest. It then opens a
+version-specific pull request in `neteye-platform/neteye-operator-catalog` that
+references the immutable bundle digest. Rerunning the workflow updates or
+reports the same pull request instead of opening a duplicate.
+
+Cross-repository pull requests use a GitHub App installed on
+`neteye-platform/neteye-operator-catalog` with repository `Contents: Read and
+write` and `Pull requests: Read and write`. Configure its App ID as the
+organization variable `NETEYE_APP_ID` and its private key as the organization
+secret `NETEYE_APP_PRIVATE_KEY`, granting this repository access to both. The
+source repository's standard `GITHUB_TOKEN` cannot write to the catalog
+repository.
+
+Protect the `v*` tag namespace so only release maintainers can create tags and
+tags cannot be updated or deleted. Protect `main` and `release/*` in this
+repository as release sources. In the catalog repository, protect `main` from
+direct App pushes and reserve `release/neteye-operator-v*` branches for the
+App. The workflow itself requires an annotated tag and creates catalog changes
+from a fresh trusted `main`; repository rules establish who may trigger that
+workflow and prevent branch-name preemption.
+
+Once the catalog pull request passes validation and is merged, the catalog
+repository publishes `neteye-operator-catalog:latest`. Never move a release tag
+or overwrite an existing catalog release with another digest; publish a new
+SemVer version for corrections.
+
 Pre-commit hooks are configured in `.pre-commit-config.yaml` (run via
 [`prek`](https://github.com/j178/prek) or `pre-commit`). Set `LOG_LEVEL`
 (`debug`, `info`, `warn`, `error`, or `v<n>`) to control log verbosity.
