@@ -21,6 +21,7 @@ import (
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
+	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -283,7 +284,7 @@ type elasticStackResources struct {
 	deletes int
 }
 
-func (r *elasticStackResources) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, metav1.OwnerReference) (bool, string, error) {
+func (r *elasticStackResources) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, resources.CertificateIssuerRef, metav1.OwnerReference) (bool, string, error) {
 	return r.ready, r.message, r.err
 }
 

@@ -37,8 +37,14 @@ const (
 	HTTPRouteName              = "otel-collector-crosstenant-route"
 	IngressPolicyName          = "neteye-otel-collector-ingress"
 	EgressPolicyName           = "neteye-otel-collector-egress"
-	GRPCRouteHostname          = "otel-collector.rke2.neteyelocal"
-	CrossTenantRouteHostname   = "otel-collector-crosstenant.rke2.neteyelocal"
+	GRPCRouteHostname          = "otel-collector.neteyelocal"
+	CrossTenantRouteHostname   = "otel-collector-crosstenant.neteyelocal"
+	GRPCListenerName           = "otel-collector"
+	CrossTenantListenerName    = "otel-collector-crosstenant"
+	GRPCTLSCertName            = "otel-collector-tls"
+	GRPCTLSSecretName          = "otel-collector-tls-secret"
+	CrossTenantTLSCertName     = "otel-collector-crosstenant-tls"
+	CrossTenantTLSSecretName   = "otel-collector-crosstenant-tls-secret"
 	DefaultAPIKeySecretName    = "otel-collector-api-key"
 	DefaultAPIKeySecretKey     = "api_key"
 	DefaultBasicAuthSecretName = "otel-collector-basicauth"
@@ -56,7 +62,7 @@ func NewComponent(c client.Client, log logr.Logger) *Component {
 }
 
 // EnsureResources checks user-managed prerequisites first, then creates Elastic Stack feature module resources.
-func (c *Component) EnsureResources(ctx context.Context, namespace string, config neteye.NetEyeElasticStackSpec, identityHostname, gatewayNamespace, gatewayName, collectorImage string, owner metav1.OwnerReference) (bool, string, error) {
+func (c *Component) EnsureResources(ctx context.Context, namespace string, config neteye.NetEyeElasticStackSpec, identityHostname, gatewayNamespace, gatewayName, collectorImage string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
 	if config.OTelCollector == nil {
 		return false, "Elastic Stack feature module configuration is incomplete: otelCollector is required when enabled", nil
 	}
@@ -103,14 +109,29 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, confi
 	if err := resources.EnsureService(ctx, c.client, service(namespace), owner); err != nil {
 		return false, "", err
 	}
-	if err := resources.EnsureGRPCRoute(ctx, c.client, namespace, GRPCRouteName, gatewayNamespace, gatewayName, GRPCRouteHostname, ServiceName, 4317, &owner); err != nil {
+	if err := resources.EnsureCertificate(ctx, c.client, namespace, GRPCTLSCertName, GRPCTLSSecretName, GRPCRouteHostname, []string{GRPCRouteHostname}, issuerRef, &owner); err != nil {
 		return false, "", err
 	}
-	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayName, []string{CrossTenantRouteHostname}, ServiceName, 4318, &owner); err != nil {
+	if err := resources.EnsureCertificate(ctx, c.client, namespace, CrossTenantTLSCertName, CrossTenantTLSSecretName, CrossTenantRouteHostname, []string{CrossTenantRouteHostname}, issuerRef, &owner); err != nil {
+		return false, "", err
+	}
+	if err := resources.EnsureGRPCRoute(ctx, c.client, namespace, GRPCRouteName, gatewayNamespace, gatewayName, GRPCListenerName, GRPCRouteHostname, ServiceName, 4317, &owner); err != nil {
+		return false, "", err
+	}
+	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayName, CrossTenantListenerName, []string{CrossTenantRouteHostname}, ServiceName, 4318, &owner); err != nil {
 		return false, "", err
 	}
 	if err := c.ensureNetworkPolicies(ctx, namespace, collector.ElasticsearchEndpoints, issuer, owner); err != nil {
 		return false, "", err
+	}
+	for _, certificate := range []string{GRPCTLSCertName, CrossTenantTLSCertName} {
+		certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, certificate)
+		if err != nil {
+			return false, "", err
+		}
+		if !certificateReady {
+			return false, certificateMessage, nil
+		}
 	}
 	ready, message, err := resources.IsDeploymentReady(ctx, c.client, namespace, DeploymentName)
 	if err != nil {
@@ -139,7 +160,7 @@ func (c *Component) DeleteResources(ctx context.Context, namespace string, owner
 		gvk  schema.GroupVersionKind
 		name string
 	}{
-		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, ServiceName}, {schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "GRPCRoute"}, GRPCRouteName}, {schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}, HTTPRouteName}, {schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, IngressPolicyName}, {schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, EgressPolicyName},
+		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, ServiceName}, {schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "GRPCRoute"}, GRPCRouteName}, {schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}, HTTPRouteName}, {schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}, GRPCTLSCertName}, {schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}, CrossTenantTLSCertName}, {schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, IngressPolicyName}, {schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, EgressPolicyName},
 	} {
 		object := &unstructured.Unstructured{}
 		object.SetGroupVersionKind(resource.gvk)
@@ -274,9 +295,11 @@ func tcpPorts(ports ...string) map[string]any {
 	}
 	return map[string]any{"ports": values}
 }
+
 func probe(period, failures int32) *corev1.Probe {
 	return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/", Port: intstr.FromString("health")}}, PeriodSeconds: period, FailureThreshold: failures, TimeoutSeconds: 2}
 }
+
 func service(namespace string) *corev1.Service {
 	return &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: ServiceName, Namespace: namespace}, Spec: corev1.ServiceSpec{Selector: map[string]string{"app": "otel-collector"}, Ports: []corev1.ServicePort{{Name: "otlp-grpc", Protocol: corev1.ProtocolTCP, Port: 4317, TargetPort: intstr.FromInt32(4317), AppProtocol: ptr.To("kubernetes.io/h2c")}, {Name: "otlp-http", Protocol: corev1.ProtocolTCP, Port: 4318, TargetPort: intstr.FromInt32(4318)}}}}
 }

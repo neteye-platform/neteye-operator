@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
 func TestReconcilerDisabledDeletesManagedResources(t *testing.T) {
@@ -78,7 +79,7 @@ type recordingComponent struct {
 	deletes int
 }
 
-func (c *recordingComponent) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, metav1.OwnerReference) (bool, string, error) {
+func (c *recordingComponent) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, resources.CertificateIssuerRef, metav1.OwnerReference) (bool, string, error) {
 	return c.ready, c.message, c.err
 }
 

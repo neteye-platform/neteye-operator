@@ -6,7 +6,7 @@ metadata:
   annotations:
     capabilities: Basic Install
     alm-examples: |-
-      [{"apiVersion":"neteye.cloud/v1alpha1","kind":"NetEye","metadata":{"name":"neteye-sample"},"spec":{"version":"4.50","gateway":{"name":"neteye","className":"cilium","tlsSecretName":"neteyelocal-wildcard-tls"},"internalCertificateIssuerRef":"neteye-internal-issuer","identity":{"hostname":"keycloak.example.com","dbConnection":{"host":"mariadb.example.com","dbName":"keycloak","usernameSecret":{"name":"keycloak-db-secret","key":"username"},"passwordSecret":{"name":"keycloak-db-secret","key":"password"}}}}}]
+      [{"apiVersion":"neteye.cloud/v1alpha1","kind":"NetEye","metadata":{"name":"neteye-sample"},"spec":{"version":"4.50","gateway":{"name":"neteye","className":"cilium"},"internalCertificateIssuerRef":"neteye-internal-issuer","identity":{"hostname":"keycloak.example.com","dbConnection":{"host":"mariadb.example.com","dbName":"keycloak","usernameSecret":{"name":"keycloak-db-secret","key":"username"},"passwordSecret":{"name":"keycloak-db-secret","key":"password"}}}}}]
 spec:
   displayName: NetEye Operator
   description: NetEye Operator for managing cloud-native infrastructure

@@ -10,7 +10,6 @@ spec:
     className: cilium
     annotations:
       lbipam.cilium.io/ips: 192.0.2.10
-    tlsSecretName: neteyelocal-wildcard-tls
   internalCertificateIssuerRef: neteye-internal-issuer
   identity:
     replicas: 1

@@ -148,18 +148,9 @@ spec:
                     example: neteye
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                     type: string
-                  tlsSecretName:
-                    description: |-
-                      TLSSecretName is the Secret written by the operator-managed Gateway
-                      wildcard Certificate and used by the Gateway HTTPS listener for TLS
-                      termination.
-                    example: neteyelocal-wildcard-tls
-                    minLength: 1
-                    type: string
                 required:
                 - className
                 - name
-                - tlsSecretName
                 type: object
               identity:
                 description: Identity configures identity services such as Keycloak.
