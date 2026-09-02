@@ -3,7 +3,7 @@ kind: ClusterExtension
 metadata:
   name: {{ .Values.operator.packageName | quote }}
 spec:
-  namespace: {{ .Values.namespace.operators | quote }}
+  namespace: {{ .Values.operator.namespace | quote }}
   source:
     sourceType: Catalog
     catalog:
