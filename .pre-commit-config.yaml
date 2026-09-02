@@ -109,5 +109,11 @@ repos:
         name: version-consistency
         entry: hack/check-version-consistency.sh
         language: script
-        files: ^(src/Makefile|charts/Chart\.yaml|src/bundle/manifests/.+\.clusterserviceversion\.yaml)$
+        files: ^(hack/check-version-consistency\.sh|src/Makefile|charts/.+\.yaml|src/bundle/(manifests/.+\.clusterserviceversion|metadata/annotations)\.yaml)$
+        pass_filenames: false
+      - id: version-consistency-tests
+        name: version-consistency-tests
+        entry: hack/check-version-consistency_test.sh
+        language: script
+        files: ^hack/check-version-consistency(_test)?\.sh$
         pass_filenames: false
