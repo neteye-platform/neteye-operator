@@ -2,7 +2,7 @@ apiVersion: operators.coreos.com/v1alpha1
 kind: ClusterServiceVersion
 metadata:
   annotations:
-    alm-examples: '[{"apiVersion":"neteye.cloud/v1alpha1","kind":"NetEye","metadata":{"name":"neteye-sample"},"spec":{"version":"4.50","gateway":{"name":"neteye","className":"cilium","tlsSecretName":"neteyelocal-wildcard-tls"},"internalCertificateIssuerRef":"neteye-internal-issuer","identity":{"hostname":"keycloak.example.com","dbConnection":{"host":"mariadb.example.com","dbName":"keycloak","usernameSecret":{"name":"keycloak-db-secret","key":"username"},"passwordSecret":{"name":"keycloak-db-secret","key":"password"}}}}}]'
+    alm-examples: '[{"apiVersion":"neteye.cloud/v1alpha1","kind":"NetEye","metadata":{"name":"neteye-sample"},"spec":{"version":"4.50","gateway":{"name":"neteye","className":"cilium"},"internalCertificateIssuerRef":"neteye-internal-issuer","identity":{"hostname":"keycloak.example.com","dbConnection":{"host":"mariadb.example.com","dbName":"keycloak","usernameSecret":{"name":"keycloak-db-secret","key":"username"},"passwordSecret":{"name":"keycloak-db-secret","key":"password"}}}}}]'
     capabilities: Basic Install
   name: neteye-operator.v0.1.0-alpha3
   namespace: placeholder

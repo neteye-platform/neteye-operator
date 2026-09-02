@@ -14,62 +14,70 @@ import (
 
 const (
 	HTTPToHTTPSRedirectRouteName = "redirect-http-to-https"
-	GatewayWildcardDNSName       = "*.rke2.neteyelocal"
 	gatewayHTTPListenerName      = "http"
-	gatewayHTTPSListenerName     = "https"
+	RouteKindHTTP                = "HTTPRoute"
+	RouteKindGRPC                = "GRPCRoute"
 )
 
-// EnsureGatewayTLSCertificate ensures the wildcard TLS certificate used by the
-// Gateway HTTPS listener exists and writes the referenced Gateway TLS Secret.
-func EnsureGatewayTLSCertificate(ctx context.Context, client client.Client, namespace string, secretName, identityHostname string, issuerRef CertificateIssuerRef, owner metav1.OwnerReference) error {
-	return EnsureCertificate(ctx, client, namespace, secretName, secretName, GatewayWildcardDNSName, []string{GatewayWildcardDNSName, identityHostname}, issuerRef, &owner)
+// GatewayListener describes one per-component HTTPS listener on the shared
+// Gateway, matched by SNI hostname and terminating TLS with its own Secret.
+type GatewayListener struct {
+	// Name is the listener name; routes attach to it via parentRef sectionName.
+	Name string
+	// Hostname is the SNI hostname served by this listener.
+	Hostname string
+	// TLSSecretName is the TLS Secret, in the Gateway namespace, terminating TLS.
+	TLSSecretName string
+	// RouteKind is the single route kind allowed on this listener.
+	RouteKind string
 }
 
-// EnsureGateway ensures a Gateway API Gateway exists in the NetEye namespace.
-// Existing Gateways are adopted when they have no conflicting controller owner.
-func EnsureGateway(ctx context.Context, client client.Client, namespace string, name string, gatewayClassName string, annotations map[string]string, tlsSecretName string, owner metav1.OwnerReference) error {
-	desiredSpec := map[string]any{
-		"gatewayClassName": gatewayClassName,
-		"listeners": []any{
-			map[string]any{
-				"name":     gatewayHTTPListenerName,
-				"protocol": "HTTP",
-				"port":     int64(80),
-				"allowedRoutes": map[string]any{
-					"namespaces": map[string]any{
-						"from": "Selector",
-						"selector": map[string]any{
-							"matchLabels": map[string]any{"kubernetes.io/metadata.name": "neteye-tenant-shared"},
-						},
-					},
-					"kinds": routeKinds(),
+// EnsureGateway ensures a Gateway API Gateway exists. It exposes the cleartext
+// HTTP listener used for the HTTP->HTTPS redirect and one HTTPS listener per
+// supplied GatewayListener. Existing Gateways are adopted when they have no
+// conflicting controller owner.
+func EnsureGateway(ctx context.Context, client client.Client, namespace string, name string, gatewayClassName string, annotations map[string]string, listeners []GatewayListener, owner metav1.OwnerReference) error {
+	desiredListeners := []any{
+		map[string]any{
+			"name":     gatewayHTTPListenerName,
+			"protocol": "HTTP",
+			"port":     int64(80),
+			"allowedRoutes": map[string]any{
+				"namespaces": map[string]any{
+					"from": "Same",
 				},
-			},
-			map[string]any{
-				"name":     gatewayHTTPSListenerName,
-				"protocol": "HTTPS",
-				"port":     int64(443),
-				"allowedRoutes": map[string]any{
-					"namespaces": map[string]any{
-						"from": "Selector",
-						"selector": map[string]any{
-							"matchLabels": map[string]any{"kubernetes.io/metadata.name": "neteye-tenant-shared"},
-						},
-					},
-					"kinds": routeKinds(),
-				},
-				"tls": map[string]any{
-					"mode": "Terminate",
-					"certificateRefs": []any{
-						map[string]any{
-							"kind":  "Secret",
-							"group": "",
-							"name":  tlsSecretName,
-						},
-					},
-				},
+				"kinds": routeKinds(RouteKindHTTP),
 			},
 		},
+	}
+	for _, listener := range listeners {
+		desiredListeners = append(desiredListeners, map[string]any{
+			"name":     listener.Name,
+			"protocol": "HTTPS",
+			"port":     int64(443),
+			"hostname": listener.Hostname,
+			"allowedRoutes": map[string]any{
+				"namespaces": map[string]any{
+					"from": "Same",
+				},
+				"kinds": routeKinds(listener.RouteKind),
+			},
+			"tls": map[string]any{
+				"mode": "Terminate",
+				"certificateRefs": []any{
+					map[string]any{
+						"kind":  "Secret",
+						"group": "",
+						"name":  listener.TLSSecretName,
+					},
+				},
+			},
+		})
+	}
+
+	desiredSpec := map[string]any{
+		"gatewayClassName": gatewayClassName,
+		"listeners":        desiredListeners,
 	}
 	if len(annotations) > 0 {
 		desiredSpec["infrastructure"] = map[string]any{
@@ -90,11 +98,11 @@ func EnsureGateway(ctx context.Context, client client.Client, namespace string, 
 	log := logf.FromContext(ctx)
 	switch outcome {
 	case Unchanged:
-		log.V(1).Info("Gateway had no drift", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
+		log.V(1).Info("Gateway had no drift", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "listeners", len(desiredListeners))
 	case Updated:
-		log.V(1).Info("Gateway reconciled", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
+		log.V(1).Info("Gateway reconciled", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "listeners", len(desiredListeners))
 	case Created:
-		log.Info("Gateway created", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "tlsSecret", tlsSecretName)
+		log.Info("Gateway created", "namespace", namespace, "gateway", name, "gatewayClassName", gatewayClassName, "listeners", len(desiredListeners))
 	}
 	return nil
 }
@@ -135,15 +143,12 @@ func gatewayGVK() schema.GroupVersionKind {
 	}
 }
 
-func routeKinds() []any {
-	return []any{
-		map[string]any{
-			"kind": "HTTPRoute",
-		},
-		map[string]any{
-			"kind": "GRPCRoute",
-		},
+func routeKinds(kinds ...string) []any {
+	items := make([]any, 0, len(kinds))
+	for _, kind := range kinds {
+		items = append(items, map[string]any{"group": "gateway.networking.k8s.io", "kind": kind})
 	}
+	return items
 }
 
 func stringMapToInterfaces(values map[string]string) map[string]any {

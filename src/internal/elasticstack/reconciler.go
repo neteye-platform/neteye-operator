@@ -10,11 +10,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
 // ResourceReconciler manages Elastic Stack feature module resources.
 type ResourceReconciler interface {
-	EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, metav1.OwnerReference) (bool, string, error)
+	EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, resources.CertificateIssuerRef, metav1.OwnerReference) (bool, string, error)
 	DeleteResources(context.Context, string, metav1.OwnerReference) error
 }
 
@@ -55,6 +56,7 @@ type Request struct {
 	GatewayNamespace string
 	GatewayName      string
 	CollectorImage   string
+	IssuerRef        resources.CertificateIssuerRef
 	Owner            metav1.OwnerReference
 }
 
@@ -74,7 +76,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request Request) Outcome {
 		return Outcome{Phase: neteye.PhaseNotReady, PhaseMessage: "Check services status for details", Module: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateNotReady, Message: "Elastic Stack feature module configuration is incomplete: otelCollector is required when enabled"}, Requeue: RequeueProgressing}
 	}
 
-	ready, message, err := r.component.EnsureResources(ctx, request.Namespace, *request.Config, request.IdentityHostname, request.GatewayNamespace, request.GatewayName, request.CollectorImage, request.Owner)
+	ready, message, err := r.component.EnsureResources(ctx, request.Namespace, *request.Config, request.IdentityHostname, request.GatewayNamespace, request.GatewayName, request.CollectorImage, request.IssuerRef, request.Owner)
 	if err != nil {
 		return failedOutcome(err, request.CollectorImage)
 	}
