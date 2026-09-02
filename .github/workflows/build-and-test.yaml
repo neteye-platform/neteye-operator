@@ -35,6 +35,9 @@ jobs:
       - name: Test release metadata validation
         run: ./hack/check-version-consistency_test.sh
 
+      - name: Test release source validation
+        run: ./hack/check-release-source_test.sh
+
       - name: Test catalog updates
         run: python -m unittest discover -s hack -p '*_test.py' -v
 
@@ -46,16 +49,7 @@ jobs:
         run: |
           if [[ "$REF_TYPE" == "tag" ]]; then
             ./hack/check-version-consistency.sh --tag "$REF_NAME"
-            if [[ "$(git cat-file -t "refs/tags/$REF_NAME")" != "tag" ]]; then
-              echo "error: release tags must be annotated" >&2
-              exit 1
-            fi
-            tag_commit="$(git rev-parse "refs/tags/$REF_NAME^{commit}")"
-            git fetch origin main
-            if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
-              echo "error: release tags must point to a commit reachable from main" >&2
-              exit 1
-            fi
+            ./hack/check-release-source.sh --tag "$REF_NAME"
           else
             ./hack/check-version-consistency.sh
           fi

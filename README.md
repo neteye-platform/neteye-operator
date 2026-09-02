@@ -113,9 +113,12 @@ mutable image while each catalog entry references an immutable bundle version.
 ### Releases
 
 Releases are prepared in a pull request and published from an annotated SemVer
-tag on `main`. Update `VERSION` in `src/Makefile`, `version` in
-`charts/Chart.yaml`, and the chart's operator `versionRange` and `channel` in
-`charts/values.yaml`, then regenerate the bundle:
+tag. The tagged commit must be reachable from `main` or from the matching
+`release/<major>.<minor>` branch derived from the tag. For example, `v1.2.4`
+may be published from `main` or `release/1.2`, but not from another release
+train. Update `VERSION` in `src/Makefile`, `version` in `charts/Chart.yaml`, and
+the chart's operator `versionRange` and `channel` in `charts/values.yaml`, then
+regenerate the bundle:
 
 ```sh
 make bundle bundle-validate
@@ -124,7 +127,7 @@ make bundle bundle-validate
 
 Use the `alpha` catalog channel for prerelease versions and `stable` for GA
 versions. The release workflow rejects tags that do not exactly match the
-checked-in version or do not point to a commit reachable from `main`.
+checked-in version or do not come from an allowed release source.
 
 After validation, the workflow builds and publishes the operator and bundle
 images with SBOM and provenance attestations. It passes the release version to
@@ -142,11 +145,12 @@ source repository's standard `GITHUB_TOKEN` cannot write to the catalog
 repository.
 
 Protect the `v*` tag namespace so only release maintainers can create tags and
-tags cannot be updated or deleted. In the catalog repository, protect `main`
-from direct App pushes and reserve `release/neteye-operator-v*` branches for
-the App. The workflow itself requires an annotated tag and creates catalog
-changes from a fresh trusted `main`; repository rules establish who may trigger
-that workflow and prevent branch-name preemption.
+tags cannot be updated or deleted. Protect `main` and `release/*` in this
+repository as release sources. In the catalog repository, protect `main` from
+direct App pushes and reserve `release/neteye-operator-v*` branches for the
+App. The workflow itself requires an annotated tag and creates catalog changes
+from a fresh trusted `main`; repository rules establish who may trigger that
+workflow and prevent branch-name preemption.
 
 Once the catalog pull request passes validation and is merged, the catalog
 repository publishes `neteye-operator-catalog:latest`. Never move a release tag
