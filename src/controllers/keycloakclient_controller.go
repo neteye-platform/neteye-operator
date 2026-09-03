@@ -117,8 +117,8 @@ func (r *KeycloakClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 func readyMessage(kcc *neteye.KeycloakClient) string {
-	if !kcc.Spec.PublicClient && kcc.Spec.SecretRef == nil {
-		return "Keycloak client is reconciled; client secret is managed by Keycloak (no secretRef)"
+	if !kcc.Spec.PublicClient && kcc.Spec.ClientSecretRef == nil {
+		return "Keycloak client is reconciled; client secret is managed by Keycloak (no clientSecretRef)"
 	}
 	return "Keycloak client is reconciled"
 }
@@ -162,10 +162,10 @@ func (r *KeycloakClientReconciler) adminAPI(ctx context.Context) (*keycloak.Admi
 	return factory(keycloak.InClusterBaseURL(namespace), keycloak.AdminCredentials{Username: username, Password: password}), nil
 }
 
-// clientSecret resolves spec.secretRef. Public clients need no secret, so an
+// clientSecret resolves spec.clientSecretRef. Public clients need no secret, so an
 // absent reference is not an error for them.
 func (r *KeycloakClientReconciler) clientSecret(ctx context.Context, kcc *neteye.KeycloakClient) (string, error) {
-	ref := kcc.Spec.SecretRef
+	ref := kcc.Spec.ClientSecretRef
 	if ref == nil {
 		if !kcc.Spec.PublicClient {
 			// Keycloak generates a secret for a confidential client on creation;

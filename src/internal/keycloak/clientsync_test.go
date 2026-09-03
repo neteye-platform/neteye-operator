@@ -20,7 +20,7 @@ func sampleSpec() neteye.KeycloakClientSpec {
 		RootURL:                     "https://neteye.example.com",
 		RedirectUris:                []string{"/neteye/*"},
 		DirectAccess:                true,
-		ClientServiceAccountEnabled: true,
+		AllowClientCredentialsGrant: true,
 		ProtocolMappers: []neteye.KeycloakProtocolMapper{{
 			Name:           "groups membership",
 			ProtocolMapper: "oidc-group-membership-mapper",

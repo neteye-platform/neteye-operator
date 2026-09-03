@@ -95,19 +95,19 @@ type KeycloakClientSpec struct {
 	// +kubebuilder:default=false
 	DirectAccess bool `json:"directAccess,omitempty"`
 
-	// ClientServiceAccountEnabled turns on the Keycloak client's service
-	// account, enabling the client credentials grant. This is a Keycloak
-	// client concept, unrelated to Kubernetes ServiceAccounts.
+	// AllowClientCredentialsGrant enables the OAuth2 client credentials
+	// grant, letting the client authenticate on its own behalf via its
+	// Keycloak service account.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=false
-	ClientServiceAccountEnabled bool `json:"clientServiceAccountEnabled,omitempty"`
+	AllowClientCredentialsGrant bool `json:"allowClientCredentialsGrant,omitempty"`
 
-	// SecretRef references the Secret key holding the client secret, which must
+	// ClientSecretRef references the Secret key holding the client secret, which must
 	// exist in the same namespace as this resource. When omitted on a
 	// confidential client the secret stays whatever Keycloak generated and the
 	// operator never touches it, so no Pod can mount it from the cluster.
 	// +kubebuilder:validation:Optional
-	SecretRef *NetEyeSecretKeySelector `json:"secretRef,omitempty"`
+	ClientSecretRef *NetEyeSecretKeySelector `json:"clientSecretRef,omitempty"`
 
 	// ProtocolMappers lists the protocol mappers reconciled on the client.
 	// +kubebuilder:validation:Optional

@@ -116,7 +116,7 @@ func desiredClientRepresentation(spec neteye.KeycloakClientSpec, clientSecret st
 		"publicClient":              spec.PublicClient,
 		"standardFlowEnabled":       boolValue(spec.StandardFlow, true),
 		"directAccessGrantsEnabled": spec.DirectAccess,
-		"serviceAccountsEnabled":    spec.ClientServiceAccountEnabled,
+		"serviceAccountsEnabled":    spec.AllowClientCredentialsGrant,
 	}
 	if spec.Name != "" {
 		desired["name"] = spec.Name
