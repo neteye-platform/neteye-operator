@@ -45,7 +45,7 @@ func TestEnsureResourcesRequiresCredentialData(t *testing.T) {
 	}{{"missing api key", nil, map[string][]byte{"htpasswd": []byte("hash")}}, {"empty api key", map[string][]byte{"api_key": {}}, map[string][]byte{"htpasswd": []byte("hash")}}, {"missing htpasswd", map[string][]byte{"api_key": []byte("key")}, nil}, {"empty htpasswd", map[string][]byte{"api_key": []byte("key")}, map[string][]byte{"htpasswd": {}}}} {
 		t.Run(test.name, func(t *testing.T) {
 			s := elasticScheme(t)
-			c := fake.NewClientBuilder().WithScheme(s).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultAPIKeySecretName}, Data: test.apiKey}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultBasicAuthSecretName}, Data: test.basicAuth}, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultRootCAConfigMapName}}).Build()
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultAPIKeySecretName}, Data: test.apiKey}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultBasicAuthSecretName}, Data: test.basicAuth}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultRootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("certificate")}}).Build()
 			ready, message, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", "collector-image", testIssuerRef(), owner())
 			if err != nil || ready || message == "" {
 				t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
@@ -113,11 +113,11 @@ func TestEnsureResourcesUsesConfiguredReferencesAndReplicas(t *testing.T) {
 	config.OTelCollector.Replicas = 3
 	config.OTelCollector.APIKeySecret = &neteye.NetEyeSecretKeySelector{Name: "debug-api-key", Key: "debug_key"}
 	config.OTelCollector.BasicAuthSecretName = "debug-basicauth"
-	config.OTelCollector.RootCAConfigMapName = "debug-root-ca"
+	config.OTelCollector.RootCASecretName = "debug-root-ca"
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.OTelCollector.APIKeySecret.Name}, Data: map[string][]byte{config.OTelCollector.APIKeySecret.Key: []byte("key")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.OTelCollector.BasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("hash")}},
-		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.OTelCollector.RootCAConfigMapName}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: config.OTelCollector.RootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("certificate")}},
 	).Build()
 	if ready, message, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, config, "identity.example.com", namespace, "neteye", "collector-image", testIssuerRef(), owner()); err != nil || ready {
 		t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
@@ -131,6 +131,10 @@ func TestEnsureResourcesUsesConfiguredReferencesAndReplicas(t *testing.T) {
 	}
 	if got, want := deployment.Spec.Template.Spec.Containers[0].Image, "collector-image"; got != want {
 		t.Errorf("collector image = %q, want %q", got, want)
+	}
+	rootCAVolume := deployment.Spec.Template.Spec.Volumes[3]
+	if rootCAVolume.Secret == nil || rootCAVolume.Secret.SecretName != "debug-root-ca" || !reflect.DeepEqual(rootCAVolume.Secret.Items, []corev1.KeyToPath{{Key: "tls.crt", Path: "ca.crt"}}) {
+		t.Errorf("root CA volume = %#v", rootCAVolume)
 	}
 }
 
@@ -278,7 +282,7 @@ func defaultPrerequisites(namespace string) []client.Object {
 	return []client.Object{
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultAPIKeySecretName}, Data: map[string][]byte{DefaultAPIKeySecretKey: []byte("key")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultBasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("hash")}},
-		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultRootCAConfigMapName}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultRootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("certificate")}},
 	}
 }
 func owner() metav1.OwnerReference {

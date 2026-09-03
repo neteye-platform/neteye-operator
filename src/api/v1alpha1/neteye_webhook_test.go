@@ -97,8 +97,8 @@ func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
 		{name: "malformed api key override rejected", config: withAPIKey(valid, NetEyeSecretKeySelector{Name: "bad_name", Key: "api_key"}), wantErr: true},
 		{name: "malformed basic auth override rejected", config: withBasicAuthSecret(valid, " bad_name "), wantErr: true},
 		{name: "whitespace-only basic auth override rejected", config: withBasicAuthSecret(valid, " "), wantErr: true},
-		{name: "malformed root CA override rejected", config: withRootCAConfigMap(valid, "bad_name"), wantErr: true},
-		{name: "whitespace-only root CA override rejected", config: withRootCAConfigMap(valid, " \t"), wantErr: true},
+		{name: "malformed root CA override rejected", config: withRootCASecret(valid, "bad_name"), wantErr: true},
+		{name: "whitespace-only root CA override rejected", config: withRootCASecret(valid, " \t"), wantErr: true},
 		{name: "oidc issuer must be HTTPS", config: withOIDC(valid, " http://issuer.example.com "), wantErr: true},
 		{name: "oidc issuer host must not be an IP literal", config: withOIDC(valid, "https://[2001:db8::1]/auth/realms/master"), wantErr: true},
 		{name: "oidc issuer whitespace rejected", config: withOIDC(valid, " "), wantErr: true},
@@ -131,9 +131,9 @@ func withBasicAuthSecret(config *NetEyeElasticStackSpec, value string) *NetEyeEl
 	copy.OTelCollector.BasicAuthSecretName = value
 	return copy
 }
-func withRootCAConfigMap(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
+func withRootCASecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
 	copy := config.DeepCopy()
-	copy.OTelCollector.RootCAConfigMapName = value
+	copy.OTelCollector.RootCASecretName = value
 	return copy
 }
 
