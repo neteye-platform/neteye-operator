@@ -125,10 +125,10 @@ type NetEyeOtelCollectorSpec struct {
 	// key. When omitted, the feature module uses otel-collector-basicauth.
 	// +kubebuilder:validation:Optional
 	BasicAuthSecretName string `json:"basicAuthSecretName,omitempty"`
-	// RootCAConfigMapName optionally overrides the ConfigMap containing NetEye root
-	// CAs. When omitted, the feature module uses neteye-root-ca.
+	// RootCASecretName optionally overrides the Secret containing the NetEye root
+	// CA in its tls.crt key. When omitted, the feature module uses neteye-root-ca.
 	// +kubebuilder:validation:Optional
-	RootCAConfigMapName string `json:"rootCAConfigMapName,omitempty"`
+	RootCASecretName string `json:"rootCASecretName,omitempty"`
 	// OIDCIssuerURL overrides the issuer derived from identity.hostname.
 	// +kubebuilder:validation:Optional
 	OIDCIssuerURL string `json:"oidcIssuerURL,omitempty"`
