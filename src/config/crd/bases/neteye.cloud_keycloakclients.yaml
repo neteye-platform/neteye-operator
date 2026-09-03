@@ -183,18 +183,12 @@ spec:
                 - key
                 - name
                 type: object
-              serviceAccount:
-                description: ServiceAccount configures the client service account.
-                properties:
-                  enabled:
-                    default: false
-                    description: |-
-                      Enabled turns the client service account on, enabling the client
-                      credentials grant.
-                    type: boolean
-                required:
-                - enabled
-                type: object
+              serviceAccountEnabled:
+                default: false
+                description: |-
+                  ServiceAccountEnabled turns the client service account on, enabling the
+                  client credentials grant.
+                type: boolean
               standardFlow:
                 default: true
                 description: StandardFlow enables the OpenID Connect authorization

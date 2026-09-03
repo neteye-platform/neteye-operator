@@ -35,14 +35,6 @@ type KeycloakProtocolMapper struct {
 	Config map[string]string `json:"config,omitempty"`
 }
 
-// KeycloakServiceAccountSpec configures the client service account.
-type KeycloakServiceAccountSpec struct {
-	// Enabled turns the client service account on, enabling the client
-	// credentials grant.
-	// +kubebuilder:default=false
-	Enabled bool `json:"enabled"`
-}
-
 // KeycloakClientSpec declares the desired state of one OpenID Connect client in
 // the identity service. The operator reconciles it continuously against the
 // Keycloak Admin API, so changes made outside the cluster are reverted.
@@ -103,9 +95,11 @@ type KeycloakClientSpec struct {
 	// +kubebuilder:default=false
 	DirectAccess bool `json:"directAccess,omitempty"`
 
-	// ServiceAccount configures the client service account.
+	// ServiceAccountEnabled turns the client service account on, enabling the
+	// client credentials grant.
 	// +kubebuilder:validation:Optional
-	ServiceAccount *KeycloakServiceAccountSpec `json:"serviceAccount,omitempty"`
+	// +kubebuilder:default=false
+	ServiceAccountEnabled bool `json:"serviceAccountEnabled,omitempty"`
 
 	// SecretRef references the Secret key holding the client secret, which must
 	// exist in the same namespace as this resource. When omitted on a
