@@ -235,19 +235,6 @@ jobs:
           ref: main
           persist-credentials: false
 
-      - name: Prepare catalog branch
-        id: branch
-        env:
-          BRANCH: release/neteye-operator-v${{ needs.release-metadata.outputs.version }}
-          GH_TOKEN: ${{ steps.catalog-read-token.outputs.token }}
-        working-directory: catalog
-        run: |
-          git checkout -b "$BRANCH"
-          remote_sha="$(gh api \
-            "repos/neteye-platform/neteye-operator-catalog/git/matching-refs/heads/$BRANCH" \
-            --jq ".[] | select(.ref == \"refs/heads/$BRANCH\") | .object.sha")"
-          echo "remote-sha=$remote_sha" >> "$GITHUB_OUTPUT"
-
       - name: Add release to catalog
         env:
           BUNDLE_DIGEST: ${{ needs.build-bundle.outputs.digest }}
@@ -266,7 +253,9 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          mapfile -t changed_files < <(git diff --name-only)
+          mapfile -t changed_files < <(
+            git status --porcelain=v1 --untracked-files=all | cut -c4-
+          )
           if [[ ${#changed_files[@]} -ne 1 || ${changed_files[0]} != "catalog/index.yaml" ]]; then
             echo "error: catalog update modified unexpected files" >&2
             printf '  %s\n' "${changed_files[@]}" >&2
@@ -281,18 +270,6 @@ jobs:
             "quay.io/operator-framework/opm:v1.73.0@sha256:e5a6220603fb4504d58c6e3e488386b817e3695c906a62ee0370b5faedc3799a" \
             validate /configs
 
-      - name: Commit catalog update
-        if: ${{ steps.changes.outputs.changed == 'true' }}
-        env:
-          BRANCH: release/neteye-operator-v${{ needs.release-metadata.outputs.version }}
-          VERSION: ${{ needs.release-metadata.outputs.version }}
-        working-directory: catalog
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add catalog/index.yaml
-          git commit -m "feat: add v${VERSION} release"
-
       - name: Create catalog write token
         if: ${{ steps.changes.outputs.changed == 'true' }}
         id: catalog-write-token
@@ -305,58 +282,24 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Open or report catalog PR
+      - name: Create catalog pull request
+        id: catalog-pr
         if: ${{ steps.changes.outputs.changed == 'true' }}
-        env:
-          BRANCH: release/neteye-operator-v${{ needs.release-metadata.outputs.version }}
-          GH_TOKEN: ${{ steps.catalog-write-token.outputs.token }}
-          PR_BODY: |
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.catalog-write-token.outputs.token }}
+          path: catalog
+          add-paths: catalog/index.yaml
+          sign-commits: true
+          commit-message: "feat: add v${{ needs.release-metadata.outputs.version }} release"
+          branch: release/neteye-operator-v${{ needs.release-metadata.outputs.version }}
+          base: main
+          title: "feat: add v${{ needs.release-metadata.outputs.version }} release"
+          body: |
             Automated catalog promotion for neteye-operator v${{ needs.release-metadata.outputs.version }}.
 
             Bundle: `ghcr.io/neteye-platform/neteye-operator-bundle@${{ needs.build-bundle.outputs.digest }}`
             Source: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}
-          VERSION: ${{ needs.release-metadata.outputs.version }}
-          REMOTE_SHA: ${{ steps.branch.outputs.remote-sha }}
-        run: |
-          gh auth setup-git
-          if [[ -n "$REMOTE_SHA" ]]; then
-            git -C catalog push \
-              --force-with-lease="refs/heads/$BRANCH:$REMOTE_SHA" \
-              origin "HEAD:refs/heads/$BRANCH"
-          else
-            git -C catalog push --set-upstream origin "HEAD:refs/heads/$BRANCH"
-          fi
-
-          pr_number="$(gh pr list \
-            --repo neteye-platform/neteye-operator-catalog \
-            --head "$BRANCH" \
-            --state all \
-            --json number \
-            --jq '.[0].number // empty')"
-          if [[ -z "$pr_number" ]]; then
-            gh pr create \
-              --repo neteye-platform/neteye-operator-catalog \
-              --base main \
-              --head "$BRANCH" \
-              --title "feat: add v${VERSION} release" \
-              --body "$PR_BODY"
-          else
-            pr_state="$(gh pr view "$pr_number" \
-              --repo neteye-platform/neteye-operator-catalog \
-              --json state \
-              --jq '.state')"
-            if [[ $pr_state == "OPEN" ]]; then
-              gh pr view "$pr_number" \
-                --repo neteye-platform/neteye-operator-catalog \
-                --json url \
-                --jq '"Catalog PR already open: \(.url)"'
-            elif [[ $pr_state == "CLOSED" ]]; then
-              gh pr reopen "$pr_number" --repo neteye-platform/neteye-operator-catalog
-            else
-              echo "error: catalog PR $pr_number is already merged but the release is absent from main" >&2
-              exit 1
-            fi
-          fi
 
       - name: Report existing catalog release
         if: ${{ steps.changes.outputs.changed == 'false' }}
