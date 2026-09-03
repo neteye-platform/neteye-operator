@@ -244,8 +244,8 @@ jobs:
         run: |
           git checkout -b "$BRANCH"
           remote_sha="$(gh api \
-            "repos/neteye-platform/neteye-operator-catalog/git/ref/heads/$BRANCH" \
-            --jq '.object.sha' 2>/dev/null || true)"
+            "repos/neteye-platform/neteye-operator-catalog/git/matching-refs/heads/$BRANCH" \
+            --jq ".[] | select(.ref == \"refs/heads/$BRANCH\") | .object.sha")"
           echo "remote-sha=$remote_sha" >> "$GITHUB_OUTPUT"
 
       - name: Add release to catalog
