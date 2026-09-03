@@ -131,28 +131,6 @@ func (r *KeycloakClientReconciler) reconcileDelete(ctx context.Context, kcc *net
 	return ctrl.Result{}, nil
 }
 
-// adminAPI reads the Keycloak admin credentials and builds an Admin API client
-// bound to the in-cluster Keycloak Service.
-func (r *KeycloakClientReconciler) adminAPI(ctx context.Context) (*keycloak.AdminAPI, error) {
-	namespace := r.keycloakNamespace()
-	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: namespace, Name: keycloak.AdminSecretName}
-	if err := r.Get(ctx, key, secret); err != nil {
-		return nil, fmt.Errorf("get keycloak admin secret %q in namespace %q: %w", keycloak.AdminSecretName, namespace, err)
-	}
-	username := string(secret.Data[keycloak.AdminSecretUsernameKey])
-	password := string(secret.Data[keycloak.AdminSecretPasswordKey])
-	if username == "" || password == "" {
-		return nil, fmt.Errorf("keycloak admin secret %q in namespace %q is missing the %q or %q key", keycloak.AdminSecretName, namespace, keycloak.AdminSecretUsernameKey, keycloak.AdminSecretPasswordKey)
-	}
-
-	factory := r.AdminAPIFactory
-	if factory == nil {
-		factory = keycloak.NewAdminAPI
-	}
-	return factory(keycloak.InClusterBaseURL(namespace), keycloak.AdminCredentials{Username: username, Password: password}), nil
-}
-
 // clientSecret resolves spec.clientSecretRef. Public clients need no secret, so an
 // absent reference is not an error for them.
 func (r *KeycloakClientReconciler) clientSecret(ctx context.Context, kcc *neteye.KeycloakClient) (string, error) {
