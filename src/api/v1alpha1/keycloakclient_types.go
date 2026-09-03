@@ -35,13 +35,8 @@ type KeycloakProtocolMapper struct {
 	Config map[string]string `json:"config,omitempty"`
 }
 
-// KeycloakServiceAccountSpec configures the client service account.
+// KeycloakServiceAccountSpec configures roles assigned to the client service account.
 type KeycloakServiceAccountSpec struct {
-	// Enabled turns the client service account on, enabling the client
-	// credentials grant.
-	// +kubebuilder:default=false
-	Enabled bool `json:"enabled"`
-
 	// ClientRoles assigns client roles to the service account user, keyed by the
 	// clientId owning the roles. Listed roles are granted if missing and never
 	// revoked, so adopting a service account never strips permissions granted
@@ -111,16 +106,23 @@ type KeycloakClientSpec struct {
 	// +kubebuilder:default=false
 	DirectAccess bool `json:"directAccess,omitempty"`
 
+	// AllowClientCredentialsGrant enables the OAuth2 client credentials
+	// grant, letting the client authenticate on its own behalf via its
+	// Keycloak service account.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=false
+	AllowClientCredentialsGrant bool `json:"allowClientCredentialsGrant,omitempty"`
+
 	// ServiceAccount configures the client service account.
 	// +kubebuilder:validation:Optional
 	ServiceAccount *KeycloakServiceAccountSpec `json:"serviceAccount,omitempty"`
 
-	// SecretRef references the Secret key holding the client secret, which must
+	// ClientSecretRef references the Secret key holding the client secret, which must
 	// exist in the same namespace as this resource. When omitted on a
 	// confidential client the secret stays whatever Keycloak generated and the
 	// operator never touches it, so no Pod can mount it from the cluster.
 	// +kubebuilder:validation:Optional
-	SecretRef *NetEyeSecretKeySelector `json:"secretRef,omitempty"`
+	ClientSecretRef *NetEyeSecretKeySelector `json:"clientSecretRef,omitempty"`
 
 	// ProtocolMappers lists the protocol mappers the client must have. Each one
 	// is created if missing and kept matching this spec; mappers not listed here

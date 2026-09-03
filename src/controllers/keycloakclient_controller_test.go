@@ -186,7 +186,7 @@ func TestKeycloakClientReconcileWithoutAdminSecret(t *testing.T) {
 func TestKeycloakClientReconcileMissingClientSecret(t *testing.T) {
 	stub := &stubKeycloak{clients: map[string]map[string]any{}}
 	kcc := keycloakClientCR("neteye-tenant-shared")
-	kcc.Spec.SecretRef = &neteye.NetEyeSecretKeySelector{Name: "neteye-client-secret", Key: "client_secret"}
+	kcc.Spec.ClientSecretRef = &neteye.NetEyeSecretKeySelector{Name: "neteye-client-secret", Key: "client_secret"}
 	r, c := newKeycloakClientReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), kcc)
 
 	if _, err := r.Reconcile(context.Background(), requestFor(kcc)); err != nil {
@@ -207,7 +207,7 @@ func TestKeycloakClientReconcileMissingClientSecret(t *testing.T) {
 func TestKeycloakClientReconcileUsesClientSecret(t *testing.T) {
 	stub := &stubKeycloak{clients: map[string]map[string]any{}}
 	kcc := keycloakClientCR("neteye-tenant-shared")
-	kcc.Spec.SecretRef = &neteye.NetEyeSecretKeySelector{Name: "neteye-client-secret", Key: "client_secret"}
+	kcc.Spec.ClientSecretRef = &neteye.NetEyeSecretKeySelector{Name: "neteye-client-secret", Key: "client_secret"}
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: kcc.Namespace, Name: "neteye-client-secret"},
 		Data:       map[string][]byte{"client_secret": []byte("s3cr3t")},
@@ -340,10 +340,10 @@ func TestKeycloakClientReadyMessageReportsKeycloakManagedSecret(t *testing.T) {
 	}
 }
 
-func TestKeycloakClientReadyMessagePlainWithSecretRef(t *testing.T) {
+func TestKeycloakClientReadyMessagePlainWithClientSecretRef(t *testing.T) {
 	stub := &stubKeycloak{clients: map[string]map[string]any{}}
 	kcc := keycloakClientCR("neteye-tenant-shared")
-	kcc.Spec.SecretRef = &neteye.NetEyeSecretKeySelector{Name: "neteye-client", Key: "secret"}
+	kcc.Spec.ClientSecretRef = &neteye.NetEyeSecretKeySelector{Name: "neteye-client", Key: "secret"}
 	clientSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: kcc.Namespace, Name: "neteye-client"},
 		Data:       map[string][]byte{"secret": []byte("s3cr3t")},

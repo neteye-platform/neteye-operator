@@ -132,7 +132,7 @@ func validateElasticStackReferenceOverrides(path *field.Path, config *NetEyeOtel
 	for _, override := range []struct {
 		path  *field.Path
 		value string
-	}{{path.Child("basicAuthSecretName"), config.BasicAuthSecretName}, {path.Child("rootCAConfigMapName"), config.RootCAConfigMapName}} {
+	}{{path.Child("basicAuthSecretName"), config.BasicAuthSecretName}, {path.Child("rootCASecretName"), config.RootCASecretName}} {
 		if override.value != "" {
 			if err := validateDNSHostname(override.path, override.value); err != nil {
 				errors = append(errors, err)

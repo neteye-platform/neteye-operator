@@ -62,15 +62,15 @@ func netEyeClientSpec() neteye.KeycloakClientSpec {
 	enabled := true
 	standardFlow := true
 	return neteye.KeycloakClientSpec{
-		Realm:        masterRealm,
-		ClientID:     NetEyeClientID,
-		Enabled:      &enabled,
-		RedirectUris: []string{"/neteye/*"},
-		PublicClient: false,
-		StandardFlow: &standardFlow,
-		DirectAccess: true,
+		Realm:                       masterRealm,
+		ClientID:                    NetEyeClientID,
+		Enabled:                     &enabled,
+		RedirectUris:                []string{"/neteye/*"},
+		PublicClient:                false,
+		StandardFlow:                &standardFlow,
+		DirectAccess:                true,
+		AllowClientCredentialsGrant: true,
 		ServiceAccount: &neteye.KeycloakServiceAccountSpec{
-			Enabled: true,
 			// The service account reads users and groups through the Admin API of
 			// the master realm, as the Ansible role grants it.
 			ClientRoles: map[string][]string{

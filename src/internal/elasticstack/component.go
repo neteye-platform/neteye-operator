@@ -48,7 +48,7 @@ const (
 	DefaultAPIKeySecretName    = "otel-collector-api-key"
 	DefaultAPIKeySecretKey     = "api_key"
 	DefaultBasicAuthSecretName = "otel-collector-basicauth"
-	DefaultRootCAConfigMapName = "neteye-root-ca"
+	DefaultRootCASecretName    = "neteye-root-ca"
 	GatewayHTTPSPort           = "443"
 )
 
@@ -82,12 +82,15 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, confi
 	if len(basicAuth.Data["htpasswd"]) == 0 {
 		return false, fmt.Sprintf("required user-managed Secret %q is missing non-empty key %q in namespace %q", references.basicAuthSecretName, "htpasswd", namespace), nil
 	}
-	rootCA := &corev1.ConfigMap{}
-	if err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: references.rootCAConfigMapName}, rootCA); err != nil {
+	rootCA := &corev1.Secret{}
+	if err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: references.rootCASecretName}, rootCA); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, fmt.Sprintf("required user-managed ConfigMap %q is missing in namespace %q", references.rootCAConfigMapName, namespace), nil
+			return false, fmt.Sprintf("required user-managed Secret %q is missing in namespace %q", references.rootCASecretName, namespace), nil
 		}
 		return false, "", err
+	}
+	if len(rootCA.Data["tls.crt"]) == 0 {
+		return false, fmt.Sprintf("required user-managed Secret %q is missing non-empty key %q in namespace %q", references.rootCASecretName, "tls.crt", namespace), nil
 	}
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, ConfigMapName, map[string]string{"otel-collector-config.yaml": collectorConfig}, owner); err != nil {
 		return false, "", err
@@ -192,11 +195,11 @@ func controlledBy(object client.Object, owner metav1.OwnerReference) bool {
 type references struct {
 	apiKeySecret        neteye.NetEyeSecretKeySelector
 	basicAuthSecretName string
-	rootCAConfigMapName string
+	rootCASecretName    string
 }
 
 func resolvedReferences(config *neteye.NetEyeOtelCollectorSpec) references {
-	resolved := references{apiKeySecret: neteye.NetEyeSecretKeySelector{Name: DefaultAPIKeySecretName, Key: DefaultAPIKeySecretKey}, basicAuthSecretName: DefaultBasicAuthSecretName, rootCAConfigMapName: DefaultRootCAConfigMapName}
+	resolved := references{apiKeySecret: neteye.NetEyeSecretKeySelector{Name: DefaultAPIKeySecretName, Key: DefaultAPIKeySecretKey}, basicAuthSecretName: DefaultBasicAuthSecretName, rootCASecretName: DefaultRootCASecretName}
 	if config.APIKeySecret != nil {
 		resolved.apiKeySecret.Name = config.APIKeySecret.Name
 		resolved.apiKeySecret.Key = config.APIKeySecret.Key
@@ -204,8 +207,8 @@ func resolvedReferences(config *neteye.NetEyeOtelCollectorSpec) references {
 	if strings.TrimSpace(config.BasicAuthSecretName) != "" {
 		resolved.basicAuthSecretName = config.BasicAuthSecretName
 	}
-	if strings.TrimSpace(config.RootCAConfigMapName) != "" {
-		resolved.rootCAConfigMapName = config.RootCAConfigMapName
+	if strings.TrimSpace(config.RootCASecretName) != "" {
+		resolved.rootCASecretName = config.RootCASecretName
 	}
 	return resolved
 }
@@ -220,7 +223,7 @@ func deployment(namespace string, config neteye.NetEyeOtelCollectorSpec, collect
 	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: DeploymentName, Namespace: namespace}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To(replicas), Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: corev1.PodSpec{
 		InitContainers: []corev1.Container{{Name: "otel-collector-ca-bundle", Image: "docker.io/alpine:3.23.5", Command: []string{"/bin/sh", "-ec", caBundleCommand}, VolumeMounts: []corev1.VolumeMount{{Name: "otel-trusted-ca-bundle", MountPath: "/work"}, {Name: "host-trusted-ca-bundle", MountPath: "/input/system/tls-ca-bundle.pem", ReadOnly: true}, {Name: "neteye-root-ca", MountPath: "/input/neteye", ReadOnly: true}}}},
 		Containers:     []corev1.Container{{Name: "otel-collector", Image: collectorImage, Args: []string{"--config", "/etc/otel-collector-config/otel-collector-config.yaml"}, Ports: []corev1.ContainerPort{{Name: "health", ContainerPort: 13133}, {Name: "otlp-grpc", ContainerPort: 4317}, {Name: "otlp-http", ContainerPort: 4318}}, EnvFrom: []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: VariablesConfigMapName}}}}, Env: []corev1.EnvVar{{Name: "ELASTICSEARCH_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: references.apiKeySecret.Name}, Key: references.apiKeySecret.Key}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "otel-config", MountPath: "/etc/otel-collector-config", ReadOnly: true}, {Name: "otel-trusted-ca-bundle", MountPath: "/etc/pki/tls/certs/ca-bundle.crt", SubPath: "ca-bundle.pem", ReadOnly: true}, {Name: "otel-basicauth", MountPath: "/etc/otel-collector-basicauth", ReadOnly: true}}, StartupProbe: probe(5, 30), ReadinessProbe: probe(10, 3), LivenessProbe: probe(10, 3)}},
-		Volumes:        []corev1.Volume{{Name: "otel-config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName}}}}, {Name: "otel-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, {Name: "host-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", Type: ptr.To(corev1.HostPathFile)}}}, {Name: "neteye-root-ca", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: references.rootCAConfigMapName}}}}, {Name: "otel-basicauth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: references.basicAuthSecretName, DefaultMode: &mode}}}},
+		Volumes:        []corev1.Volume{{Name: "otel-config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName}}}}, {Name: "otel-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, {Name: "host-trusted-ca-bundle", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", Type: ptr.To(corev1.HostPathFile)}}}, {Name: "neteye-root-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: references.rootCASecretName, Items: []corev1.KeyToPath{{Key: "tls.crt", Path: "ca.crt"}}}}}, {Name: "otel-basicauth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: references.basicAuthSecretName, DefaultMode: &mode}}}},
 	}}}}
 }
 

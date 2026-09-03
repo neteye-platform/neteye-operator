@@ -120,7 +120,7 @@ func desiredClientRepresentation(spec neteye.KeycloakClientSpec, clientSecret st
 		"publicClient":              spec.PublicClient,
 		"standardFlowEnabled":       boolValue(spec.StandardFlow, true),
 		"directAccessGrantsEnabled": spec.DirectAccess,
-		"serviceAccountsEnabled":    spec.ServiceAccount != nil && spec.ServiceAccount.Enabled,
+		"serviceAccountsEnabled":    spec.AllowClientCredentialsGrant,
 	}
 	if spec.Name != "" {
 		desired["name"] = spec.Name
@@ -298,7 +298,7 @@ func reconcileServiceAccountRoles(ctx context.Context, api *AdminAPI, realm, uui
 	if spec.ServiceAccount == nil || spec.ServiceAccount.ClientRoles == nil {
 		return false, nil
 	}
-	if !spec.ServiceAccount.Enabled {
+	if !spec.AllowClientCredentialsGrant {
 		return false, fmt.Errorf("client %q declares service account roles but its service account is disabled", spec.ClientID)
 	}
 

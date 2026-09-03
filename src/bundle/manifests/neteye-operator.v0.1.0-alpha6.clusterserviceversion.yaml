@@ -4,7 +4,7 @@ metadata:
   annotations:
     alm-examples: '[{"apiVersion":"neteye.cloud/v1alpha1","kind":"NetEye","metadata":{"name":"neteye-sample"},"spec":{"version":"4.50","gateway":{"name":"neteye","className":"cilium"},"internalCertificateIssuerRef":"neteye-internal-issuer","identity":{"hostname":"keycloak.example.com","dbConnection":{"host":"mariadb.example.com","dbName":"keycloak","usernameSecret":{"name":"keycloak-db-secret","key":"username"},"passwordSecret":{"name":"keycloak-db-secret","key":"password"}}}}}]'
     capabilities: Basic Install
-  name: neteye-operator.v0.1.0-alpha3
+  name: neteye-operator.v0.1.0-alpha6
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -318,7 +318,7 @@ spec:
                   value: ghcr.io/neteye-platform/neteye-keycloak:1.0.1
                 - name: RELATED_IMAGE_OTEL_COLLECTOR
                   value: docker.io/otel/opentelemetry-collector-contrib:0.156.0
-                image: ghcr.io/neteye-platform/neteye-operator:0.1.0-alpha3
+                image: ghcr.io/neteye-platform/neteye-operator:0.1.0-alpha6
                 imagePullPolicy: Always
                 name: manager
                 ports:
@@ -404,7 +404,7 @@ spec:
     name: neteye-keycloak
   - image: docker.io/otel/opentelemetry-collector-contrib:0.156.0
     name: neteye-otel-collector
-  version: 0.1.0-alpha3
+  version: 0.1.0-alpha6
   webhookdefinitions:
   - admissionReviewVersions:
     - v1

@@ -37,7 +37,7 @@ func TestEnsureNetEyeClientDeclaresTheClient(t *testing.T) {
 	if !kcc.Spec.DirectAccess {
 		t.Error("direct access grants must be enabled")
 	}
-	if kcc.Spec.ServiceAccount == nil || !kcc.Spec.ServiceAccount.Enabled {
+	if !kcc.Spec.AllowClientCredentialsGrant || kcc.Spec.ServiceAccount == nil {
 		t.Fatal("the service account must be enabled")
 	}
 	roles := kcc.Spec.ServiceAccount.ClientRoles["master-realm"]
@@ -57,7 +57,7 @@ func TestEnsureNetEyeClientDeclaresTheClient(t *testing.T) {
 	if kcc.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
 		t.Errorf("deletionPolicy = %q, want Orphan for a resource the operator redeclares", kcc.Spec.DeletionPolicy)
 	}
-	if kcc.Spec.SecretRef != nil {
+	if kcc.Spec.ClientSecretRef != nil {
 		t.Error("no secret reference: the Keycloak-generated client secret is left alone")
 	}
 }

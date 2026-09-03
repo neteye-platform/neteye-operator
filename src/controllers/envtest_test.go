@@ -100,7 +100,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	prerequisites := []client.Object{
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultAPIKeySecretName}, Data: map[string][]byte{elasticstack.DefaultAPIKeySecretKey: []byte("key")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultBasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("user:hash")}},
-		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultRootCAConfigMapName}, Data: map[string]string{"ca.crt": "certificate"}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultRootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("certificate")}},
 	}
 	for _, prerequisite := range prerequisites {
 		if err := c.Create(ctx, prerequisite); err != nil {

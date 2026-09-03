@@ -98,8 +98,8 @@ func (in *KeycloakClientSpec) DeepCopyInto(out *KeycloakClientSpec) {
 		*out = new(KeycloakServiceAccountSpec)
 		(*in).DeepCopyInto(*out)
 	}
-	if in.SecretRef != nil {
-		in, out := &in.SecretRef, &out.SecretRef
+	if in.ClientSecretRef != nil {
+		in, out := &in.ClientSecretRef, &out.ClientSecretRef
 		*out = new(NetEyeSecretKeySelector)
 		**out = **in
 	}

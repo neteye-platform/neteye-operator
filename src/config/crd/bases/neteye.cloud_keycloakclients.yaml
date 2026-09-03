@@ -59,12 +59,40 @@ spec:
               the identity service. The operator reconciles it continuously against the
               Keycloak Admin API, so changes made outside the cluster are reverted.
             properties:
+              allowClientCredentialsGrant:
+                default: false
+                description: |-
+                  AllowClientCredentialsGrant enables the OAuth2 client credentials
+                  grant, letting the client authenticate on its own behalf via its
+                  Keycloak service account.
+                type: boolean
               clientId:
                 description: ClientID is the Keycloak client identifier, unique within
                   the realm.
                 example: neteye
                 minLength: 1
                 type: string
+              clientSecretRef:
+                description: |-
+                  ClientSecretRef references the Secret key holding the client secret, which must
+                  exist in the same namespace as this resource. When omitted on a
+                  confidential client the secret stays whatever Keycloak generated and the
+                  operator never touches it, so no Pod can mount it from the cluster.
+                properties:
+                  key:
+                    description: Key is the key inside the Secret containing the database
+                      credential value.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the Secret containing the database
+                      credential.
+                    minLength: 1
+                    type: string
+                required:
+                - key
+                - name
+                type: object
               defaultClientScopes:
                 description: |-
                   DefaultClientScopes lists client scopes that must always apply to tokens.
@@ -177,27 +205,6 @@ spec:
                   origins resolve against.
                 example: https://neteye.example.com
                 type: string
-              secretRef:
-                description: |-
-                  SecretRef references the Secret key holding the client secret, which must
-                  exist in the same namespace as this resource. When omitted on a
-                  confidential client the secret stays whatever Keycloak generated and the
-                  operator never touches it, so no Pod can mount it from the cluster.
-                properties:
-                  key:
-                    description: Key is the key inside the Secret containing the database
-                      credential value.
-                    minLength: 1
-                    type: string
-                  name:
-                    description: Name is the name of the Secret containing the database
-                      credential.
-                    minLength: 1
-                    type: string
-                required:
-                - key
-                - name
-                type: object
               serviceAccount:
                 description: ServiceAccount configures the client service account.
                 properties:
@@ -217,14 +224,6 @@ spec:
                       - query-users
                       - query-groups
                     type: object
-                  enabled:
-                    default: false
-                    description: |-
-                      Enabled turns the client service account on, enabling the client
-                      credentials grant.
-                    type: boolean
-                required:
-                - enabled
                 type: object
               standardFlow:
                 default: true

@@ -15,14 +15,12 @@ import (
 
 func sampleSpec() neteye.KeycloakClientSpec {
 	return neteye.KeycloakClientSpec{
-		Realm:        "neteye",
-		ClientID:     "neteye",
-		RootURL:      "https://neteye.example.com",
-		RedirectUris: []string{"/neteye/*"},
-		DirectAccess: true,
-		ServiceAccount: &neteye.KeycloakServiceAccountSpec{
-			Enabled: true,
-		},
+		Realm:                       "neteye",
+		ClientID:                    "neteye",
+		RootURL:                     "https://neteye.example.com",
+		RedirectUris:                []string{"/neteye/*"},
+		DirectAccess:                true,
+		AllowClientCredentialsGrant: true,
 		ProtocolMappers: []neteye.KeycloakProtocolMapper{{
 			Name:           "groups membership",
 			ProtocolMapper: "oidc-group-membership-mapper",
@@ -241,9 +239,9 @@ func TestReconcileClientAssignsServiceAccountClientRoles(t *testing.T) {
 	api := fake.start(t)
 
 	spec := neteye.KeycloakClientSpec{
-		ClientID: "neteye",
+		ClientID:                    "neteye",
+		AllowClientCredentialsGrant: true,
 		ServiceAccount: &neteye.KeycloakServiceAccountSpec{
-			Enabled:     true,
 			ClientRoles: map[string][]string{"master-realm": {"view-users", "query-users", "query-groups"}},
 		},
 	}
@@ -269,9 +267,9 @@ func TestReconcileClientKeepsUndeclaredServiceAccountRoles(t *testing.T) {
 	api := fake.start(t)
 
 	spec := neteye.KeycloakClientSpec{
-		ClientID: "neteye",
+		ClientID:                    "neteye",
+		AllowClientCredentialsGrant: true,
 		ServiceAccount: &neteye.KeycloakServiceAccountSpec{
-			Enabled:     true,
 			ClientRoles: map[string][]string{"master-realm": {"view-users"}},
 		},
 	}
@@ -299,9 +297,9 @@ func TestReconcileClientFailsOnUnknownServiceAccountRole(t *testing.T) {
 	api := fake.start(t)
 
 	spec := neteye.KeycloakClientSpec{
-		ClientID: "neteye",
+		ClientID:                    "neteye",
+		AllowClientCredentialsGrant: true,
 		ServiceAccount: &neteye.KeycloakServiceAccountSpec{
-			Enabled:     true,
 			ClientRoles: map[string][]string{"master-realm": {"nonexistent"}},
 		},
 	}
@@ -316,9 +314,9 @@ func TestReconcileClientRejectsRolesWithoutAServiceAccount(t *testing.T) {
 	api := fake.start(t)
 
 	spec := neteye.KeycloakClientSpec{
-		ClientID: "neteye",
+		ClientID:                    "neteye",
+		AllowClientCredentialsGrant: false,
 		ServiceAccount: &neteye.KeycloakServiceAccountSpec{
-			Enabled:     false,
 			ClientRoles: map[string][]string{"master-realm": {"view-users"}},
 		},
 	}

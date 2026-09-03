@@ -111,10 +111,10 @@ spec:
                         format: int32
                         minimum: 1
                         type: integer
-                      rootCAConfigMapName:
+                      rootCASecretName:
                         description: |-
-                          RootCAConfigMapName optionally overrides the ConfigMap containing NetEye root
-                          CAs. When omitted, the feature module uses neteye-root-ca.
+                          RootCASecretName optionally overrides the Secret containing the NetEye root
+                          CA in its tls.crt key. When omitted, the feature module uses neteye-root-ca.
                         type: string
                     type: object
                 required:
