@@ -129,7 +129,7 @@ func (f *fakeKeycloakUsers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, group)
 
-	case segments[0] == "users" && segments[2] == "groups":
+	case segments[0] == "users" && len(segments) >= 3 && segments[2] == "groups":
 		f.serveGroups(w, r, segments)
 
 	default:

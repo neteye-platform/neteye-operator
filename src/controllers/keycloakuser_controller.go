@@ -114,10 +114,14 @@ func (r *KeycloakUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// The generated password reaches the Secret only once Keycloak has accepted
 	// it, so a failed reset never leaves behind a stored value nobody can log in
-	// with.
-	if generated {
+	// with. An unset password only happens when the account was adopted as-is and
+	// no rotation was requested, i.e. no update was ever asked of Keycloak — that
+	// is expected, not a failure.
+	if generated && !result.PasswordSet && !result.Created && !credential.Rotate {
+		log.Info("not storing the generated password: account already exists and is not being rotated", "username", kcu.Spec.Username)
+	} else if generated {
 		if !result.PasswordSet {
-			err := fmt.Errorf("generated password was not applied: account %q already exists and is not being rotated", kcu.Spec.Username)
+			err := fmt.Errorf("generated password was not applied to account %q", kcu.Spec.Username)
 			log.Error(err, "refusing to store an unapplied generated password", "requeueAfter", r.failureRequeue())
 			r.setStatus(ctx, req.NamespacedName, kcu, neteye.ServiceStateFailed, err.Error())
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil

@@ -317,8 +317,10 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 	// purpose, exactly as in the Ansible role. This is a no-op until then.
 	if err := r.KeycloakComponent.EnsureBootstrapAdminDisabled(ctx, keycloak.WorkloadNamespace); err != nil {
 		// Not fatal: the platform works with the bootstrap account still enabled,
-		// so this is reported and retried rather than failing the reconciliation.
-		log.Error(err, "failed to disable the Keycloak bootstrap admin", "namespace", keycloak.WorkloadNamespace)
+		// so this is reported and retried promptly rather than failing the
+		// reconciliation.
+		log.Error(err, "failed to disable the Keycloak bootstrap admin", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
 
 	log.Info("Keycloak reconciled and ready", "namespace", ne.Namespace, "name", owner.Name)
