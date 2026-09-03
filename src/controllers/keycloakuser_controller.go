@@ -105,10 +105,23 @@ func (r *KeycloakUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		log.Info("keycloak user drift reconciled", "username", kcu.Spec.Username, "realm", kcu.Spec.Realm)
 	}
 
+	// Adoption is a fact about the first reconciliation, so it is recorded once
+	// and then left alone.
+	if kcu.Status.UserID == "" {
+		kcu.Status.Adopted = result.Adopted
+	}
+	kcu.Status.UserID = result.UserID
+
 	// The generated password reaches the Secret only once Keycloak has accepted
 	// it, so a failed reset never leaves behind a stored value nobody can log in
 	// with.
-	if generated && result.PasswordSet {
+	if generated {
+		if !result.PasswordSet {
+			err := fmt.Errorf("generated password was not applied: account %q already exists and is not being rotated", kcu.Spec.Username)
+			log.Error(err, "refusing to store an unapplied generated password", "requeueAfter", r.failureRequeue())
+			r.setStatus(ctx, req.NamespacedName, kcu, neteye.ServiceStateFailed, err.Error())
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
 		if err := r.storePassword(ctx, kcu, credential.Password); err != nil {
 			log.Error(err, "unable to store the generated password", "requeueAfter", r.failureRequeue())
 			r.setStatus(ctx, req.NamespacedName, kcu, neteye.ServiceStateFailed, err.Error())
@@ -116,12 +129,6 @@ func (r *KeycloakUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
-	// Adoption is a fact about the first reconciliation, so it is recorded once
-	// and then left alone.
-	if kcu.Status.UserID == "" {
-		kcu.Status.Adopted = result.Adopted
-	}
-	kcu.Status.UserID = result.UserID
 	if kcu.Spec.Credential != nil {
 		kcu.Status.CredentialRotation = kcu.Spec.Credential.RotationToken
 	}

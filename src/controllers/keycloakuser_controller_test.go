@@ -237,6 +237,9 @@ func TestKeycloakUserReconcileAdoptsExistingAccount(t *testing.T) {
 	if !updated.Status.Adopted {
 		t.Error("expected the account to be reported as adopted")
 	}
+	if updated.Status.Status != neteye.ServiceStateFailed {
+		t.Errorf("expected reconciliation to fail rather than silently discard the generated password, got state %q", updated.Status.Status)
+	}
 }
 
 func TestKeycloakUserReconcileDeletesTheAccountByDefault(t *testing.T) {
