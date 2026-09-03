@@ -95,11 +95,12 @@ type KeycloakClientSpec struct {
 	// +kubebuilder:default=false
 	DirectAccess bool `json:"directAccess,omitempty"`
 
-	// ServiceAccountEnabled turns the client service account on, enabling the
-	// client credentials grant.
+	// ClientServiceAccountEnabled turns on the Keycloak client's service
+	// account, enabling the client credentials grant. This is a Keycloak
+	// client concept, unrelated to Kubernetes ServiceAccounts.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=false
-	ServiceAccountEnabled bool `json:"serviceAccountEnabled,omitempty"`
+	ClientServiceAccountEnabled bool `json:"clientServiceAccountEnabled,omitempty"`
 
 	// SecretRef references the Secret key holding the client secret, which must
 	// exist in the same namespace as this resource. When omitted on a

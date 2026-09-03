@@ -65,6 +65,13 @@ spec:
                 example: neteye
                 minLength: 1
                 type: string
+              clientServiceAccountEnabled:
+                default: false
+                description: |-
+                  ClientServiceAccountEnabled turns on the Keycloak client's service
+                  account, enabling the client credentials grant. This is a Keycloak
+                  client concept, unrelated to Kubernetes ServiceAccounts.
+                type: boolean
               defaultClientScopes:
                 description: DefaultClientScopes lists the client scopes always applied
                   to tokens.
@@ -183,12 +190,6 @@ spec:
                 - key
                 - name
                 type: object
-              serviceAccountEnabled:
-                default: false
-                description: |-
-                  ServiceAccountEnabled turns the client service account on, enabling the
-                  client credentials grant.
-                type: boolean
               standardFlow:
                 default: true
                 description: StandardFlow enables the OpenID Connect authorization

@@ -15,12 +15,12 @@ import (
 
 func sampleSpec() neteye.KeycloakClientSpec {
 	return neteye.KeycloakClientSpec{
-		Realm:                 "neteye",
-		ClientID:              "neteye",
-		RootURL:               "https://neteye.example.com",
-		RedirectUris:          []string{"/neteye/*"},
-		DirectAccess:          true,
-		ServiceAccountEnabled: true,
+		Realm:                       "neteye",
+		ClientID:                    "neteye",
+		RootURL:                     "https://neteye.example.com",
+		RedirectUris:                []string{"/neteye/*"},
+		DirectAccess:                true,
+		ClientServiceAccountEnabled: true,
 		ProtocolMappers: []neteye.KeycloakProtocolMapper{{
 			Name:           "groups membership",
 			ProtocolMapper: "oidc-group-membership-mapper",
