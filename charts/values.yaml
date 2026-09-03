@@ -7,8 +7,8 @@ operator:
   packageName: neteye-operator
   catalogName: neteye-catalog
   catalogImage: ghcr.io/neteye-platform/neteye-operator-catalog:latest
-  versionRange: ">=0.1.0"
-  channel: stable
+  versionRange: ">=0.1.0-alpha6"
+  channel: alpha
   upgradeConstraintPolicy: CatalogProvided
   pollIntervalMinutes: 10
 

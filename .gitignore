@@ -1,6 +1,7 @@
 # Local build/tool outputs
 /src/bin/
 /src/config/.bundle-release.*/
+__pycache__/
 
 # Local cluster credentials
 /kubeconfig
