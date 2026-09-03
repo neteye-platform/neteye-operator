@@ -42,10 +42,15 @@ func TestEnsureResourcesRequiresCredentialData(t *testing.T) {
 	for _, test := range []struct {
 		name              string
 		apiKey, basicAuth map[string][]byte
-	}{{"missing api key", nil, map[string][]byte{"htpasswd": []byte("hash")}}, {"empty api key", map[string][]byte{"api_key": {}}, map[string][]byte{"htpasswd": []byte("hash")}}, {"missing htpasswd", map[string][]byte{"api_key": []byte("key")}, nil}, {"empty htpasswd", map[string][]byte{"api_key": []byte("key")}, map[string][]byte{"htpasswd": {}}}} {
+		rootCAData        map[string][]byte
+	}{{"missing api key", nil, map[string][]byte{"htpasswd": []byte("hash")}, nil}, {"empty api key", map[string][]byte{"api_key": {}}, map[string][]byte{"htpasswd": []byte("hash")}, nil}, {"missing htpasswd", map[string][]byte{"api_key": []byte("key")}, nil, nil}, {"empty htpasswd", map[string][]byte{"api_key": []byte("key")}, map[string][]byte{"htpasswd": {}}, nil}, {"missing root CA certificate", map[string][]byte{"api_key": []byte("key")}, map[string][]byte{"htpasswd": []byte("hash")}, map[string][]byte{}}, {"empty root CA certificate", map[string][]byte{"api_key": []byte("key")}, map[string][]byte{"htpasswd": []byte("hash")}, map[string][]byte{"tls.crt": {}}}} {
 		t.Run(test.name, func(t *testing.T) {
 			s := elasticScheme(t)
-			c := fake.NewClientBuilder().WithScheme(s).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultAPIKeySecretName}, Data: test.apiKey}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultBasicAuthSecretName}, Data: test.basicAuth}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultRootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("certificate")}}).Build()
+			rootCAData := test.rootCAData
+			if rootCAData == nil {
+				rootCAData = map[string][]byte{"tls.crt": []byte("certificate")}
+			}
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultAPIKeySecretName}, Data: test.apiKey}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultBasicAuthSecretName}, Data: test.basicAuth}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultRootCASecretName}, Data: rootCAData}).Build()
 			ready, message, err := NewComponent(c, logr.Discard()).EnsureResources(context.Background(), namespace, elasticConfig(), "identity.example.com", namespace, "neteye", "collector-image", testIssuerRef(), owner())
 			if err != nil || ready || message == "" {
 				t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
