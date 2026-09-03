@@ -131,11 +131,18 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared default-deny network policy: %w", err)
 	}
 
-	if result, err := r.reconcileKeycloak(ctx, ne, components.KeycloakImage); shouldReturn(result, err) {
-		return result, err
+	keycloakResult, keycloakErr := r.reconcileKeycloak(ctx, ne, components.KeycloakImage)
+	elasticResult, elasticErr := r.reconcileElasticStack(ctx, ne, components.OTelCollectorImage)
+	combinedResult := combineResults(keycloakResult, elasticResult)
+
+	if keycloakErr != nil {
+		return combinedResult, keycloakErr
 	}
-	if result, err := r.reconcileElasticStack(ctx, ne, components.OTelCollectorImage); shouldReturn(result, err) {
-		return result, err
+	if elasticErr != nil {
+		return combinedResult, elasticErr
+	}
+	if !combinedResult.IsZero() {
+		return combinedResult, nil
 	}
 
 	setPhase(ne, neteye.PhaseReady, "All components are ready")
@@ -184,6 +191,27 @@ func (r *NetEyeReconciler) updateStatus(ctx context.Context, key client.ObjectKe
 
 func shouldReturn(result ctrl.Result, err error) bool {
 	return err != nil || !result.IsZero()
+}
+
+// combineResults returns a requeue request that honors both reconciliation outcomes.
+// When both request a delayed requeue, the earliest one takes precedence.
+func combineResults(a, b ctrl.Result) ctrl.Result {
+	var result ctrl.Result
+
+	switch {
+	case a.RequeueAfter > 0 && b.RequeueAfter > 0:
+		if a.RequeueAfter < b.RequeueAfter {
+			result.RequeueAfter = a.RequeueAfter
+		} else {
+			result.RequeueAfter = b.RequeueAfter
+		}
+	case a.RequeueAfter > 0:
+		result.RequeueAfter = a.RequeueAfter
+	case b.RequeueAfter > 0:
+		result.RequeueAfter = b.RequeueAfter
+	}
+
+	return result
 }
 
 func (r *NetEyeReconciler) waitForProgressingRequeue() time.Duration {
