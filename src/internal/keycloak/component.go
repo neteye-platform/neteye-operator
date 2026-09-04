@@ -314,8 +314,7 @@ func keycloakIngressNetworkPolicySpec() map[string]any {
 		"policyTypes": []any{"Ingress"},
 		"ingress": []any{
 			map[string]any{
-				"from":  []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
-				"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")},
+				"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}, // TODO: add this field in NE 4.51 "from":  []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
 			},
 			// The operator calls the Keycloak Admin API to reconcile KeycloakClient
 			// resources, so it needs its own way in through the default deny.
@@ -378,7 +377,7 @@ func keycloakEgressNetworkPolicySpec(databasePort int32) map[string]any {
 			// Restrict the interim rule to the configured database TCP port only.
 			map[string]any{"ports": []any{networkPort(databasePort, "TCP")}},
 			map[string]any{"to": []any{namespaceAndPodSelector(KubeSystemNamespace, map[string]any{"k8s-app": "kube-dns"})}, "ports": []any{networkPort(53, "TCP"), networkPort(53, "UDP")}},
-			map[string]any{"to": []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}}, "ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}},
+			map[string]any{"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}}, // TODO: add this field in NE 4.51 "to": []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
 		},
 	}
 }
