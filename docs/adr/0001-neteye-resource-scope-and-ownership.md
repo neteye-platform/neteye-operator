@@ -1,5 +1,6 @@
 # ADR-0001: NetEye Resource Scope and Ownership
 
+- **Status:** Proposed
 - **Date:** 2026-09-03
 
 ## Context
@@ -147,3 +148,7 @@ This adds design work, but prevents ambiguous lifecycle behavior.
 
 The operator needs a cluster-wide singleton check and deletion handling that
 implements `Retain` and `Delete` safely.
+
+## References
+
+None.

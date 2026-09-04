@@ -1,5 +1,6 @@
 # ADR-0003: NetEye and Operator Version Model
 
+- **Status:** Proposed
 - **Date:** 2026-09-03
 
 ## Context

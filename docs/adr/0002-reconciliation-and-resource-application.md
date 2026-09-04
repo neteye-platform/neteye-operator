@@ -1,5 +1,6 @@
 # ADR-0002: Reconciliation and Resource Application
 
+- **Status:** Proposed
 - **Date:** 2026-09-03
 
 ## Context
