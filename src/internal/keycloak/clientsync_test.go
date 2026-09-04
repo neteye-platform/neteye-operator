@@ -120,8 +120,12 @@ func TestReconcileClientRevertsDrift(t *testing.T) {
 	if got := fake.clients[uuid]["redirectUris"]; !reflect.DeepEqual(got, []any{"/neteye/*"}) {
 		t.Errorf("redirectUris = %v", got)
 	}
-	if len(fake.mappers[uuid]) != 1 {
-		t.Fatalf("mappers = %v", fake.mappers[uuid])
+	// The declared mapper is corrected, the one added outside the spec survives.
+	if len(fake.mappers[uuid]) != 2 {
+		t.Fatalf("mappers = %v, want the declared one plus the untouched extra", fake.mappers[uuid])
+	}
+	if stringValue(fake.mappers[uuid][1], "name") != "extra" {
+		t.Errorf("mapper added outside the spec was removed: %v", fake.mappers[uuid])
 	}
 	config, _ := fake.mappers[uuid][0]["config"].(map[string]any)
 	if config["claim.name"] != "groups" || config["full.path"] != "true" {
@@ -130,8 +134,10 @@ func TestReconcileClientRevertsDrift(t *testing.T) {
 	if got := fake.scopes[uuid]["default"]; !reflect.DeepEqual(got, []string{"profile", "email"}) {
 		t.Errorf("default client scopes = %v", got)
 	}
-	if got := fake.scopes[uuid]["optional"]; !reflect.DeepEqual(got, []string{"phone"}) {
-		t.Errorf("optional client scopes = %v", got)
+	// "email" was assigned as optional outside the spec and is not declared
+	// there, so it stays.
+	if got := fake.scopes[uuid]["optional"]; !reflect.DeepEqual(got, []string{"phone", "email"}) {
+		t.Errorf("optional client scopes = %v, want the undeclared \"email\" kept", got)
 	}
 }
 
@@ -216,5 +222,151 @@ func TestAdminAPIReusesToken(t *testing.T) {
 	}
 	if fake.tokenIssued != 1 {
 		t.Errorf("token requests = %d, expected the cached token to be reused", fake.tokenIssued)
+	}
+}
+
+// seedRoleOwner registers a client that defines roles, as master-realm does.
+func (f *fakeKeycloak) seedRoleOwner(clientID string, roles ...string) string {
+	uuid := "uuid-" + clientID
+	f.clients[uuid] = representation{"clientId": clientID, "id": uuid}
+	f.clientRoles[uuid] = roles
+	return uuid
+}
+
+func TestReconcileClientAssignsServiceAccountClientRoles(t *testing.T) {
+	fake := newFakeKeycloak("master")
+	ownerUUID := fake.seedRoleOwner("master-realm", "view-users", "query-users", "query-groups", "manage-users")
+	api := fake.start(t)
+
+	spec := neteye.KeycloakClientSpec{
+		ClientID:                    "neteye",
+		AllowClientCredentialsGrant: true,
+		ServiceAccount: &neteye.KeycloakServiceAccountSpec{
+			ClientRoles: map[string][]string{"master-realm": {"view-users", "query-users", "query-groups"}},
+		},
+	}
+	result, err := ReconcileClient(context.Background(), api, spec, "")
+	if err != nil {
+		t.Fatalf("ReconcileClient: %v", err)
+	}
+
+	assigned := fake.accountRoles["service-account-"+result.UUID+"/"+ownerUUID]
+	if len(assigned) != 3 {
+		t.Fatalf("assigned roles = %v, want the three read-only roles", assigned)
+	}
+	for _, want := range []string{"view-users", "query-users", "query-groups"} {
+		if !containsRole(assigned, want) {
+			t.Errorf("role %q was not assigned (got %v)", want, assigned)
+		}
+	}
+}
+
+func TestReconcileClientKeepsUndeclaredServiceAccountRoles(t *testing.T) {
+	fake := newFakeKeycloak("master")
+	ownerUUID := fake.seedRoleOwner("master-realm", "view-users", "manage-users")
+	api := fake.start(t)
+
+	spec := neteye.KeycloakClientSpec{
+		ClientID:                    "neteye",
+		AllowClientCredentialsGrant: true,
+		ServiceAccount: &neteye.KeycloakServiceAccountSpec{
+			ClientRoles: map[string][]string{"master-realm": {"view-users"}},
+		},
+	}
+	// Someone granted manage-users by hand: the operator owns only what it
+	// declares, so that grant must survive the next reconciliation.
+	result, err := ReconcileClient(context.Background(), api, spec, "")
+	if err != nil {
+		t.Fatalf("ReconcileClient: %v", err)
+	}
+	key := "service-account-" + result.UUID + "/" + ownerUUID
+	fake.accountRoles[key] = append(fake.accountRoles[key], "manage-users")
+
+	if _, err := ReconcileClient(context.Background(), api, spec, ""); err != nil {
+		t.Fatalf("ReconcileClient (second pass): %v", err)
+	}
+	assigned := fake.accountRoles[key]
+	if len(assigned) != 2 || !containsRole(assigned, "view-users") || !containsRole(assigned, "manage-users") {
+		t.Errorf("assigned roles = %v, want view-users kept and manage-users left alone", assigned)
+	}
+}
+
+func TestReconcileClientFailsOnUnknownServiceAccountRole(t *testing.T) {
+	fake := newFakeKeycloak("master")
+	fake.seedRoleOwner("master-realm", "view-users")
+	api := fake.start(t)
+
+	spec := neteye.KeycloakClientSpec{
+		ClientID:                    "neteye",
+		AllowClientCredentialsGrant: true,
+		ServiceAccount: &neteye.KeycloakServiceAccountSpec{
+			ClientRoles: map[string][]string{"master-realm": {"nonexistent"}},
+		},
+	}
+	if _, err := ReconcileClient(context.Background(), api, spec, ""); err == nil {
+		t.Fatal("expected an error for a role that does not exist")
+	}
+}
+
+func TestReconcileClientRejectsRolesWithoutAServiceAccount(t *testing.T) {
+	fake := newFakeKeycloak("master")
+	fake.seedRoleOwner("master-realm", "view-users")
+	api := fake.start(t)
+
+	spec := neteye.KeycloakClientSpec{
+		ClientID:                    "neteye",
+		AllowClientCredentialsGrant: false,
+		ServiceAccount: &neteye.KeycloakServiceAccountSpec{
+			ClientRoles: map[string][]string{"master-realm": {"view-users"}},
+		},
+	}
+	if _, err := ReconcileClient(context.Background(), api, spec, ""); err == nil {
+		t.Fatal("expected an error: roles cannot be granted to a disabled service account")
+	}
+}
+
+func containsRole(roles []string, name string) bool {
+	for _, role := range roles {
+		if role == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestReconcileClientDoesNotRewriteAMapperKeycloakEnriched(t *testing.T) {
+	fake := newFakeKeycloak("neteye")
+	api := fake.start(t)
+	spec := neteye.KeycloakClientSpec{
+		Realm:    "neteye",
+		ClientID: "neteye",
+		ProtocolMappers: []neteye.KeycloakProtocolMapper{{
+			Name:           "groups membership",
+			ProtocolMapper: "oidc-group-membership-mapper",
+			Config:         map[string]string{"claim.name": "groups", "full.path": "true"},
+		}},
+	}
+	result, err := ReconcileClient(context.Background(), api, spec, "")
+	if err != nil {
+		t.Fatalf("ReconcileClient: %v", err)
+	}
+
+	// Keycloak fills in its own config entries on the mapper it just stored.
+	config, _ := fake.mappers[result.UUID][0]["config"].(map[string]any)
+	config["introspection.token.claim"] = "true"
+
+	second, err := ReconcileClient(context.Background(), api, spec, "")
+	if err != nil {
+		t.Fatalf("ReconcileClient (second pass): %v", err)
+	}
+	if second.Updated {
+		t.Error("a settled client must not be rewritten on every reconciliation")
+	}
+	config, _ = fake.mappers[result.UUID][0]["config"].(map[string]any)
+	if config["introspection.token.claim"] != "true" {
+		t.Errorf("config = %v, want the entry Keycloak added to survive", config)
+	}
+	if config["claim.name"] != "groups" {
+		t.Errorf("config = %v, want the declared entries kept", config)
 	}
 }

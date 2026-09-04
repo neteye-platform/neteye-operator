@@ -63,6 +63,10 @@ func ReconcileClient(ctx context.Context, api *AdminAPI, spec neteye.KeycloakCli
 		}
 	}
 
+	serviceAccountChanged, err := reconcileServiceAccountRoles(ctx, api, realm, result.UUID, spec)
+	if err != nil {
+		return result, err
+	}
 	mappersChanged, err := reconcileProtocolMappers(ctx, api, realm, result.UUID, spec.ProtocolMappers)
 	if err != nil {
 		return result, err
@@ -75,7 +79,7 @@ func ReconcileClient(ctx context.Context, api *AdminAPI, spec neteye.KeycloakCli
 	if err != nil {
 		return result, err
 	}
-	if mappersChanged || defaultsChanged || optionalsChanged {
+	if serviceAccountChanged || mappersChanged || defaultsChanged || optionalsChanged {
 		result.Updated = true
 	}
 	return result, nil
@@ -142,15 +146,40 @@ func desiredClientRepresentation(spec neteye.KeycloakClientSpec, clientSecret st
 // mergeRepresentation copies live and overwrites the keys the operator manages,
 // so fields Keycloak owns or an administrator set outside the spec survive the
 // update.
+//
+// Nested objects are merged key by key rather than replaced. Keycloak fills in
+// its own entries inside them — a protocol mapper gains
+// introspection.token.claim, for instance — and replacing the whole object would
+// drop those, only for Keycloak to add them back: every reconciliation would
+// then find drift and rewrite the resource forever.
 func mergeRepresentation(live, desired representation) representation {
 	merged := make(representation, len(live)+len(desired))
 	for key, value := range live {
 		merged[key] = value
 	}
 	for key, value := range desired {
+		if nested, ok := asMap(value); ok {
+			if current, ok := asMap(merged[key]); ok {
+				merged[key] = map[string]any(mergeRepresentation(current, nested))
+				continue
+			}
+		}
 		merged[key] = value
 	}
 	return merged
+}
+
+// asMap reports whether value is a JSON object, in either of the two shapes the
+// Admin API and the operator produce for one.
+func asMap(value any) (representation, bool) {
+	switch typed := value.(type) {
+	case representation:
+		return typed, true
+	case map[string]any:
+		return representation(typed), true
+	default:
+		return nil, false
+	}
 }
 
 func reconcileProtocolMappers(ctx context.Context, api *AdminAPI, realm, uuid string, desired []neteye.KeycloakProtocolMapper) (bool, error) {
@@ -167,9 +196,7 @@ func reconcileProtocolMappers(ctx context.Context, api *AdminAPI, realm, uuid st
 	}
 
 	changed := false
-	declared := make(map[string]struct{}, len(desired))
 	for _, mapper := range desired {
-		declared[mapper.Name] = struct{}{}
 		want := desiredMapperRepresentation(mapper)
 		current, found := liveByName[mapper.Name]
 		if !found {
@@ -189,15 +216,9 @@ func reconcileProtocolMappers(ctx context.Context, api *AdminAPI, realm, uuid st
 		changed = true
 	}
 
-	for name, mapper := range liveByName {
-		if _, ok := declared[name]; ok {
-			continue
-		}
-		if err := api.DeleteProtocolMapper(ctx, realm, uuid, stringValue(mapper, "id")); err != nil {
-			return changed, fmt.Errorf("delete protocol mapper %q: %w", name, err)
-		}
-		changed = true
-	}
+	// Mappers the spec does not declare are left alone: the operator only owns
+	// what the resource names, so a client adopted from an existing Keycloak
+	// keeps the mappers someone else configured on it.
 	return changed, nil
 }
 
@@ -232,9 +253,7 @@ func reconcileClientScopes(ctx context.Context, api *AdminAPI, realm, uuid, kind
 	}
 
 	changed := false
-	declared := make(map[string]struct{}, len(desired))
 	for _, name := range desired {
-		declared[name] = struct{}{}
 		if _, ok := assigned[name]; ok {
 			continue
 		}
@@ -248,15 +267,8 @@ func reconcileClientScopes(ctx context.Context, api *AdminAPI, realm, uuid, kind
 		changed = true
 	}
 
-	for name, scopeID := range assigned {
-		if _, ok := declared[name]; ok {
-			continue
-		}
-		if err := api.RemoveClientScope(ctx, realm, uuid, kind, scopeID); err != nil {
-			return changed, fmt.Errorf("remove %s client scope %q: %w", kind, name, err)
-		}
-		changed = true
-	}
+	// Scopes outside the declared list stay assigned, for the same reason the
+	// undeclared protocol mappers do.
 	return changed, nil
 }
 
@@ -273,4 +285,71 @@ func anySlice(values []string) []any {
 		converted = append(converted, value)
 	}
 	return converted
+}
+
+// reconcileServiceAccountRoles assigns client roles to the user Keycloak keeps
+// for the client service account, which is how a client is granted permissions
+// on another client's API — the NetEye client reading users and groups from
+// master-realm, for instance.
+//
+// Roles are only ever granted, never revoked, so adopting a service account
+// never strips permissions granted outside this resource.
+func reconcileServiceAccountRoles(ctx context.Context, api *AdminAPI, realm, uuid string, spec neteye.KeycloakClientSpec) (bool, error) {
+	if spec.ServiceAccount == nil || spec.ServiceAccount.ClientRoles == nil {
+		return false, nil
+	}
+	if !spec.AllowClientCredentialsGrant {
+		return false, fmt.Errorf("client %q declares service account roles but its service account is disabled", spec.ClientID)
+	}
+
+	account, err := api.GetServiceAccountUser(ctx, realm, uuid)
+	if err != nil {
+		return false, fmt.Errorf("get service account user of client %q: %w", spec.ClientID, err)
+	}
+	if account == nil {
+		return false, fmt.Errorf("client %q has no service account user", spec.ClientID)
+	}
+	accountID := stringValue(account, "id")
+
+	changed := false
+	for clientID, roles := range spec.ServiceAccount.ClientRoles {
+		roleOwner, err := api.GetClient(ctx, realm, clientID)
+		if err != nil {
+			return changed, fmt.Errorf("get client %q owning service account roles: %w", clientID, err)
+		}
+		if roleOwner == nil {
+			return changed, fmt.Errorf("client %q does not exist in realm %q", clientID, realm)
+		}
+		ownerUUID := stringValue(roleOwner, "id")
+
+		assigned, err := api.ListUserClientRoles(ctx, realm, accountID, ownerUUID)
+		if err != nil {
+			return changed, fmt.Errorf("list %q roles of the service account: %w", clientID, err)
+		}
+
+		missing := make([]representation, 0, len(roles))
+		for _, name := range roles {
+			if _, ok := assigned[name]; ok {
+				continue
+			}
+			role, err := api.GetClientRole(ctx, realm, ownerUUID, name)
+			if err != nil {
+				return changed, fmt.Errorf("get role %q of client %q: %w", name, clientID, err)
+			}
+			if role == nil {
+				return changed, fmt.Errorf("client %q has no role %q in realm %q", clientID, name, realm)
+			}
+			missing = append(missing, representation{"id": stringValue(role, "id"), "name": stringValue(role, "name")})
+		}
+		if len(missing) > 0 {
+			if err := api.AddUserClientRoles(ctx, realm, accountID, ownerUUID, missing); err != nil {
+				return changed, fmt.Errorf("add %q roles to the service account: %w", clientID, err)
+			}
+			changed = true
+		}
+
+		// Roles granted outside this spec are kept, so adopting a service account
+		// never strips permissions the platform does not know about.
+	}
+	return changed, nil
 }

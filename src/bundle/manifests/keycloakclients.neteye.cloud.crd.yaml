@@ -94,11 +94,23 @@ spec:
                 - name
                 type: object
               defaultClientScopes:
-                description: DefaultClientScopes lists the client scopes always applied
-                  to tokens.
+                description: |-
+                  DefaultClientScopes lists client scopes that must always apply to tokens.
+                  They are assigned if missing; scopes not listed are left assigned.
                 items:
                   type: string
                 type: array
+              deletionPolicy:
+                description: |-
+                  DeletionPolicy decides what happens to the Keycloak client when this
+                  resource is deleted. The client is removed with the resource unless Orphan
+                  is asked for explicitly, which is what a client the platform declares for
+                  itself uses so that deleting the resource never destroys a client secret
+                  its consumers still hold.
+                enum:
+                - Orphan
+                - Delete
+                type: string
               description:
                 description: Description is the client description shown in the admin
                   console.
@@ -117,14 +129,17 @@ spec:
                   console.
                 type: string
               optionalClientScopes:
-                description: OptionalClientScopes lists the client scopes applied
-                  only when requested.
+                description: |-
+                  OptionalClientScopes lists client scopes that must be available on request.
+                  They are assigned if missing; scopes not listed are left assigned.
                 items:
                   type: string
                 type: array
               protocolMappers:
-                description: ProtocolMappers lists the protocol mappers reconciled
-                  on the client.
+                description: |-
+                  ProtocolMappers lists the protocol mappers the client must have. Each one
+                  is created if missing and kept matching this spec; mappers not listed here
+                  are left untouched rather than removed.
                 items:
                   description: |-
                     KeycloakProtocolMapper declares one protocol mapper attached to a Keycloak
@@ -190,6 +205,26 @@ spec:
                   origins resolve against.
                 example: https://neteye.example.com
                 type: string
+              serviceAccount:
+                description: ServiceAccount configures the client service account.
+                properties:
+                  clientRoles:
+                    additionalProperties:
+                      items:
+                        type: string
+                      type: array
+                    description: |-
+                      ClientRoles assigns client roles to the service account user, keyed by the
+                      clientId owning the roles. Listed roles are granted if missing and never
+                      revoked, so adopting a service account never strips permissions granted
+                      outside this resource. Both the clients and the roles must already exist.
+                    example:
+                      master-realm:
+                      - view-users
+                      - query-users
+                      - query-groups
+                    type: object
+                type: object
               standardFlow:
                 default: true
                 description: StandardFlow enables the OpenID Connect authorization

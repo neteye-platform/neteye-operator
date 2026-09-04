@@ -161,7 +161,7 @@ type NetEyeGatewaySpec struct {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.1", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.156.0"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.4", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.156.0"},
 }
 
 const (

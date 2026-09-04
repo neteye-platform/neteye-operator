@@ -22,6 +22,12 @@ spec:
       kind: KeycloakClient
       name: keycloakclients.neteye.cloud
       version: v1alpha1
+    - description: KeycloakUser declares a Keycloak account the platform owns and
+        keeps reconciled in the identity service.
+      displayName: Keycloak User
+      kind: KeycloakUser
+      name: keycloakusers.neteye.cloud
+      version: v1alpha1
     required:
     - displayName: cert-manager Certificate
       kind: Certificate
@@ -75,6 +81,15 @@ spec:
           - ""
           resources:
           - secrets
+          verbs:
+          - create
+          - get
+          - list
+          - update
+          - watch
+        - apiGroups:
+          - ""
+          resources:
           - pods
           - pods/log
           verbs:
@@ -234,6 +249,56 @@ spec:
           - neteyes/finalizers
           verbs:
           - update
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakclients
+          verbs:
+          - create
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakclients/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakclients/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakusers
+          verbs:
+          - create
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakusers/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakusers/finalizers
+          verbs:
+          - update
         serviceAccountName: neteye-operator
       deployments:
       - name: neteye-operator
@@ -250,7 +315,7 @@ spec:
               containers:
               - env:
                 - name: RELATED_IMAGE_KEYCLOAK
-                  value: ghcr.io/neteye-platform/neteye-keycloak:1.0.1
+                  value: ghcr.io/neteye-platform/neteye-keycloak:1.0.4
                 - name: RELATED_IMAGE_OTEL_COLLECTOR
                   value: docker.io/otel/opentelemetry-collector-contrib:0.156.0
                 image: ghcr.io/neteye-platform/neteye-operator:0.1.0-alpha6
@@ -335,7 +400,7 @@ spec:
     name: Wuerth IT | Italy
     url: https://your.domain
   relatedImages:
-  - image: ghcr.io/neteye-platform/neteye-keycloak:1.0.1
+  - image: ghcr.io/neteye-platform/neteye-keycloak:1.0.4
     name: neteye-keycloak
   - image: docker.io/otel/opentelemetry-collector-contrib:0.156.0
     name: neteye-otel-collector

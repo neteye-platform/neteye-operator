@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,10 @@ type AdminAPI struct {
 	Credentials AdminCredentials
 	HTTPClient  *http.Client
 
+	// The token is cached across calls and refreshed shortly before it expires.
+	// A single client is shared by concurrent reconciliations, so the cache is
+	// guarded.
+	mu          sync.Mutex
 	token       string
 	tokenExpiry time.Time
 }
@@ -70,6 +75,8 @@ func (a *AdminAPI) httpClient() *http.Client {
 // authenticate fetches an admin token with the direct access grant on the
 // master realm, reusing the cached token until it is about to expire.
 func (a *AdminAPI) authenticate(ctx context.Context) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.token != "" && time.Now().Add(adminTokenLeeway).Before(a.tokenExpiry) {
 		return a.token, nil
 	}
@@ -115,6 +122,15 @@ func (a *AdminAPI) authenticate(ctx context.Context) (string, error) {
 	return a.token, nil
 }
 
+// Verify proves the credentials are accepted by Keycloak, by obtaining a token
+// with them. Callers use it before trusting an account they did not just create.
+func (a *AdminAPI) Verify(ctx context.Context) error {
+	if _, err := a.authenticate(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
 // do performs an authenticated Admin API call. When out is non-nil the response
 // body is decoded into it.
 func (a *AdminAPI) do(ctx context.Context, method, path string, in any, out any) error {
@@ -153,9 +169,11 @@ func (a *AdminAPI) do(ctx context.Context, method, path string, in any, out any)
 		// The token may have been revoked by a Keycloak restart; drop it so the
 		// next call re-authenticates instead of replaying a dead token.
 		if resp.StatusCode == http.StatusUnauthorized {
+			a.mu.Lock()
 			a.token = ""
+			a.mu.Unlock()
 		}
-		return fmt.Errorf("%s %s: unexpected status %s: %s", method, path, resp.Status, truncate(raw))
+		return &apiError{Method: method, Path: path, StatusCode: resp.StatusCode, Status: resp.Status, Body: truncate(raw)}
 	}
 	if out == nil || len(bytes.TrimSpace(raw)) == 0 {
 		return nil
@@ -164,6 +182,20 @@ func (a *AdminAPI) do(ctx context.Context, method, path string, in any, out any)
 		return fmt.Errorf("decode %s %s response: %w", method, path, err)
 	}
 	return nil
+}
+
+// apiError reports a non-2xx Admin API response. Callers that treat a missing
+// resource as an absence rather than a failure match on StatusCode.
+type apiError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Status     string
+	Body       string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("%s %s: unexpected status %s: %s", e.Method, e.Path, e.Status, e.Body)
 }
 
 // representation is a Keycloak REST representation. The operator keeps them as
@@ -239,12 +271,6 @@ func (a *AdminAPI) UpdateProtocolMapper(ctx context.Context, realm, uuid, mapper
 	return a.do(ctx, http.MethodPut, path, mapper, nil)
 }
 
-// DeleteProtocolMapper detaches a protocol mapper from a client.
-func (a *AdminAPI) DeleteProtocolMapper(ctx context.Context, realm, uuid, mapperID string) error {
-	path := fmt.Sprintf("/admin/realms/%s/clients/%s/protocol-mappers/models/%s", url.PathEscape(realm), url.PathEscape(uuid), url.PathEscape(mapperID))
-	return a.do(ctx, http.MethodDelete, path, nil, nil)
-}
-
 // ListRealmClientScopes returns every client scope defined in the realm, keyed
 // by scope name.
 func (a *AdminAPI) ListRealmClientScopes(ctx context.Context, realm string) (map[string]string, error) {
@@ -279,12 +305,6 @@ func (a *AdminAPI) ListClientScopes(ctx context.Context, realm, uuid, kind strin
 func (a *AdminAPI) AddClientScope(ctx context.Context, realm, uuid, kind, scopeID string) error {
 	path := fmt.Sprintf("/admin/realms/%s/clients/%s/%s-client-scopes/%s", url.PathEscape(realm), url.PathEscape(uuid), kind, url.PathEscape(scopeID))
 	return a.do(ctx, http.MethodPut, path, nil, nil)
-}
-
-// RemoveClientScope unassigns a client scope from a client.
-func (a *AdminAPI) RemoveClientScope(ctx context.Context, realm, uuid, kind, scopeID string) error {
-	path := fmt.Sprintf("/admin/realms/%s/clients/%s/%s-client-scopes/%s", url.PathEscape(realm), url.PathEscape(uuid), kind, url.PathEscape(scopeID))
-	return a.do(ctx, http.MethodDelete, path, nil, nil)
 }
 
 func stringValue(rep representation, key string) string {

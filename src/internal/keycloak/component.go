@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -36,9 +37,16 @@ const (
 	EgressPolicyName    = "neteye-kc-egress"
 	IngressPolicyName   = "neteye-kc-ingress"
 	HostPolicyName      = "neteye-kc-host-management"
-	HTTPPort            = int64(8080)
-	HTTPRelativePath    = "/auth"
-	KubeSystemNamespace = "kube-system"
+	// InfinispanClusterName isolates this Keycloak instance's JGroups/Infinispan
+	// cluster from any other Keycloak sharing the same database schema (e.g. a
+	// bare-metal instance kept alive during a migration). Both instances write
+	// JDBC_PING discovery rows keyed by cluster name; a shared default name
+	// ("ISPN") makes each side's independently-formed view register its own
+	// coordinator row, which the "cluster health check" reads as a split brain.
+	InfinispanClusterName = "neteye-k8s-ispn"
+	HTTPPort              = int64(8080)
+	HTTPRelativePath      = "/auth"
+	KubeSystemNamespace   = "kube-system"
 	// OperatorSystemNamespace runs the NetEye operator itself, which reaches the
 	// Keycloak Admin API in-cluster to reconcile KeycloakClient resources.
 	OperatorSystemNamespace = "neteye-system"
@@ -63,6 +71,22 @@ const (
 type Component struct {
 	client client.Client
 	log    logr.Logger
+
+	// AdminAPIFactory builds the Admin API client. Tests substitute it to point
+	// at a stub server; when nil, NewAdminAPI is used.
+	AdminAPIFactory AdminAPIFactory
+
+	adminOnce     sync.Once
+	adminProvider *AdminProvider
+}
+
+// admin returns the shared Admin API provider, built on first use so that
+// AdminAPIFactory can still be set after construction.
+func (c *Component) admin(namespace string) *AdminProvider {
+	c.adminOnce.Do(func() {
+		c.adminProvider = NewAdminProvider(c.client, namespace, c.AdminAPIFactory)
+	})
+	return c.adminProvider
 }
 
 func NewComponent(client client.Client, log logr.Logger) *Component {
@@ -261,6 +285,10 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 			map[string]any{
 				"name":  "http-relative-path",
 				"value": HTTPRelativePath,
+			},
+			map[string]any{
+				"name":  "spi-cache-embedded--default--cluster-name",
+				"value": InfinispanClusterName,
 			},
 		},
 	}

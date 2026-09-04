@@ -82,6 +82,7 @@ bundle: kustomize-manifests ## Render the versioned OLM bundle directly from the
 	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone "$$release_dir" > "$$release_dir/rendered.yaml"; \
 	cp "$(CURDIR)/config/crd/bases/neteye.cloud_neteyes.yaml" "$(CURDIR)/bundle/manifests/neteyes.neteye.cloud.crd.yaml"; \
 	cp "$(CURDIR)/config/crd/bases/neteye.cloud_keycloakclients.yaml" "$(CURDIR)/bundle/manifests/keycloakclients.neteye.cloud.crd.yaml"; \
+	cp "$(CURDIR)/config/crd/bases/neteye.cloud_keycloakusers.yaml" "$(CURDIR)/bundle/manifests/keycloakusers.neteye.cloud.crd.yaml"; \
 	awk '/^apiVersion: operators.coreos.com\/v1alpha1$$/{csv=1} csv {print}' "$$release_dir/rendered.yaml" | grep -v '^---$$' > "$(CURDIR)/bundle/manifests/neteye-operator.v$(VERSION).clusterserviceversion.yaml"; \
 	awk '/^kind: ClusterServiceVersion$$/{csv=1} csv && /^[[:space:]]*deployments:$$/{deployments=1} csv && deployments && /^[[:space:]]*- name: neteye-operator$$/{found=1} END {exit !found}' "$(CURDIR)/bundle/manifests/neteye-operator.v$(VERSION).clusterserviceversion.yaml" || { echo 'rendered CSV is missing deployment neteye-operator' >&2; exit 1; }; \
 	VERSION='$(VERSION)' PACKAGE_NAME='$(PACKAGE_NAME)' envsubst '$$VERSION $$PACKAGE_NAME' < "$(CURDIR)/config/bundle/annotations.yaml.tmpl" > "$(CURDIR)/bundle/metadata/annotations.yaml"

@@ -14,24 +14,32 @@ import (
 // fakeKeycloak is an in-memory stand-in for the subset of the Keycloak Admin
 // API the operator uses. It keeps the reconciliation tests honest about paths,
 // payloads, and verbs without needing a running Keycloak.
+//
+// It deliberately serves no endpoint that unassigns a mapper, a scope, or a
+// role: the operator only ever grants, so a reconciliation that tried to remove
+// one would fail the tests with a 404 instead of passing unnoticed.
 type fakeKeycloak struct {
 	realm string
 
 	clients      map[string]representation   // client UUID -> client representation
 	mappers      map[string][]representation // client UUID -> protocol mappers
 	scopes       map[string]map[string][]string
-	realmScopes  map[string]string // scope name -> scope id
+	realmScopes  map[string]string   // scope name -> scope id
+	clientRoles  map[string][]string // client UUID -> role names it defines
+	accountRoles map[string][]string // "userID/clientUUID" -> assigned role names
 	tokenIssued  int
 	requestPaths []string
 }
 
 func newFakeKeycloak(realm string, realmScopes ...string) *fakeKeycloak {
 	f := &fakeKeycloak{
-		realm:       realm,
-		clients:     map[string]representation{},
-		mappers:     map[string][]representation{},
-		scopes:      map[string]map[string][]string{},
-		realmScopes: map[string]string{},
+		realm:        realm,
+		clients:      map[string]representation{},
+		mappers:      map[string][]representation{},
+		scopes:       map[string]map[string][]string{},
+		realmScopes:  map[string]string{},
+		clientRoles:  map[string][]string{},
+		accountRoles: map[string][]string{},
 	}
 	for _, name := range realmScopes {
 		f.realmScopes[name] = "scope-" + name
@@ -103,6 +111,15 @@ func (f *fakeKeycloak) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		delete(f.clients, segments[1])
 		w.WriteHeader(http.StatusNoContent)
 
+	case len(segments) == 3 && segments[0] == "clients" && segments[2] == "service-account-user":
+		writeJSON(w, representation{"id": "service-account-" + segments[1], "username": "service-account-" + segments[1]})
+
+	case len(segments) == 4 && segments[0] == "clients" && segments[2] == "roles":
+		f.serveClientRole(w, segments)
+
+	case len(segments) == 5 && segments[0] == "users" && segments[2] == "role-mappings" && segments[3] == "clients":
+		f.serveAccountRoles(w, r, segments)
+
 	case len(segments) >= 4 && segments[2] == "protocol-mappers" && segments[3] == "models":
 		f.serveMappers(w, r, segments)
 
@@ -139,16 +156,6 @@ func (f *fakeKeycloak) serveMappers(w http.ResponseWriter, r *http.Request, segm
 		}
 		w.WriteHeader(http.StatusNoContent)
 
-	case len(segments) == 5 && r.Method == http.MethodDelete:
-		kept := []representation{}
-		for _, existing := range f.mappers[uuid] {
-			if stringValue(existing, "id") != segments[4] {
-				kept = append(kept, existing)
-			}
-		}
-		f.mappers[uuid] = kept
-		w.WriteHeader(http.StatusNoContent)
-
 	default:
 		http.Error(w, "unexpected mapper request", http.StatusNotFound)
 	}
@@ -170,16 +177,6 @@ func (f *fakeKeycloak) serveScopes(w http.ResponseWriter, r *http.Request, segme
 
 	case len(segments) == 4 && r.Method == http.MethodPut:
 		f.scopes[uuid][kind] = append(f.scopes[uuid][kind], f.scopeName(segments[3]))
-		w.WriteHeader(http.StatusNoContent)
-
-	case len(segments) == 4 && r.Method == http.MethodDelete:
-		kept := []string{}
-		for _, name := range f.scopes[uuid][kind] {
-			if name != f.scopeName(segments[3]) {
-				kept = append(kept, name)
-			}
-		}
-		f.scopes[uuid][kind] = kept
 		w.WriteHeader(http.StatusNoContent)
 
 	default:
@@ -206,11 +203,48 @@ func withID(client representation, uuid string) representation {
 
 func decode(r *http.Request) representation {
 	body := representation{}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = decodeJSON(r, &body)
 	return body
+}
+
+func decodeJSON(r *http.Request, out any) error {
+	return json.NewDecoder(r.Body).Decode(out)
 }
 
 func writeJSON(w http.ResponseWriter, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// serveClientRole answers the lookup of a role defined by a client.
+func (f *fakeKeycloak) serveClientRole(w http.ResponseWriter, segments []string) {
+	for _, name := range f.clientRoles[segments[1]] {
+		if name == segments[3] {
+			writeJSON(w, representation{"id": "role-" + segments[1] + "-" + name, "name": name})
+			return
+		}
+	}
+	http.Error(w, "unknown client role", http.StatusNotFound)
+}
+
+// serveAccountRoles answers the client role mappings of a user.
+func (f *fakeKeycloak) serveAccountRoles(w http.ResponseWriter, r *http.Request, segments []string) {
+	key := segments[1] + "/" + segments[4]
+	switch r.Method {
+	case http.MethodGet:
+		mapped := []representation{}
+		for _, name := range f.accountRoles[key] {
+			mapped = append(mapped, representation{"id": "role-" + segments[4] + "-" + name, "name": name})
+		}
+		writeJSON(w, mapped)
+
+	case http.MethodPost:
+		for _, role := range decodeList(r) {
+			f.accountRoles[key] = append(f.accountRoles[key], stringValue(role, "name"))
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		http.Error(w, "unexpected role mapping request", http.StatusNotFound)
+	}
 }

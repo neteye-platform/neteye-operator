@@ -6,14 +6,10 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"time"
 
-	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,28 +26,16 @@ const KeycloakClientFinalizer = "neteye.cloud/keycloak-client"
 
 // AdminAPIFactory builds the Admin API client used to talk to Keycloak. Tests
 // substitute it to point at a stub server.
-type AdminAPIFactory func(baseURL string, credentials keycloak.AdminCredentials) *keycloak.AdminAPI
+type AdminAPIFactory = keycloak.AdminAPIFactory
 
 // KeycloakClientReconciler keeps Keycloak clients matching their KeycloakClient
 // resources. Keycloak exposes no watch API, so drift is corrected by requeueing
 // on ReconciliationRequeueAfter rather than by reacting to remote events.
 type KeycloakClientReconciler struct {
-	client.Client
-	Log    logr.Logger
-	Scheme *runtime.Scheme
-
-	// KeycloakNamespace is the namespace running the Keycloak instance. When
-	// empty, the shared workload namespace is used.
-	KeycloakNamespace string
-	// AdminAPIFactory defaults to keycloak.NewAdminAPI.
-	AdminAPIFactory AdminAPIFactory
-
-	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
-	FailureRequeueAfter        time.Duration
-	ReconciliationRequeueAfter time.Duration
+	KeycloakAPIReconciler
 }
 
-// +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakclients,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakclients,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakclients/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakclients/finalizers,verbs=update
 
@@ -128,38 +112,23 @@ func (r *KeycloakClientReconciler) reconcileDelete(ctx context.Context, kcc *net
 	if !controllerutil.ContainsFinalizer(kcc, KeycloakClientFinalizer) {
 		return ctrl.Result{}, nil
 	}
-	if err := keycloak.DeleteClient(ctx, api, kcc.Spec); err != nil {
-		log.Error(err, "unable to delete the Keycloak client", "clientId", kcc.Spec.ClientID, "requeueAfter", r.failureRequeue())
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+	// Delete is the default, so an unset policy removes the client too. Orphan is
+	// what the platform's own client declares: the resource can come and go
+	// without destroying a client secret its consumers still hold.
+	if kcc.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
+		if err := keycloak.DeleteClient(ctx, api, kcc.Spec); err != nil {
+			log.Error(err, "unable to delete the Keycloak client", "clientId", kcc.Spec.ClientID, "requeueAfter", r.failureRequeue())
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
+		log.Info("keycloak client deleted", "clientId", kcc.Spec.ClientID, "realm", kcc.Spec.Realm)
+	} else {
+		log.Info("keycloak client orphaned by deletion policy", "clientId", kcc.Spec.ClientID, "realm", kcc.Spec.Realm)
 	}
-	log.Info("keycloak client deleted", "clientId", kcc.Spec.ClientID, "realm", kcc.Spec.Realm)
 	controllerutil.RemoveFinalizer(kcc, KeycloakClientFinalizer)
 	if err := r.Update(ctx, kcc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove keycloak client finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil
-}
-
-// adminAPI reads the Keycloak admin credentials and builds an Admin API client
-// bound to the in-cluster Keycloak Service.
-func (r *KeycloakClientReconciler) adminAPI(ctx context.Context) (*keycloak.AdminAPI, error) {
-	namespace := r.keycloakNamespace()
-	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: namespace, Name: keycloak.AdminSecretName}
-	if err := r.Get(ctx, key, secret); err != nil {
-		return nil, fmt.Errorf("get keycloak admin secret %q in namespace %q: %w", keycloak.AdminSecretName, namespace, err)
-	}
-	username := string(secret.Data[keycloak.AdminSecretUsernameKey])
-	password := string(secret.Data[keycloak.AdminSecretPasswordKey])
-	if username == "" || password == "" {
-		return nil, fmt.Errorf("keycloak admin secret %q in namespace %q is missing the %q or %q key", keycloak.AdminSecretName, namespace, keycloak.AdminSecretUsernameKey, keycloak.AdminSecretPasswordKey)
-	}
-
-	factory := r.AdminAPIFactory
-	if factory == nil {
-		factory = keycloak.NewAdminAPI
-	}
-	return factory(keycloak.InClusterBaseURL(namespace), keycloak.AdminCredentials{Username: username, Password: password}), nil
 }
 
 // clientSecret resolves spec.clientSecretRef. Public clients need no secret, so an
@@ -193,38 +162,8 @@ func (r *KeycloakClientReconciler) setStatus(ctx context.Context, key client.Obj
 		ClientUUID:         kcc.Status.ClientUUID,
 		ObservedGeneration: kcc.GetGeneration(),
 	}
-	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		current := &neteye.KeycloakClient{}
-		if err := r.Get(ctx, key, current); err != nil {
-			return client.IgnoreNotFound(err)
-		}
-		current.Status = status
-		return r.Status().Update(ctx, current)
-	})
-	if err != nil {
-		ctrl.LoggerFrom(ctx).Error(err, "unable to update KeycloakClient status")
-	}
-}
-
-func (r *KeycloakClientReconciler) keycloakNamespace() string {
-	if r.KeycloakNamespace != "" {
-		return r.KeycloakNamespace
-	}
-	return keycloak.WorkloadNamespace
-}
-
-func (r *KeycloakClientReconciler) failureRequeue() time.Duration {
-	if r.FailureRequeueAfter > 0 {
-		return r.FailureRequeueAfter
-	}
-	return DefaultFailureRequeueAfter
-}
-
-func (r *KeycloakClientReconciler) reconciliationRequeue() time.Duration {
-	if r.ReconciliationRequeueAfter > 0 {
-		return r.ReconciliationRequeueAfter
-	}
-	return DefaultReconciliationRequeueAfter
+	writeStatus(ctx, r.Client, key, func() *neteye.KeycloakClient { return &neteye.KeycloakClient{} },
+		func(current *neteye.KeycloakClient) { current.Status = status })
 }
 
 func (r *KeycloakClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
