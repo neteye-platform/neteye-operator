@@ -88,6 +88,11 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	ne.Status.ObservedGeneration = ne.GetGeneration()
+	// Reset the phase so severity comparisons in setPhase are scoped to this
+	// reconcile only; otherwise a stale Failed phase from a previous
+	// reconcile would block this pass from ever reporting Ready again.
+	ne.Status.Phase = ""
+	ne.Status.Message = ""
 	ne.Status.ServicesStatus = neteye.NetEyeServicesStatus{
 		Identity:     identityStatus(neteye.ServiceStateUnknown, "", ""),
 		ElasticStack: &neteye.NetEyeElasticStackStatus{Status: neteye.ServiceStateUnknown, OTelCollector: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}},
@@ -403,8 +408,30 @@ func ownerReferenceFor(ne *neteye.NetEye) metav1.OwnerReference {
 }
 
 func setPhase(ne *neteye.NetEye, phase neteye.NetEyePhase, message string) {
+	if phaseSeverity(phase) < phaseSeverity(ne.Status.Phase) {
+		// A less severe phase must not clobber a more severe one already
+		// recorded during this reconcile (e.g. ElasticStack reporting
+		// NotReady after Keycloak already reported Failed).
+		return
+	}
 	ne.Status.Phase = phase
 	ne.Status.Message = message
+}
+
+// phaseSeverity ranks NetEyePhase values so a later, less severe phase update
+// cannot silently overwrite an earlier, more severe one within the same
+// reconcile. Higher is more severe.
+func phaseSeverity(phase neteye.NetEyePhase) int {
+	switch phase {
+	case neteye.PhaseFailed:
+		return 3
+	case neteye.PhaseNotReady, neteye.PhasePendingUpgrades:
+		return 2
+	case neteye.PhaseReady:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func identityStatus(state neteye.ServiceState, message, image string) *neteye.NetEyeServiceStatus {

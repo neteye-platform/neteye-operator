@@ -97,7 +97,7 @@ spec:
                     image: controller:latest
                     imagePullPolicy: Always
                     env:
-                      - {name: RELATED_IMAGE_KEYCLOAK, value: ghcr.io/neteye-platform/neteye-keycloak:1.0.1}
+                      - {name: RELATED_IMAGE_KEYCLOAK, value: ghcr.io/neteye-platform/neteye-keycloak:1.0.4}
                       - {name: RELATED_IMAGE_OTEL_COLLECTOR, value: docker.io/otel/opentelemetry-collector-contrib:0.156.0}
                     securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
                     ports: [{name: webhook-server, containerPort: 9443, protocol: TCP}]

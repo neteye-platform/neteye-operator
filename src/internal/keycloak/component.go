@@ -37,8 +37,6 @@ const (
 	EgressPolicyName    = "neteye-kc-egress"
 	IngressPolicyName   = "neteye-kc-ingress"
 	HostPolicyName      = "neteye-kc-host-management"
-	CacheConfigMapName  = "neteye-kc-cache-config"
-	CacheConfigMapKey   = "cache-ispn.xml"
 	// InfinispanClusterName isolates this Keycloak instance's JGroups/Infinispan
 	// cluster from any other Keycloak sharing the same database schema (e.g. a
 	// bare-metal instance kept alive during a migration). Both instances write
@@ -184,9 +182,6 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak workload network policy: %w", err)
 	}
-	if err := c.EnsureCacheConfig(ctx, namespace, &owner); err != nil {
-		return false, "", fmt.Errorf("ensure keycloak cache config: %w", err)
-	}
 	if err := c.EnsureIngressNetworkPolicy(ctx, namespace, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak ingress network policy: %w", err)
 	}
@@ -278,12 +273,6 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 			"enabled": false,
 		},
 		"networkPolicy": map[string]any{"enabled": false},
-		"cache": map[string]any{
-			"configMapFile": map[string]any{
-				"name": CacheConfigMapName,
-				"key":  CacheConfigMapKey,
-			},
-		},
 		"hostname": map[string]any{
 			"hostname":           resourceURI(identity.Hostname),
 			"strict":             true,
@@ -296,6 +285,10 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 			map[string]any{
 				"name":  "http-relative-path",
 				"value": HTTPRelativePath,
+			},
+			map[string]any{
+				"name":  "spi-cache-embedded--default--cluster-name",
+				"value": InfinispanClusterName,
 			},
 		},
 	}
@@ -338,31 +331,6 @@ func namespaceSelector(namespace string) map[string]any {
 	return map[string]any{
 		"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": namespace}},
 	}
-}
-
-// EnsureCacheConfig ensures the ConfigMap holding a cache-ispn.xml that pins
-// this instance's Infinispan/JGroups cluster name away from the shared
-// default, so it never collides with another Keycloak (e.g. a legacy
-// bare-metal instance kept alive during a migration) reusing the same
-// database schema for JDBC_PING discovery.
-func (c *Component) EnsureCacheConfig(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
-	return resources.EnsureConfigMap(ctx, c.client, namespace, CacheConfigMapName, map[string]string{
-		CacheConfigMapKey: cacheConfigXML(),
-	}, *owner)
-}
-
-func cacheConfigXML() string {
-	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<infinispan
-        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:schemaLocation="urn:infinispan:config:16.0 https://infinispan.org/schemas/infinispan-config-16.0.xsd"
-        xmlns="urn:infinispan:config:16.0">
-
-    <cache-container name="keycloak">
-        <transport lock-timeout="60000" cluster="%s"/>
-    </cache-container>
-</infinispan>
-`, InfinispanClusterName)
 }
 
 func (c *Component) EnsureHostManagementPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
