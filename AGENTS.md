@@ -6,6 +6,8 @@
   command exists.
 - Start with the [ADR index](docs/adr/README.md) when a task can affect the
   architecture.
+- Use the scope column and loading instructions in the index to identify the
+  relevant ADRs. Do not load the complete ADR set by default.
 - Accepted ADRs are authoritative. Read the relevant accepted ADRs before
   making architecture-facing changes.
 - Proposed ADRs are under review and do not yet constrain implementation.
@@ -23,18 +25,6 @@
   linting, testing, and bundle validation.
 - Do not edit generated OLM bundle files by hand.
 - Do not commit credentials, tokens, private keys, or other secrets.
-
-## ADRs
-
-- New ADRs must use the [ADR template](docs/adr/template.md).
-- Add every ADR to the [ADR index](docs/adr/README.md).
-- Use the next available number and never renumber an existing ADR.
-- Create an ADR for a durable architectural decision, not for a small
-  implementation detail.
-- A change that replaces an accepted decision requires a new ADR and marks the
-  previous ADR as `Superseded`.
-- Keep ADR language concise, prescriptive, and independent of temporary
-  implementation details.
 
 ## Before finishing
 

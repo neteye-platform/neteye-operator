@@ -24,6 +24,23 @@ Every ADR contains:
 
 Authors and approvers are recorded by Git history and pull-request reviews.
 
+## How to use the ADRs
+
+Use this README as the entry point. Do not read every ADR for every task.
+
+1. Find the area affected by the task in the index below.
+2. Read the accepted ADRs whose scope matches that area.
+3. Follow links to other ADRs only when the selected ADR depends on them or
+   more decision history is needed.
+4. Read proposed ADRs only when reviewing them, working on the decision they
+   describe, or when the task explicitly refers to them.
+5. Read superseded or deprecated ADRs only when historical rationale is
+   required.
+
+If an implementation change conflicts with an accepted ADR, the ADR remains
+authoritative. Change the implementation or propose a new ADR that replaces
+the old decision.
+
 ## Statuses
 
 The following statuses are used:
@@ -49,9 +66,8 @@ The following statuses are used:
 
 ## Index
 
-1. [ADR-0001](0001-neteye-resource-scope-and-ownership.md): NetEye Resource
-   Scope and Ownership (Proposed)
-2. [ADR-0002](0002-reconciliation-and-resource-application.md): Reconciliation
-   and Resource Application (Proposed)
-3. [ADR-0003](0003-neteye-and-operator-version-model.md): NetEye and Operator
-   Version Model (Proposed)
+| ADR | Decision | Scope | Status |
+| --- | --- | --- | --- |
+| [ADR-0001](0001-neteye-resource-scope-and-ownership.md) | NetEye Resource Scope and Ownership | Singleton `NetEye`, tenants, resource ownership, and deletion policy | Proposed |
+| [ADR-0002](0002-reconciliation-and-resource-application.md) | Reconciliation and Resource Application | Server-Side Apply, field ownership, delegated resources, readiness, and component status | Proposed |
+| [ADR-0003](0003-neteye-and-operator-version-model.md) | NetEye and Operator Version Model | Product and operator versions, OLM channels, upgrade authorization, and resolved images | Proposed |
