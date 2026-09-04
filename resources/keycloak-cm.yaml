@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-cm
+  namespace: neteye-system
+data:
+  url: "https://keycloak.example.com"
+  tokenRealm: "master"
+  verifySSL: "true"
+  timeout: "30"

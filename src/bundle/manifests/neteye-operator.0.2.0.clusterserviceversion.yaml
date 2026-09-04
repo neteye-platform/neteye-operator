@@ -47,7 +47,7 @@ metadata:
     capabilities: Basic Install
     operators.operatorframework.io/builder: operator-sdk-v1.32.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v3
-  name: neteye-operator.0.1.0
+  name: neteye-operator.0.2.0
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -290,6 +290,40 @@ spec:
                 - neteyes/finalizers
               verbs:
                 - update
+            - apiGroups:
+              - neteye.cloud
+              resources:
+                - keycloakauthflows
+              verbs:
+                - get
+                - list
+                - watch
+                - patch
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - keycloakauthflows/status
+              verbs:
+                - get
+                - patch
+                - update
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - keycloakrealms
+              verbs:
+                - get
+                - list
+                - watch
+                - patch
+            - apiGroups:
+                - neteye.cloud
+              resources:
+                - keycloakrealms/status
+              verbs:
+                - get
+                - patch
+                - update
           serviceAccountName: neteye-operator
       deployments:
         - name: neteye-operator
@@ -308,7 +342,7 @@ spec:
                   seccompProfile:
                     type: RuntimeDefault
                 containers:
-                  - image: ghcr.io/neteye-platform/neteye-operator:0.1.0
+                  - image: 172.19.69.253:5000/neteye-operator:0.2.0
                     imagePullPolicy: Always
                     name: manager
                     env:
@@ -393,7 +427,7 @@ spec:
   relatedImages:
     - image: ghcr.io/neteye-platform/neteye-keycloak:1.0.1
       name: neteye-keycloak
-  version: 0.1.0
+  version: 0.2.0
   webhookdefinitions:
     - admissionReviewVersions:
         - v1

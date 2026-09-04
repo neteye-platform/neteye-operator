@@ -6,12 +6,12 @@ schema: olm.channel
 package: neteye-operator
 name: stable
 entries:
-  - name: neteye-operator.0.1.0
+  - name: neteye-operator.0.2.0
 ---
 schema: olm.bundle
-name: neteye-operator.0.1.0
+name: neteye-operator.0.2.0
 package: neteye-operator
-image: ghcr.io/neteye-platform/neteye-operator-bundle:0.1.0
+image: 172.19.69.253:5000/neteye-operator-bundle:0.2.0
 properties:
   - type: olm.gvk
     value:
@@ -21,4 +21,4 @@ properties:
   - type: olm.package
     value:
       packageName: neteye-operator
-      version: 0.1.0
+      version: 0.2.0

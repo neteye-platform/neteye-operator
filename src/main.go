@@ -39,6 +39,10 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(controllers.Scheme))
 	utilruntime.Must(neteye.AddToScheme(controllers.Scheme))
+
+	setupLog.Info(
+		"scheme initialized",
+	)
 }
 
 func main() {
@@ -46,72 +50,220 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
+	flag.StringVar(
+		&metricsAddr,
+		"metrics-bind-address",
+		":8080",
+		"The address the metric endpoint binds to.",
+	)
+
+	flag.StringVar(
+		&probeAddr,
+		"health-probe-bind-address",
+		":8081",
+		"The address the probe endpoint binds to.",
+	)
+
+	flag.BoolVar(
+		&enableLeaderElection,
+		"leader-elect",
+		true,
+		"Enable leader election for controller manager.",
+	)
 
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
 	logLevel, logLevelName, logLevelConfigured, logLevelErr := logLevelFromEnv()
+
 	if logLevelConfigured {
 		opts.Level = logLevel
 		configuredLogName = logLevelName
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
 	if logLevelErr != nil {
-		setupLog.Error(logLevelErr, "invalid log level configured; ignoring environment override", "envVar", logLevelEnvVar)
+		setupLog.Error(
+			logLevelErr,
+			"invalid log level configured; ignoring environment override",
+			"envVar",
+			logLevelEnvVar,
+		)
 	}
-	setupLog.Info("logger configured", "level", configuredLogName, "envVar", logLevelEnvVar)
 
-	waitForProgressingRequeue, err := durationFromEnv(waitForProgressingRequeueEnvVar, controllers.DefaultWaitForProgressingRequeueAfter)
-	if err != nil {
-		setupLog.Error(err, "invalid requeue interval configured; using default", "envVar", waitForProgressingRequeueEnvVar)
-	}
-	failureRequeue, err := durationFromEnv(failureRequeueEnvVar, controllers.DefaultFailureRequeueAfter)
-	if err != nil {
-		setupLog.Error(err, "invalid requeue interval configured; using default", "envVar", failureRequeueEnvVar)
-	}
-	reconciliationRequeue, err := durationFromEnv(reconciliationRequeueEnvVar, controllers.DefaultReconciliationRequeueAfter)
-	if err != nil {
-		setupLog.Error(err, "invalid requeue interval configured; using default", "envVar", reconciliationRequeueEnvVar)
-	}
-	setupLog.Info("requeue intervals configured", "waitForProgressing", waitForProgressingRequeue, "failure", failureRequeue, "reconciliation", reconciliationRequeue)
+	setupLog.Info(
+		"logger configured",
+		"level",
+		configuredLogName,
+		"envVar",
+		logLevelEnvVar,
+	)
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                        controllers.Scheme,
-		Metrics:                       metricsserver.Options{BindAddress: metricsAddr},
-		HealthProbeBindAddress:        probeAddr,
-		LeaderElection:                enableLeaderElection,
-		LeaderElectionID:              "neteye-operator.neteye.cloud",
-		LeaderElectionReleaseOnCancel: true,
-	})
+	waitForProgressingRequeue, err := durationFromEnv(
+		waitForProgressingRequeueEnvVar,
+		controllers.DefaultWaitForProgressingRequeueAfter,
+	)
 	if err != nil {
-		setupLog.Error(err, "unable to create controller manager")
+		setupLog.Error(
+			err,
+			"invalid requeue interval configured; using default",
+			"envVar",
+			waitForProgressingRequeueEnvVar,
+		)
+	}
+
+	failureRequeue, err := durationFromEnv(
+		failureRequeueEnvVar,
+		controllers.DefaultFailureRequeueAfter,
+	)
+	if err != nil {
+		setupLog.Error(
+			err,
+			"invalid requeue interval configured; using default",
+			"envVar",
+			failureRequeueEnvVar,
+		)
+	}
+
+	reconciliationRequeue, err := durationFromEnv(
+		reconciliationRequeueEnvVar,
+		controllers.DefaultReconciliationRequeueAfter,
+	)
+	if err != nil {
+		setupLog.Error(
+			err,
+			"invalid requeue interval configured; using default",
+			"envVar",
+			reconciliationRequeueEnvVar,
+		)
+	}
+
+	setupLog.Info(
+		"requeue intervals configured",
+		"waitForProgressing",
+		waitForProgressingRequeue,
+		"failure",
+		failureRequeue,
+		"reconciliation",
+		reconciliationRequeue,
+	)
+
+	setupLog.Info(
+		"creating controller manager",
+		"metricsBindAddress",
+		metricsAddr,
+		"healthProbeBindAddress",
+		probeAddr,
+		"leaderElection",
+		enableLeaderElection,
+	)
+
+	mgr, err := ctrl.NewManager(
+		ctrl.GetConfigOrDie(),
+		ctrl.Options{
+			Scheme: controllers.Scheme,
+			Metrics: metricsserver.Options{
+				BindAddress: metricsAddr,
+			},
+			HealthProbeBindAddress:        probeAddr,
+			LeaderElection:                enableLeaderElection,
+			LeaderElectionID:              "neteye-operator.neteye.cloud",
+			LeaderElectionReleaseOnCancel: true,
+		},
+	)
+	if err != nil {
+		setupLog.Error(
+			err,
+			"unable to create controller manager",
+		)
 		os.Exit(1)
 	}
-	setupLog.Info("controller manager configured", "metricsBindAddress", metricsAddr, "healthProbeBindAddress", probeAddr, "leaderElection", enableLeaderElection)
 
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
+	setupLog.Info(
+		"controller manager created successfully",
+	)
+
+	if err := mgr.AddHealthzCheck(
+		"healthz",
+		healthz.Ping,
+	); err != nil {
+		setupLog.Error(
+			err,
+			"unable to set up health check",
+		)
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
+
+	setupLog.Info(
+		"health check configured",
+	)
+
+	if err := mgr.AddReadyzCheck(
+		"readyz",
+		healthz.Ping,
+	); err != nil {
+		setupLog.Error(
+			err,
+			"unable to set up ready check",
+		)
 		os.Exit(1)
 	}
-	setupLog.Info("health and readiness checks configured")
 
-	keycloakComponent := keycloak.NewComponent(mgr.GetClient(), ctrl.Log.WithName("keycloak-component"))
-	elasticStackComponent := elasticstack.NewComponent(mgr.GetClient(), ctrl.Log.WithName("elastic-stack-component"))
-	elasticStackReconciler := elasticstack.NewReconciler(elasticStackComponent)
+	setupLog.Info(
+		"readiness check configured",
+	)
+
+	setupLog.Info(
+		"creating Keycloak component",
+	)
+
+	keycloakComponent := keycloak.NewComponent(
+		mgr.GetClient(),
+		ctrl.Log.WithName("keycloak-component"),
+	)
+
+	setupLog.Info(
+		"Keycloak component created",
+	)
+
+	setupLog.Info(
+		"creating Elastic Stack component",
+	)
+
+	elasticStackComponent := elasticstack.NewComponent(
+		mgr.GetClient(),
+		ctrl.Log.WithName("elastic-stack-component"),
+	)
+
+	elasticStackReconciler := elasticstack.NewReconciler(
+		elasticStackComponent,
+	)
+
+	setupLog.Info(
+		"Elastic Stack component created",
+	)
+
+	setupLog.Info(
+		"adding Keycloak component to manager",
+	)
+
 	if err := mgr.Add(keycloakComponent); err != nil {
-		setupLog.Error(err, "unable to add keycloak component")
+		setupLog.Error(
+			err,
+			"unable to add keycloak component",
+		)
 		os.Exit(1)
 	}
+
+	setupLog.Info(
+		"Keycloak component added to manager",
+	)
+
+	setupLog.Info(
+		"registering NetEye controller",
+	)
 
 	if err := (&controllers.NetEyeReconciler{
 		Client:                         mgr.GetClient(),
@@ -123,43 +275,124 @@ func main() {
 		FailureRequeueAfter:            failureRequeue,
 		ReconciliationRequeueAfter:     reconciliationRequeue,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create NetEye controller")
-		os.Exit(1)
-	}
-	if err := neteye.SetupNetEyeWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create NetEye webhook")
+		setupLog.Error(
+			err,
+			"unable to create NetEye controller",
+		)
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting neteye-operator", "version", version, "logLevel", configuredLogName)
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "controller manager stopped with error")
+	setupLog.Info(
+		"NetEye controller registered successfully",
+	)
+
+	// Register KeycloakAuthFlow controller.
+	setupLog.Info(
+		"registering KeycloakAuthFlow controller",
+		"group",
+		"neteye.cloud",
+		"version",
+		"v1",
+		"kind",
+		"KeycloakAuthFlow",
+		"resource",
+		"keycloakauthflows",
+	)
+
+	if err := controllers.AddKeycloakAuthFlowController(mgr); err != nil {
+		setupLog.Error(
+			err,
+			"unable to create KeycloakAuthFlow controller",
+		)
+		os.Exit(1)
+	}
+
+	setupLog.Info(
+		"KeycloakAuthFlow controller registered successfully",
+	)
+
+	setupLog.Info(
+		"registering NetEye webhook",
+	)
+
+	if err := neteye.SetupNetEyeWebhookWithManager(mgr); err != nil {
+		setupLog.Error(
+			err,
+			"unable to create NetEye webhook",
+		)
+		os.Exit(1)
+	}
+
+	setupLog.Info(
+		"NetEye webhook registered successfully",
+	)
+
+	setupLog.Info(
+		"starting neteye-operator",
+		"version",
+		version,
+		"logLevel",
+		configuredLogName,
+	)
+
+	setupLog.Info(
+		"waiting for manager to acquire leader lease and start controllers",
+	)
+
+	if err := mgr.Start(
+		ctrl.SetupSignalHandler(),
+	); err != nil {
+		setupLog.Error(
+			err,
+			"controller manager stopped with error",
+		)
 		os.Exit(1)
 	}
 }
 
 func logLevelFromEnv() (zapcore.Level, string, bool, error) {
-	raw := strings.TrimSpace(strings.ToLower(os.Getenv(logLevelEnvVar)))
+	raw := strings.TrimSpace(
+		strings.ToLower(
+			os.Getenv(logLevelEnvVar),
+		),
+	)
+
 	if raw == "" {
 		return zapcore.InfoLevel, "", false, nil
 	}
+
 	if verbosity, ok, err := parseVerbosity(raw); ok || err != nil {
 		if err != nil {
 			return zapcore.InfoLevel, "", false, err
 		}
-		return zapcore.Level(-verbosity), fmt.Sprintf("v%d", verbosity), true, nil
+
+		return zapcore.Level(-verbosity),
+			fmt.Sprintf("v%d", verbosity),
+			true,
+			nil
 	}
+
 	switch raw {
 	case "debug":
 		return zapcore.DebugLevel, "debug/v1", true, nil
+
 	case "info":
 		return zapcore.InfoLevel, raw, true, nil
+
 	case "warn", "warning":
 		return zapcore.WarnLevel, raw, true, nil
+
 	case "error":
 		return zapcore.ErrorLevel, raw, true, nil
+
 	default:
-		return zapcore.InfoLevel, "", false, fmt.Errorf("unsupported value %q, expected debug, info, warn, warning, error, or v<number>", raw)
+		return zapcore.InfoLevel,
+			"",
+			false,
+			fmt.Errorf(
+				"unsupported value %q, expected debug, info, warn, warning, error, or v<number>",
+				raw,
+			)
 	}
 }
 
@@ -167,28 +400,59 @@ func parseVerbosity(raw string) (int8, bool, error) {
 	if !strings.HasPrefix(raw, "v") {
 		return 0, false, nil
 	}
+
 	value := strings.TrimPrefix(raw, "v")
+
 	if value == "" {
-		return 0, true, fmt.Errorf("unsupported value %q, expected v<number>", raw)
+		return 0, true, fmt.Errorf(
+			"unsupported value %q, expected v<number>",
+			raw,
+		)
 	}
-	verbosity, err := strconv.ParseInt(value, 10, 8)
+
+	verbosity, err := strconv.ParseInt(
+		value,
+		10,
+		8,
+	)
+
 	if err != nil || verbosity < 0 {
-		return 0, true, fmt.Errorf("unsupported value %q, expected v<number> with a non-negative integer", raw)
+		return 0, true, fmt.Errorf(
+			"unsupported value %q, expected v<number> with a non-negative integer",
+			raw,
+		)
 	}
+
 	return int8(verbosity), true, nil
 }
 
-func durationFromEnv(envVar string, fallback time.Duration) (time.Duration, error) {
-	raw := strings.TrimSpace(os.Getenv(envVar))
+func durationFromEnv(
+	envVar string,
+	fallback time.Duration,
+) (time.Duration, error) {
+	raw := strings.TrimSpace(
+		os.Getenv(envVar),
+	)
+
 	if raw == "" {
 		return fallback, nil
 	}
+
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		return fallback, fmt.Errorf("unsupported value %q, expected a Go duration such as 30s or 5m: %w", raw, err)
+		return fallback, fmt.Errorf(
+			"unsupported value %q, expected a Go duration such as 30s or 5m: %w",
+			raw,
+			err,
+		)
 	}
+
 	if d <= 0 {
-		return fallback, fmt.Errorf("unsupported value %q, expected a positive duration", raw)
+		return fallback, fmt.Errorf(
+			"unsupported value %q, expected a positive duration",
+			raw,
+		)
 	}
+
 	return d, nil
 }
