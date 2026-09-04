@@ -4,4 +4,4 @@ description: A Helm chart for NetEye Operator
 
 type: application
 
-version: 0.1.0-alpha7
+version: 0.1.0-alpha8
