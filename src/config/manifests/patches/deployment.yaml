@@ -14,7 +14,10 @@ spec:
               resources: [configmaps, services, serviceaccounts, endpoints]
               verbs: [create, delete, get, list, patch, update, watch]
             - apiGroups: [""]
-              resources: [secrets, pods, pods/log]
+              resources: [secrets]
+              verbs: [create, get, list, update, watch]
+            - apiGroups: [""]
+              resources: [pods, pods/log]
               verbs: [get, list, watch]
             - apiGroups: [""]
               resources: [namespaces]
@@ -61,6 +64,24 @@ spec:
             - apiGroups: [neteye.cloud]
               resources: [neteyes/finalizers]
               verbs: [update]
+            - apiGroups: [neteye.cloud]
+              resources: [keycloakclients]
+              verbs: [create, get, list, patch, update, watch]
+            - apiGroups: [neteye.cloud]
+              resources: [keycloakclients/status]
+              verbs: [get, patch, update]
+            - apiGroups: [neteye.cloud]
+              resources: [keycloakclients/finalizers]
+              verbs: [update]
+            - apiGroups: [neteye.cloud]
+              resources: [keycloakusers]
+              verbs: [create, get, list, patch, update, watch]
+            - apiGroups: [neteye.cloud]
+              resources: [keycloakusers/status]
+              verbs: [get, patch, update]
+            - apiGroups: [neteye.cloud]
+              resources: [keycloakusers/finalizers]
+              verbs: [update]
       deployments:
         - name: neteye-operator
           spec:
@@ -76,7 +97,7 @@ spec:
                     image: controller:latest
                     imagePullPolicy: Always
                     env:
-                      - {name: RELATED_IMAGE_KEYCLOAK, value: ghcr.io/neteye-platform/neteye-keycloak:1.0.1}
+                      - {name: RELATED_IMAGE_KEYCLOAK, value: ghcr.io/neteye-platform/neteye-keycloak:1.0.4}
                       - {name: RELATED_IMAGE_OTEL_COLLECTOR, value: docker.io/otel/opentelemetry-collector-contrib:0.156.0}
                     securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
                     ports: [{name: webhook-server, containerPort: 9443, protocol: TCP}]

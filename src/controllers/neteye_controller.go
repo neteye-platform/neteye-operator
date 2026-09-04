@@ -88,6 +88,11 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	ne.Status.ObservedGeneration = ne.GetGeneration()
+	// Reset the phase so severity comparisons in setPhase are scoped to this
+	// reconcile only; otherwise a stale Failed phase from a previous
+	// reconcile would block this pass from ever reporting Ready again.
+	ne.Status.Phase = ""
+	ne.Status.Message = ""
 	ne.Status.ServicesStatus = neteye.NetEyeServicesStatus{
 		Identity:     identityStatus(neteye.ServiceStateUnknown, "", ""),
 		ElasticStack: &neteye.NetEyeElasticStackStatus{Status: neteye.ServiceStateUnknown, OTelCollector: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}},
@@ -131,11 +136,18 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared default-deny network policy: %w", err)
 	}
 
-	if result, err := r.reconcileKeycloak(ctx, ne, components.KeycloakImage); shouldReturn(result, err) {
-		return result, err
+	keycloakResult, keycloakErr := r.reconcileKeycloak(ctx, ne, components.KeycloakImage)
+	elasticResult, elasticErr := r.reconcileElasticStack(ctx, ne, components.OTelCollectorImage)
+	combinedResult := combineResults(keycloakResult, elasticResult)
+
+	if keycloakErr != nil {
+		return combinedResult, keycloakErr
 	}
-	if result, err := r.reconcileElasticStack(ctx, ne, components.OTelCollectorImage); shouldReturn(result, err) {
-		return result, err
+	if elasticErr != nil {
+		return combinedResult, elasticErr
+	}
+	if !combinedResult.IsZero() {
+		return combinedResult, nil
 	}
 
 	setPhase(ne, neteye.PhaseReady, "All components are ready")
@@ -184,6 +196,27 @@ func (r *NetEyeReconciler) updateStatus(ctx context.Context, key client.ObjectKe
 
 func shouldReturn(result ctrl.Result, err error) bool {
 	return err != nil || !result.IsZero()
+}
+
+// combineResults returns a requeue request that honors both reconciliation outcomes.
+// When both request a delayed requeue, the earliest one takes precedence.
+func combineResults(a, b ctrl.Result) ctrl.Result {
+	var result ctrl.Result
+
+	switch {
+	case a.RequeueAfter > 0 && b.RequeueAfter > 0:
+		if a.RequeueAfter < b.RequeueAfter {
+			result.RequeueAfter = a.RequeueAfter
+		} else {
+			result.RequeueAfter = b.RequeueAfter
+		}
+	case a.RequeueAfter > 0:
+		result.RequeueAfter = a.RequeueAfter
+	case b.RequeueAfter > 0:
+		result.RequeueAfter = b.RequeueAfter
+	}
+
+	return result
 }
 
 func (r *NetEyeReconciler) waitForProgressingRequeue() time.Duration {
@@ -295,6 +328,34 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
 	}
 
+	// The instance is up, so the Admin API is reachable and the KeycloakUser
+	// controller can make progress on the administrative account the platform
+	// owns. Declaring it here is what replaces the Ansible role creating it with
+	// the bootstrap admin.
+	if err := r.KeycloakComponent.EnsureInternalAdminUser(ctx, keycloak.WorkloadNamespace); err != nil {
+		log.Error(err, "failed to declare the Keycloak internal admin user", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the Keycloak internal admin user: %v", err), image)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure keycloak internal admin user: %w", err)
+	}
+
+	if err := r.KeycloakComponent.EnsureNetEyeClient(ctx, keycloak.WorkloadNamespace); err != nil {
+		log.Error(err, "failed to declare the NetEye Keycloak client", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the NetEye Keycloak client: %v", err), image)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure neteye keycloak client: %w", err)
+	}
+
+	// Once the internal admin is usable the bootstrap account has served its
+	// purpose, exactly as in the Ansible role. This is a no-op until then.
+	if err := r.KeycloakComponent.EnsureBootstrapAdminDisabled(ctx, keycloak.WorkloadNamespace); err != nil {
+		// Not fatal: the platform works with the bootstrap account still enabled,
+		// so this is reported and retried promptly rather than failing the
+		// reconciliation.
+		log.Error(err, "failed to disable the Keycloak bootstrap admin", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+	}
+
 	log.Info("Keycloak reconciled and ready", "namespace", ne.Namespace, "name", owner.Name)
 	return ctrl.Result{}, nil
 }
@@ -347,8 +408,30 @@ func ownerReferenceFor(ne *neteye.NetEye) metav1.OwnerReference {
 }
 
 func setPhase(ne *neteye.NetEye, phase neteye.NetEyePhase, message string) {
+	if phaseSeverity(phase) < phaseSeverity(ne.Status.Phase) {
+		// A less severe phase must not clobber a more severe one already
+		// recorded during this reconcile (e.g. ElasticStack reporting
+		// NotReady after Keycloak already reported Failed).
+		return
+	}
 	ne.Status.Phase = phase
 	ne.Status.Message = message
+}
+
+// phaseSeverity ranks NetEyePhase values so a later, less severe phase update
+// cannot silently overwrite an earlier, more severe one within the same
+// reconcile. Higher is more severe.
+func phaseSeverity(phase neteye.NetEyePhase) int {
+	switch phase {
+	case neteye.PhaseFailed:
+		return 3
+	case neteye.PhaseNotReady, neteye.PhasePendingUpgrades:
+		return 2
+	case neteye.PhaseReady:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func identityStatus(state neteye.ServiceState, message, image string) *neteye.NetEyeServiceStatus {

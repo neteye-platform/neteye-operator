@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -36,9 +37,24 @@ const (
 	EgressPolicyName    = "neteye-kc-egress"
 	IngressPolicyName   = "neteye-kc-ingress"
 	HostPolicyName      = "neteye-kc-host-management"
-	HTTPPort            = int64(8080)
-	HTTPRelativePath    = "/auth"
-	KubeSystemNamespace = "kube-system"
+	// InfinispanClusterName isolates this Keycloak instance's JGroups/Infinispan
+	// cluster from any other Keycloak sharing the same database schema (e.g. a
+	// bare-metal instance kept alive during a migration). Both instances write
+	// JDBC_PING discovery rows keyed by cluster name; a shared default name
+	// ("ISPN") makes each side's independently-formed view register its own
+	// coordinator row, which the "cluster health check" reads as a split brain.
+	InfinispanClusterName = "neteye-k8s-ispn"
+	HTTPPort              = int64(8080)
+	HTTPRelativePath      = "/auth"
+	KubeSystemNamespace   = "kube-system"
+	// OperatorSystemNamespace runs the NetEye operator itself, which reaches the
+	// Keycloak Admin API in-cluster to reconcile KeycloakClient resources.
+	OperatorSystemNamespace = "neteye-system"
+	// AdminSecretName is the Secret the Keycloak Operator creates with the
+	// bootstrap admin credentials of the Keycloak instance.
+	AdminSecretName        = InstanceName + "-initial-admin"
+	AdminSecretUsernameKey = "username"
+	AdminSecretPasswordKey = "password"
 
 	extensionName = "keycloak-operator"
 	channel       = "fast"
@@ -55,6 +71,22 @@ const (
 type Component struct {
 	client client.Client
 	log    logr.Logger
+
+	// AdminAPIFactory builds the Admin API client. Tests substitute it to point
+	// at a stub server; when nil, NewAdminAPI is used.
+	AdminAPIFactory AdminAPIFactory
+
+	adminOnce     sync.Once
+	adminProvider *AdminProvider
+}
+
+// admin returns the shared Admin API provider, built on first use so that
+// AdminAPIFactory can still be set after construction.
+func (c *Component) admin(namespace string) *AdminProvider {
+	c.adminOnce.Do(func() {
+		c.adminProvider = NewAdminProvider(c.client, namespace, c.AdminAPIFactory)
+	})
+	return c.adminProvider
 }
 
 func NewComponent(client client.Client, log logr.Logger) *Component {
@@ -254,6 +286,10 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 				"name":  "http-relative-path",
 				"value": HTTPRelativePath,
 			},
+			map[string]any{
+				"name":  "spi-cache-embedded--default--cluster-name",
+				"value": InfinispanClusterName,
+			},
 		},
 	}
 	if env := podExtraEnvVars(identity.PodExtraEnvVars); len(env) > 0 {
@@ -281,7 +317,19 @@ func keycloakIngressNetworkPolicySpec() map[string]any {
 				"from":  []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
 				"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")},
 			},
+			// The operator calls the Keycloak Admin API to reconcile KeycloakClient
+			// resources, so it needs its own way in through the default deny.
+			map[string]any{
+				"from":  []any{namespaceSelector(OperatorSystemNamespace)},
+				"ports": []any{networkPort(int32(HTTPPort), "TCP")},
+			},
 		},
+	}
+}
+
+func namespaceSelector(namespace string) map[string]any {
+	return map[string]any{
+		"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": namespace}},
 	}
 }
 
