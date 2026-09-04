@@ -1,6 +1,6 @@
 # ADR-0001: NetEye Resource Scope and Ownership
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-03
 
 ## Context
