@@ -58,6 +58,25 @@ spec:
                 description: Alias is the Keycloak flow alias, unique within the realm.
                 minLength: 1
                 type: string
+              bindings:
+                description: |-
+                  Bindings are the realm-level flow purposes this flow is set as, such as
+                  browser. Binding is additive: the operator points the named realm
+                  binding at this flow, but never clears a binding that is no longer
+                  listed here.
+                items:
+                  description: |-
+                    KeycloakAuthFlowBinding is a realm-level authentication flow purpose that a
+                    KeycloakAuthFlow can be bound to.
+                  enum:
+                  - browser
+                  - registration
+                  - directGrant
+                  - resetCredentials
+                  - clientAuthentication
+                  - dockerAuthentication
+                  type: string
+                type: array
               deletionPolicy:
                 description: DeletionPolicy decides whether deleting this resource
                   removes the remote flow.

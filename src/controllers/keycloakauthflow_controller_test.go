@@ -25,6 +25,7 @@ import (
 type stubKeycloakFlows struct {
 	flows      map[string]map[string]any
 	executions map[string][]map[string]any
+	realms     map[string]map[string]any
 }
 
 func newStubKeycloakFlows() *stubKeycloakFlows {
@@ -37,6 +38,30 @@ func (s *stubKeycloakFlows) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/admin/realms/") && !strings.Contains(strings.TrimPrefix(r.URL.Path, "/admin/realms/"), "/") {
+		realm := parts[len(parts)-1]
+		if s.realms == nil {
+			s.realms = map[string]map[string]any{}
+		}
+		rep, ok := s.realms[realm]
+		if !ok {
+			rep = map[string]any{"realm": realm}
+			s.realms[realm] = rep
+		}
+		_ = json.NewEncoder(w).Encode(rep)
+		return
+	}
+	if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/admin/realms/") && !strings.Contains(strings.TrimPrefix(r.URL.Path, "/admin/realms/"), "/") {
+		realm := parts[len(parts)-1]
+		var rep map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&rep)
+		if s.realms == nil {
+			s.realms = map[string]map[string]any{}
+		}
+		s.realms[realm] = rep
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/authentication/flows") {
 		values := []map[string]any{}
 		for _, flow := range s.flows {
@@ -117,6 +142,17 @@ func TestKeycloakAuthFlowReconcileCreatesRootFlowWithExecutions(t *testing.T) {
 	}
 	if updated.Status.Status != neteye.ServiceStateReady {
 		t.Errorf("status = %q", updated.Status.Status)
+	}
+}
+func TestKeycloakAuthFlowReconcileBindsFlowToRealm(t *testing.T) {
+	stub := newStubKeycloakFlows()
+	flow := &neteye.KeycloakAuthFlow{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "browser"}, Spec: neteye.KeycloakAuthFlowSpec{Realm: "master", Alias: "neteye-first-broker-login-flow", Bindings: []neteye.KeycloakAuthFlowBinding{"browser"}}}
+	r, _ := newKeycloakAuthFlowReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), flow)
+	if _, err := r.Reconcile(context.Background(), requestFor(flow)); err != nil {
+		t.Fatal(err)
+	}
+	if got := stub.realms["master"]["browserFlow"]; got != "neteye-first-broker-login-flow" {
+		t.Fatalf("realm browserFlow = %v, want neteye-first-broker-login-flow", got)
 	}
 }
 func TestKeycloakAuthFlowDeleteHonorsOrphanAndBuiltInRefusal(t *testing.T) {

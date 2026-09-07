@@ -381,6 +381,20 @@ func (a *AdminAPI) DeleteAuthFlow(ctx context.Context, realm, id string) error {
 	return a.do(ctx, http.MethodDelete, fmt.Sprintf("/admin/realms/%s/authentication/flows/%s", url.PathEscape(realm), url.PathEscape(id)), nil, nil)
 }
 
+// GetRealm returns the realm representation.
+func (a *AdminAPI) GetRealm(ctx context.Context, realm string) (representation, error) {
+	var rep representation
+	if err := a.do(ctx, http.MethodGet, fmt.Sprintf("/admin/realms/%s", url.PathEscape(realm)), nil, &rep); err != nil {
+		return nil, err
+	}
+	return rep, nil
+}
+
+// UpdateRealm merges fields into the realm representation.
+func (a *AdminAPI) UpdateRealm(ctx context.Context, realm string, fields representation) error {
+	return a.do(ctx, http.MethodPut, fmt.Sprintf("/admin/realms/%s", url.PathEscape(realm)), fields, nil)
+}
+
 func stringValue(rep representation, key string) string {
 	value, _ := rep[key].(string)
 	return value

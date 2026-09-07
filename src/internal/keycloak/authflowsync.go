@@ -76,8 +76,57 @@ func ReconcileFlow(ctx context.Context, api *AdminAPI, spec neteye.KeycloakAuthF
 		return result, err
 	}
 	created, updated, err := reconcileFlowExecutions(ctx, api, flowRealm(spec), spec.Alias, toRuntimeExecutions(spec.Executions))
-	result.Created, result.Updated = rootCreated || created, updated
+	if err != nil {
+		result.Created, result.Updated = rootCreated || created, updated
+		return result, err
+	}
+	boundChanged, err := reconcileBindings(ctx, api, flowRealm(spec), spec.Alias, spec.Bindings)
+	result.Created, result.Updated = rootCreated || created, updated || boundChanged
 	return result, err
+}
+
+// realmFlowFields maps a KeycloakAuthFlowSpec binding purpose to the realm
+// representation field Keycloak uses to record it.
+var realmFlowFields = map[string]string{
+	"browser":              "browserFlow",
+	"registration":         "registrationFlow",
+	"directGrant":          "directGrantFlow",
+	"resetCredentials":     "resetCredentialsFlow",
+	"clientAuthentication": "clientAuthenticationFlow",
+	"dockerAuthentication": "dockerAuthenticationFlow",
+}
+
+// reconcileBindings points each named realm binding at alias. Binding is
+// additive and best-effort per entry: an unrecognized binding name is
+// skipped rather than failing the whole reconciliation.
+func reconcileBindings(ctx context.Context, api *AdminAPI, realm, alias string, bindings []neteye.KeycloakAuthFlowBinding) (bool, error) {
+	if len(bindings) == 0 {
+		return false, nil
+	}
+	changed := false
+	for _, binding := range bindings {
+		field, ok := realmFlowFields[string(binding)]
+		if !ok {
+			continue
+		}
+		realmRep, err := api.GetRealm(ctx, realm)
+		if err != nil {
+			return changed, fmt.Errorf("get realm %q: %w", realm, err)
+		}
+		if stringValue(realmRep, field) == alias {
+			continue
+		}
+		update := representation{}
+		for k, v := range realmRep {
+			update[k] = v
+		}
+		update[field] = alias
+		if err := api.UpdateRealm(ctx, realm, update); err != nil {
+			return changed, fmt.Errorf("bind flow %q to realm %q %s: %w", alias, realm, binding, err)
+		}
+		changed = true
+	}
+	return changed, nil
 }
 
 // PermanentDeleteError wraps a DeleteFlow failure that no retry can fix, such

@@ -140,7 +140,18 @@ type KeycloakAuthFlowSpec struct {
 	// DeletionPolicy decides whether deleting this resource removes the remote flow.
 	// +kubebuilder:validation:Optional
 	DeletionPolicy KeycloakDeletionPolicy `json:"deletionPolicy,omitempty"`
+	// Bindings are the realm-level flow purposes this flow is set as, such as
+	// browser. Binding is additive: the operator points the named realm
+	// binding at this flow, but never clears a binding that is no longer
+	// listed here.
+	// +kubebuilder:validation:Optional
+	Bindings []KeycloakAuthFlowBinding `json:"bindings,omitempty"`
 }
+
+// KeycloakAuthFlowBinding is a realm-level authentication flow purpose that a
+// KeycloakAuthFlow can be bound to.
+// +kubebuilder:validation:Enum=browser;registration;directGrant;resetCredentials;clientAuthentication;dockerAuthentication
+type KeycloakAuthFlowBinding string
 
 // KeycloakAuthFlowStatus defines the observed state of a KeycloakAuthFlow.
 type KeycloakAuthFlowStatus struct {
