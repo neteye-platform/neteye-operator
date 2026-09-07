@@ -205,6 +205,11 @@ spec:
                                           description: Requirement is the Keycloak
                                             execution requirement, such as REQUIRED
                                             or ALTERNATIVE.
+                                          enum:
+                                          - REQUIRED
+                                          - ALTERNATIVE
+                                          - CONDITIONAL
+                                          - DISABLED
                                           type: string
                                       required:
                                       - authenticator
@@ -221,6 +226,11 @@ spec:
                               requirement:
                                 description: Requirement is the Keycloak execution
                                   requirement, such as REQUIRED or ALTERNATIVE.
+                                enum:
+                                - REQUIRED
+                                - ALTERNATIVE
+                                - CONDITIONAL
+                                - DISABLED
                                 type: string
                             type: object
                             x-kubernetes-validations:
@@ -242,6 +252,11 @@ spec:
                     requirement:
                       description: Requirement is the Keycloak execution requirement,
                         such as REQUIRED or ALTERNATIVE.
+                      enum:
+                      - REQUIRED
+                      - ALTERNATIVE
+                      - CONDITIONAL
+                      - DISABLED
                       type: string
                   type: object
                   x-kubernetes-validations:

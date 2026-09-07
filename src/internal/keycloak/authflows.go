@@ -92,9 +92,12 @@ func firstBrokerLoginFlowSpec() neteye.KeycloakAuthFlowSpec {
 }
 
 // idpDiscoveryFlowSpec is the platform's browser flow: it tries the session
-// cookie, then discovers the identity provider from the ADFS default and the
-// user's email domain, blocking LDAP accounts from falling back to
-// username/password before they reach it.
+// cookie, then honors an explicit kc_idp_hint if the request carries one,
+// then discovers the identity provider from the user's email domain,
+// blocking LDAP accounts from falling back to username/password before they
+// reach it. No default provider is configured, so a request without
+// kc_idp_hint is never redirected straight to ADFS ahead of email-domain
+// discovery.
 func idpDiscoveryFlowSpec() neteye.KeycloakAuthFlowSpec {
 	alias := IdpDiscoveryFlowResourceName
 	return neteye.KeycloakAuthFlowSpec{
@@ -109,11 +112,7 @@ func idpDiscoveryFlowSpec() neteye.KeycloakAuthFlowSpec {
 			{
 				Requirement:   "ALTERNATIVE",
 				Authenticator: "identity-provider-redirector",
-				Alias:         alias + " adfs",
-				Config: &neteye.KeycloakAuthFlowConfig{
-					Alias:  "adfs",
-					Values: map[string]string{"defaultProvider": "adfs"},
-				},
+				Alias:         alias + " kc_idp_hint",
 			},
 			{
 				Requirement:   "ALTERNATIVE",

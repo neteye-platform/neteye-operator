@@ -32,6 +32,7 @@ type KeycloakAuthFlowExecution struct {
 	Alias string `json:"alias,omitempty"`
 	// Requirement is the Keycloak execution requirement, such as REQUIRED or ALTERNATIVE.
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=REQUIRED;ALTERNATIVE;CONDITIONAL;DISABLED
 	Requirement string `json:"requirement,omitempty"`
 	// Authenticator is the Keycloak authenticator provider identifier.
 	// +kubebuilder:validation:Optional
@@ -71,6 +72,7 @@ type KeycloakAuthFlowExecutionL2 struct {
 	Alias string `json:"alias,omitempty"`
 	// Requirement is the Keycloak execution requirement, such as REQUIRED or ALTERNATIVE.
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=REQUIRED;ALTERNATIVE;CONDITIONAL;DISABLED
 	Requirement string `json:"requirement,omitempty"`
 	// Authenticator is the Keycloak authenticator provider identifier.
 	// +kubebuilder:validation:Optional
@@ -109,6 +111,7 @@ type KeycloakAuthFlowExecutionL3 struct {
 	Alias string `json:"alias,omitempty"`
 	// Requirement is the Keycloak execution requirement, such as REQUIRED or ALTERNATIVE.
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=REQUIRED;ALTERNATIVE;CONDITIONAL;DISABLED
 	Requirement string `json:"requirement,omitempty"`
 	// Authenticator is the Keycloak authenticator provider identifier.
 	// +kubebuilder:validation:Required
