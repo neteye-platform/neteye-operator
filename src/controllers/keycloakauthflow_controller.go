@@ -35,15 +35,13 @@ func (r *KeycloakAuthFlowReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 		return ctrl.Result{}, err
 	}
-	api, err := r.adminAPI(ctx) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
-	if err != nil {
-		if flow.DeletionTimestamp.IsZero() {
-			r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateNotReady, err.Error())
-		}
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
-	}
 	if !flow.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, flow, api)
+		return r.reconcileDelete(ctx, flow)
+	}
+	api, err := r.adminAPI(ctx)
+	if err != nil {
+		r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateNotReady, err.Error())
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
 	if controllerutil.AddFinalizer(flow, KeycloakAuthFlowFinalizer) {
 		if err := r.Update(ctx, flow); err != nil {
@@ -64,11 +62,15 @@ func (r *KeycloakAuthFlowReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateReady, "Keycloak authentication flow is reconciled")
 	return ctrl.Result{RequeueAfter: r.reconciliationRequeue()}, nil
 }
-func (r *KeycloakAuthFlowReconciler) reconcileDelete(ctx context.Context, flow *neteye.KeycloakAuthFlow, api *keycloak.AdminAPI) (ctrl.Result, error) {
+func (r *KeycloakAuthFlowReconciler) reconcileDelete(ctx context.Context, flow *neteye.KeycloakAuthFlow) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(flow, KeycloakAuthFlowFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	if flow.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
+		api, err := r.adminAPI(ctx)
+		if err != nil {
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
 		if err := keycloak.DeleteFlow(ctx, api, flow.Spec); err != nil {
 			var permanent *keycloak.PermanentDeleteError
 			if !errors.As(err, &permanent) {
