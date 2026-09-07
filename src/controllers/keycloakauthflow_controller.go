@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -12,7 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
@@ -37,10 +37,9 @@ func (r *KeycloakAuthFlowReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	api, err := r.adminAPI(ctx)
 	if err != nil {
-		if !flow.DeletionTimestamp.IsZero() {
-			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		if flow.DeletionTimestamp.IsZero() {
+			r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateNotReady, err.Error())
 		}
-		r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateNotReady, err.Error())
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
 	if !flow.DeletionTimestamp.IsZero() {
@@ -71,7 +70,11 @@ func (r *KeycloakAuthFlowReconciler) reconcileDelete(ctx context.Context, flow *
 	}
 	if flow.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
 		if err := keycloak.DeleteFlow(ctx, api, flow.Spec); err != nil {
-			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+			var permanent *keycloak.PermanentDeleteError
+			if !errors.As(err, &permanent) {
+				return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+			}
+			r.Log.Error(err, "keycloak authentication flow cannot be deleted, releasing finalizer", "alias", flow.Spec.Alias)
 		}
 	}
 	controllerutil.RemoveFinalizer(flow, KeycloakAuthFlowFinalizer)
@@ -85,5 +88,5 @@ func (r *KeycloakAuthFlowReconciler) setStatus(ctx context.Context, key client.O
 	writeStatus(ctx, r.Client, key, func() *neteye.KeycloakAuthFlow { return &neteye.KeycloakAuthFlow{} }, func(current *neteye.KeycloakAuthFlow) { current.Status = status })
 }
 func (r *KeycloakAuthFlowReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).For(&neteye.KeycloakAuthFlow{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).Complete(r)
+	return ctrl.NewControllerManagedBy(mgr).For(&neteye.KeycloakAuthFlow{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).Complete(r)
 }

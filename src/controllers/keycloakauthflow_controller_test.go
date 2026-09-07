@@ -12,9 +12,11 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
@@ -127,12 +129,19 @@ func TestKeycloakAuthFlowDeleteHonorsOrphanAndBuiltInRefusal(t *testing.T) {
 			stub.flows["browser"] = map[string]any{"id": "flow-browser", "alias": "browser", "builtIn": test.builtIn}
 			now := metav1.Now()
 			flow := &neteye.KeycloakAuthFlow{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "browser", Finalizers: []string{KeycloakAuthFlowFinalizer}, DeletionTimestamp: &now}, Spec: neteye.KeycloakAuthFlowSpec{Alias: "browser", DeletionPolicy: test.policy}}
-			r, _ := newKeycloakAuthFlowReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), flow)
+			r, c := newKeycloakAuthFlowReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), flow)
 			if _, err := r.Reconcile(context.Background(), requestFor(flow)); err != nil {
 				t.Fatal(err)
 			}
 			if _, ok := stub.flows["browser"]; !ok {
 				t.Fatal("flow must remain")
+			}
+			updated := &neteye.KeycloakAuthFlow{}
+			err := c.Get(context.Background(), requestFor(flow).NamespacedName, updated)
+			if err == nil && controllerutil.ContainsFinalizer(updated, KeycloakAuthFlowFinalizer) {
+				t.Error("finalizer must be removed")
+			} else if err != nil && !apierrors.IsNotFound(err) {
+				t.Fatal(err)
 			}
 		})
 	}

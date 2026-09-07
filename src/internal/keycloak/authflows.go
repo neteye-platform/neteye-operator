@@ -135,7 +135,7 @@ func idpDiscoveryFlowSpec() neteye.KeycloakAuthFlowSpec {
 				},
 			},
 			{
-				Requirement: "DISABLED",
+				Requirement: "CONDITIONAL",
 				Flow: &neteye.KeycloakAuthFlowExecutionSpecL2{
 					Alias: alias + " Block LDAP logins",
 					Executions: []neteye.KeycloakAuthFlowExecutionL2{

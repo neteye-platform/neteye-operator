@@ -80,17 +80,26 @@ func ReconcileFlow(ctx context.Context, api *AdminAPI, spec neteye.KeycloakAuthF
 	return result, err
 }
 
+// PermanentDeleteError wraps a DeleteFlow failure that no retry can fix, such
+// as a built-in flow Keycloak refuses to delete, or a flow representation
+// missing its ID. Callers should stop retrying and release the finalizer
+// instead of requeuing.
+type PermanentDeleteError struct{ err error }
+
+func (e *PermanentDeleteError) Error() string { return e.err.Error() }
+func (e *PermanentDeleteError) Unwrap() error { return e.err }
+
 func DeleteFlow(ctx context.Context, api *AdminAPI, spec neteye.KeycloakAuthFlowSpec) error {
 	flow, err := api.GetAuthFlow(ctx, flowRealm(spec), spec.Alias)
 	if err != nil || flow == nil {
 		return err
 	}
 	if builtIn, _ := flow["builtIn"].(bool); builtIn {
-		return fmt.Errorf("refusing to delete built-in Keycloak flow %q", spec.Alias)
+		return &PermanentDeleteError{fmt.Errorf("refusing to delete built-in Keycloak flow %q", spec.Alias)}
 	}
 	id := stringValue(flow, "id")
 	if id == "" {
-		return fmt.Errorf("flow %q exists but has no ID", spec.Alias)
+		return &PermanentDeleteError{fmt.Errorf("flow %q exists but has no ID", spec.Alias)}
 	}
 	return api.DeleteAuthFlow(ctx, flowRealm(spec), id)
 }
@@ -130,7 +139,7 @@ func reconcileFlowExecutions(ctx context.Context, api *AdminAPI, realm, alias st
 	created, updated := false, false
 	kept := map[string]bool{}
 	for _, want := range desired {
-		current := matchingExecution(live, want)
+		current := matchingExecution(live, want, kept)
 		if current == nil && want.Flow != nil {
 			f := want.Flow
 			if err := api.CreateSubflow(ctx, realm, alias, representation{"alias": f.Alias, "type": flowProvider(f.Provider), "provider": flowProvider(f.Provider)}); err != nil {
@@ -141,7 +150,7 @@ func reconcileFlowExecutions(ctx context.Context, api *AdminAPI, realm, alias st
 			if err != nil {
 				return created, updated, err
 			}
-			current = matchingExecution(live, want)
+			current = matchingExecution(live, want, kept)
 		} else if current == nil {
 			if want.Authenticator == "" {
 				return created, updated, fmt.Errorf("execution in flow %q has neither flow nor authenticator", alias)
@@ -154,7 +163,7 @@ func reconcileFlowExecutions(ctx context.Context, api *AdminAPI, realm, alias st
 			if err != nil {
 				return created, updated, err
 			}
-			current = matchingExecution(live, want)
+			current = matchingExecution(live, want, kept)
 		}
 		if current == nil {
 			return created, updated, fmt.Errorf("created execution %q was not found in flow %q", executionName(want), alias)
@@ -164,6 +173,17 @@ func reconcileFlowExecutions(ctx context.Context, api *AdminAPI, realm, alias st
 		if want.Requirement != "" && want.Requirement != stringValue(current, "requirement") {
 			if err := api.UpdateExecutionRequirement(ctx, realm, alias, id, want.Requirement); err != nil {
 				return created, updated, err
+			}
+			updated = true
+		}
+		if want.Flow == nil && want.Alias != "" && want.Alias != stringValue(current, "displayName") {
+			leaf := representation{}
+			for k, v := range current {
+				leaf[k] = v
+			}
+			leaf["displayName"] = want.Alias
+			if err := api.UpdateExecution(ctx, realm, alias, leaf); err != nil {
+				return created, updated, fmt.Errorf("rename execution %q: %w", id, err)
 			}
 			updated = true
 		}
@@ -213,22 +233,27 @@ func reconcileFlowExecutions(ctx context.Context, api *AdminAPI, realm, alias st
 	return created, updated, nil
 }
 
-func matchingExecution(live []representation, want flowExecution) representation {
+// matchingExecution finds the live execution for want, skipping any live
+// execution already claimed by an earlier desired entry (tracked in used) so
+// that duplicate desired authenticators or subflow aliases each match a
+// distinct live execution instead of collapsing onto the first one found.
+func matchingExecution(live []representation, want flowExecution, used map[string]bool) representation {
+	unclaimed := func(e representation) bool { return used == nil || !used[stringValue(e, "id")] }
 	if want.Flow != nil {
 		for _, e := range live {
-			if authenticationFlow(e) && (stringValue(e, "displayName") == want.Flow.Alias || stringValue(e, "alias") == want.Flow.Alias) {
+			if authenticationFlow(e) && unclaimed(e) && (stringValue(e, "displayName") == want.Flow.Alias || stringValue(e, "alias") == want.Flow.Alias) {
 				return e
 			}
 		}
 		return nil
 	}
 	for _, e := range live {
-		if !authenticationFlow(e) && want.Alias != "" && stringValue(e, "alias") == want.Alias {
+		if !authenticationFlow(e) && unclaimed(e) && want.Alias != "" && stringValue(e, "alias") == want.Alias {
 			return e
 		}
 	}
 	for _, e := range live {
-		if !authenticationFlow(e) && want.Authenticator != "" && stringValue(e, "providerId") == want.Authenticator {
+		if !authenticationFlow(e) && unclaimed(e) && want.Authenticator != "" && stringValue(e, "providerId") == want.Authenticator {
 			return e
 		}
 	}
@@ -280,18 +305,25 @@ func jsonEqual(left, right any) bool {
 	return json.Unmarshal(leftJSON, &normalizedLeft) == nil && json.Unmarshal(rightJSON, &normalizedRight) == nil && reflect.DeepEqual(normalizedLeft, normalizedRight)
 }
 
+// reconcileExecutionOrder moves each desired execution into place. The live
+// ordering is fetched once and then kept up to date locally after every
+// successful priority change, since raise/lower-priority only swaps two
+// adjacent executions and the resulting order is fully predictable — this
+// avoids a GET per desired execution.
 func reconcileExecutionOrder(ctx context.Context, api *AdminAPI, realm, alias string, desired []flowExecution) (bool, error) {
 	changed := false
+	live, err := api.ListDirectExecutions(ctx, realm, alias)
+	if err != nil {
+		return changed, err
+	}
+	sort.SliceStable(live, func(i, j int) bool { return intValue(live[i], "index") < intValue(live[j], "index") })
+	used := map[string]bool{}
 	for wantIndex, want := range desired {
-		live, err := api.ListDirectExecutions(ctx, realm, alias)
-		if err != nil {
-			return changed, err
-		}
-		sort.SliceStable(live, func(i, j int) bool { return intValue(live[i], "index") < intValue(live[j], "index") })
-		current := matchingExecution(live, want)
+		current := matchingExecution(live, want, used)
 		if current == nil {
 			continue
 		}
+		used[stringValue(current, "id")] = true
 		index := -1
 		for i, item := range live {
 			if stringValue(item, "id") == stringValue(current, "id") {
@@ -303,6 +335,7 @@ func reconcileExecutionOrder(ctx context.Context, api *AdminAPI, realm, alias st
 			if err := api.RaiseExecutionPriority(ctx, realm, stringValue(current, "id")); err != nil {
 				return changed, err
 			}
+			live[index], live[index-1] = live[index-1], live[index]
 			index--
 			changed = true
 		}
@@ -310,6 +343,7 @@ func reconcileExecutionOrder(ctx context.Context, api *AdminAPI, realm, alias st
 			if err := api.LowerExecutionPriority(ctx, realm, stringValue(current, "id")); err != nil {
 				return changed, err
 			}
+			live[index], live[index+1] = live[index+1], live[index]
 			index++
 			changed = true
 		}

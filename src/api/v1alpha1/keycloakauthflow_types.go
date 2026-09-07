@@ -24,6 +24,8 @@ type KeycloakAuthFlowConfig struct {
 // CRD OpenAPI schema for a recursive Go type, since it truncates the schema
 // at a fixed depth and emits an empty (typeless) items schema beyond it,
 // which the API server rejects as a structural schema violation.
+// +kubebuilder:validation:XValidation:rule="(has(self.authenticator) && self.authenticator != \"\") != has(self.flow)",message="exactly one of authenticator or flow must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.config) || (has(self.authenticator) && self.authenticator != \"\")",message="config requires authenticator"
 type KeycloakAuthFlowExecution struct {
 	// Alias identifies an authenticator execution where Keycloak exposes an alias.
 	// +kubebuilder:validation:Optional
@@ -61,6 +63,8 @@ type KeycloakAuthFlowExecutionSpecL2 struct {
 
 // KeycloakAuthFlowExecutionL2 is KeycloakAuthFlowExecution one level deeper;
 // its own nested Flow is the last allowed level (KeycloakAuthFlowExecutionL3).
+// +kubebuilder:validation:XValidation:rule="(has(self.authenticator) && self.authenticator != \"\") != has(self.flow)",message="exactly one of authenticator or flow must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.config) || (has(self.authenticator) && self.authenticator != \"\")",message="config requires authenticator"
 type KeycloakAuthFlowExecutionL2 struct {
 	// Alias identifies an authenticator execution where Keycloak exposes an alias.
 	// +kubebuilder:validation:Optional
