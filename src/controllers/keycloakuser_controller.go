@@ -17,7 +17,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
@@ -258,7 +257,7 @@ func (r *KeycloakUserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		// Setting a deletion timestamp bumps the generation, so the finalizer
 		// still runs under this predicate while status writes do not requeue.
-		For(&neteye.KeycloakUser{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&neteye.KeycloakUser{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Complete(r)
 }
 

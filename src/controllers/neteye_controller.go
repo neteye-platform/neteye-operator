@@ -19,7 +19,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -458,6 +457,6 @@ func identityStatus(state neteye.ServiceState, message, image string) *neteye.Ne
 
 func (r *NetEyeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&neteye.NetEye{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&neteye.NetEye{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Complete(r)
 }

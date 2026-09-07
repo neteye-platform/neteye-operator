@@ -14,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
@@ -168,8 +167,9 @@ func (r *KeycloakClientReconciler) setStatus(ctx context.Context, key client.Obj
 
 func (r *KeycloakClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		// Setting a deletion timestamp bumps the generation, so the finalizer
-		// still runs under this predicate while status writes do not requeue.
-		For(&neteye.KeycloakClient{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// reconcileOnSpecOrDeletionChange also reconciles on deletionTimestamp,
+		// which a plain generation check misses, while status writes still don't
+		// requeue.
+		For(&neteye.KeycloakClient{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Complete(r)
 }
