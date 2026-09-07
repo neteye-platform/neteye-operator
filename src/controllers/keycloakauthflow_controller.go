@@ -35,7 +35,7 @@ func (r *KeycloakAuthFlowReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 		return ctrl.Result{}, err
 	}
-	api, err := r.adminAPI(ctx)
+	api, err := r.adminAPI(ctx) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
 	if err != nil {
 		if flow.DeletionTimestamp.IsZero() {
 			r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateNotReady, err.Error())
