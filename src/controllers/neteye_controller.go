@@ -346,6 +346,20 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure neteye keycloak client: %w", err)
 	}
 
+	if err := r.KeycloakComponent.EnsureFirstBrokerLoginFlow(ctx, keycloak.WorkloadNamespace); err != nil {
+		log.Error(err, "failed to declare the first-broker-login Keycloak auth flow", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the first-broker-login Keycloak auth flow: %v", err), image)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure first broker login flow: %w", err)
+	}
+
+	if err := r.KeycloakComponent.EnsureIdpDiscoveryFlow(ctx, keycloak.WorkloadNamespace); err != nil {
+		log.Error(err, "failed to declare the IdP-discovery Keycloak auth flow", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the IdP-discovery Keycloak auth flow: %v", err), image)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure idp discovery flow: %w", err)
+	}
+
 	// Once the internal admin is usable the bootstrap account has served its
 	// purpose, exactly as in the Ansible role. This is a no-op until then.
 	if err := r.KeycloakComponent.EnsureBootstrapAdminDisabled(ctx, keycloak.WorkloadNamespace); err != nil {

@@ -1,0 +1,249 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: keycloakauthflows.neteye.cloud
+spec:
+  group: neteye.cloud
+  names:
+    kind: KeycloakAuthFlow
+    listKind: KeycloakAuthFlowList
+    plural: keycloakauthflows
+    shortNames:
+    - kcaf
+    singular: keycloakauthflow
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.alias
+      name: Alias
+      type: string
+    - jsonPath: .spec.realm
+      name: Realm
+      type: string
+    - jsonPath: .status.status
+      name: Status
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: KeycloakAuthFlowSpec declares an authentication flow and
+              its complete execution tree.
+            properties:
+              alias:
+                description: Alias is the Keycloak flow alias, unique within the realm.
+                minLength: 1
+                type: string
+              deletionPolicy:
+                description: DeletionPolicy decides whether deleting this resource
+                  removes the remote flow.
+                enum:
+                - Orphan
+                - Delete
+                type: string
+              executions:
+                description: Executions is the ordered, authoritative list of direct
+                  child executions.
+                items:
+                  description: |-
+                    KeycloakAuthFlowExecution declares an execution in an authentication flow.
+                    It is either an Authenticator execution or a nested Flow.
+
+                    Flow nesting is capped at 3 fixed levels (KeycloakAuthFlowExecution ->
+                    KeycloakAuthFlowExecutionL2 -> KeycloakAuthFlowExecutionL3) rather than
+                    modeled as a self-referential type: controller-gen cannot generate a valid
+                    CRD OpenAPI schema for a recursive Go type, since it truncates the schema
+                    at a fixed depth and emits an empty (typeless) items schema beyond it,
+                    which the API server rejects as a structural schema violation.
+                  properties:
+                    alias:
+                      description: Alias identifies an authenticator execution where
+                        Keycloak exposes an alias.
+                      type: string
+                    authenticator:
+                      description: Authenticator is the Keycloak authenticator provider
+                        identifier.
+                      type: string
+                    config:
+                      description: Config configures this authenticator.
+                      properties:
+                        alias:
+                          description: Alias is the human-readable configuration name
+                            in Keycloak.
+                          type: string
+                        values:
+                          additionalProperties:
+                            type: string
+                          description: Values contains the authenticator configuration
+                            entries.
+                          type: object
+                      type: object
+                    flow:
+                      description: Flow declares a nested subflow in place of an authenticator.
+                      properties:
+                        alias:
+                          description: Alias is the Keycloak flow alias, unique within
+                            the realm.
+                          minLength: 1
+                          type: string
+                        executions:
+                          description: Executions is the ordered, authoritative list
+                            of direct child executions.
+                          items:
+                            description: |-
+                              KeycloakAuthFlowExecutionL2 is KeycloakAuthFlowExecution one level deeper;
+                              its own nested Flow is the last allowed level (KeycloakAuthFlowExecutionL3).
+                            properties:
+                              alias:
+                                description: Alias identifies an authenticator execution
+                                  where Keycloak exposes an alias.
+                                type: string
+                              authenticator:
+                                description: Authenticator is the Keycloak authenticator
+                                  provider identifier.
+                                type: string
+                              config:
+                                description: Config configures this authenticator.
+                                properties:
+                                  alias:
+                                    description: Alias is the human-readable configuration
+                                      name in Keycloak.
+                                    type: string
+                                  values:
+                                    additionalProperties:
+                                      type: string
+                                    description: Values contains the authenticator
+                                      configuration entries.
+                                    type: object
+                                type: object
+                              flow:
+                                description: Flow declares a nested subflow in place
+                                  of an authenticator.
+                                properties:
+                                  alias:
+                                    description: Alias is the Keycloak flow alias,
+                                      unique within the realm.
+                                    minLength: 1
+                                    type: string
+                                  executions:
+                                    description: |-
+                                      Executions is the ordered, authoritative list of direct child executions.
+                                      These are leaf executions: a flow at this depth cannot nest a further
+                                      subflow.
+                                    items:
+                                      description: |-
+                                        KeycloakAuthFlowExecutionL3 is a leaf execution at the deepest allowed
+                                        nesting level: it can only be an Authenticator, never a further subflow.
+                                      properties:
+                                        alias:
+                                          description: Alias identifies an authenticator
+                                            execution where Keycloak exposes an alias.
+                                          type: string
+                                        authenticator:
+                                          description: Authenticator is the Keycloak
+                                            authenticator provider identifier.
+                                          minLength: 1
+                                          type: string
+                                        config:
+                                          description: Config configures this authenticator.
+                                          properties:
+                                            alias:
+                                              description: Alias is the human-readable
+                                                configuration name in Keycloak.
+                                              type: string
+                                            values:
+                                              additionalProperties:
+                                                type: string
+                                              description: Values contains the authenticator
+                                                configuration entries.
+                                              type: object
+                                          type: object
+                                        requirement:
+                                          description: Requirement is the Keycloak
+                                            execution requirement, such as REQUIRED
+                                            or ALTERNATIVE.
+                                          type: string
+                                      required:
+                                      - authenticator
+                                      type: object
+                                    type: array
+                                  provider:
+                                    default: basic-flow
+                                    description: Provider is the Keycloak flow provider
+                                      identifier.
+                                    type: string
+                                required:
+                                - alias
+                                type: object
+                              requirement:
+                                description: Requirement is the Keycloak execution
+                                  requirement, such as REQUIRED or ALTERNATIVE.
+                                type: string
+                            type: object
+                          type: array
+                        provider:
+                          default: basic-flow
+                          description: Provider is the Keycloak flow provider identifier.
+                          type: string
+                      required:
+                      - alias
+                      type: object
+                    requirement:
+                      description: Requirement is the Keycloak execution requirement,
+                        such as REQUIRED or ALTERNATIVE.
+                      type: string
+                  type: object
+                type: array
+              provider:
+                default: basic-flow
+                description: Provider is the Keycloak root-flow provider identifier.
+                type: string
+              realm:
+                default: master
+                description: Realm owns the flow and must already exist.
+                minLength: 1
+                type: string
+            required:
+            - alias
+            type: object
+          status:
+            description: KeycloakAuthFlowStatus defines the observed state of a KeycloakAuthFlow.
+            properties:
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              status:
+                description: ServiceState is the per-service state reported in NetEyeServiceStatus.Status.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

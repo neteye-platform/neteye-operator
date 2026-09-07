@@ -36,6 +36,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&KeycloakClientList{},
 		&KeycloakUser{},
 		&KeycloakUserList{},
+		&KeycloakAuthFlow{},
+		&KeycloakAuthFlowList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, GroupVersion)
