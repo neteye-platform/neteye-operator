@@ -62,9 +62,11 @@ func (c *Component) ensureAuthFlow(ctx context.Context, namespace, name string, 
 	return nil
 }
 
-// firstBrokerLoginFlowSpec detects an existing broker user by the identity
-// provider's configured attribute reference and links the account
-// automatically, without prompting the user.
+// firstBrokerLoginFlowSpec detects whether the identity the broker just
+// authenticated already matches an existing local user (Keycloak's
+// idp-detect-existing-broker-user authenticator takes no configuration; it
+// looks the user up by the identity provider's federated identity) and links
+// the account automatically, without prompting the user.
 //
 // Orphan: this resource is redeclared by the operator whenever it is missing,
 // so deleting it must not take the remote flow down with it.
@@ -77,13 +79,6 @@ func firstBrokerLoginFlowSpec() neteye.KeycloakAuthFlowSpec {
 				Requirement:   "REQUIRED",
 				Authenticator: "idp-detect-existing-broker-user",
 				Alias:         "Detect existing broker user",
-				Config: &neteye.KeycloakAuthFlowConfig{
-					Alias: "test",
-					Values: map[string]string{
-						"authenticatorReference":       "some-reference",
-						"authenticatorReferenceMaxAge": "3600",
-					},
-				},
 			},
 			{
 				Requirement:   "REQUIRED",

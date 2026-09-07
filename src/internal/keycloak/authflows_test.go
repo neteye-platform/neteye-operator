@@ -37,6 +37,9 @@ func TestEnsureFirstBrokerLoginFlowDeclaresTheFlow(t *testing.T) {
 	if got := flow.Spec.Executions[0].Authenticator; got != "idp-detect-existing-broker-user" {
 		t.Errorf("first execution authenticator = %q, want idp-detect-existing-broker-user", got)
 	}
+	if flow.Spec.Executions[0].Config != nil {
+		t.Errorf("idp-detect-existing-broker-user config = %+v, want none: this authenticator takes no configuration, so any value shipped here would be a placeholder written straight to Keycloak", flow.Spec.Executions[0].Config)
+	}
 	if got := flow.Spec.Executions[1].Authenticator; got != "idp-auto-link" {
 		t.Errorf("second execution authenticator = %q, want idp-auto-link", got)
 	}
