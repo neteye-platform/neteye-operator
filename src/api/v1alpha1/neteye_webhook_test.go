@@ -86,7 +86,9 @@ func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
 		config  *NetEyeElasticStackSpec
 		wantErr bool
 	}{
-		{name: "absent is disabled"}, {name: "disabled incomplete config", config: &NetEyeElasticStackSpec{}}, {name: "enabled valid", config: valid},
+		{name: "absent is disabled"},
+		{name: "disabled incomplete config", config: &NetEyeElasticStackSpec{}},
+		{name: "enabled valid", config: valid},
 		{name: "enabled requires collector configuration", config: &NetEyeElasticStackSpec{Enabled: true}, wantErr: true},
 		{name: "endpoints must not be empty", config: &NetEyeElasticStackSpec{Enabled: true, OTelCollector: &NetEyeOtelCollectorSpec{}}, wantErr: true},
 		{name: "endpoint must be HTTPS absolute", config: &NetEyeElasticStackSpec{Enabled: true, OTelCollector: &NetEyeOtelCollectorSpec{ElasticsearchEndpoints: []string{"/_bulk"}}}, wantErr: true},
@@ -116,21 +118,47 @@ func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
 	}
 }
 
+func TestNetEyeValidatorRejectsManagedKeycloakOptions(t *testing.T) {
+	tests := []struct {
+		name       string
+		optionName string
+		wantErr    bool
+	}{
+		{name: "custom option", optionName: "spi-connections-http-client--default--connection-pool-size"},
+		{name: "relative path", optionName: "http-relative-path", wantErr: true},
+		{name: "proxy headers", optionName: "proxy-headers", wantErr: true},
+		{name: "cluster name", optionName: "spi-cache-embedded--default--cluster-name", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := netEyeWithVersion(CurrentNetEyeVersion)
+			obj.Spec.Identity.AdditionalOptions = []NetEyeKeycloakOption{{Name: tt.optionName, Value: "custom"}}
+			_, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func withOIDC(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
 	copy := config.DeepCopy()
 	copy.OTelCollector.OIDCIssuerURL = value
 	return copy
 }
+
 func withAPIKey(config *NetEyeElasticStackSpec, value NetEyeSecretKeySelector) *NetEyeElasticStackSpec {
 	copy := config.DeepCopy()
 	copy.OTelCollector.APIKeySecret = &value
 	return copy
 }
+
 func withBasicAuthSecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
 	copy := config.DeepCopy()
 	copy.OTelCollector.BasicAuthSecretName = value
 	return copy
 }
+
 func withRootCASecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
 	copy := config.DeepCopy()
 	copy.OTelCollector.RootCASecretName = value
