@@ -204,6 +204,14 @@ spec:
                                   requirement, such as REQUIRED or ALTERNATIVE.
                                 type: string
                             type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of authenticator or flow must be
+                                set
+                              rule: (has(self.authenticator) && self.authenticator
+                                != "") != has(self.flow)
+                            - message: config requires authenticator
+                              rule: '!has(self.config) || (has(self.authenticator)
+                                && self.authenticator != "")'
                           type: array
                         provider:
                           default: basic-flow
@@ -217,6 +225,13 @@ spec:
                         such as REQUIRED or ALTERNATIVE.
                       type: string
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of authenticator or flow must be set
+                    rule: (has(self.authenticator) && self.authenticator != "") !=
+                      has(self.flow)
+                  - message: config requires authenticator
+                    rule: '!has(self.config) || (has(self.authenticator) && self.authenticator
+                      != "")'
                 type: array
               provider:
                 default: basic-flow
