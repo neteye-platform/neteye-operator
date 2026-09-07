@@ -28,6 +28,12 @@ spec:
       kind: KeycloakUser
       name: keycloakusers.neteye.cloud
       version: v1alpha1
+    - description: KeycloakAuthFlow declares a Keycloak authentication flow the operator
+        keeps continuously reconciled in the identity service.
+      displayName: Keycloak Auth Flow
+      kind: KeycloakAuthFlow
+      name: keycloakauthflows.neteye.cloud
+      version: v1alpha1
     required:
     - displayName: cert-manager Certificate
       kind: Certificate
@@ -297,6 +303,31 @@ spec:
           - neteye.cloud
           resources:
           - keycloakusers/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakauthflows
+          verbs:
+          - create
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakauthflows/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakauthflows/finalizers
           verbs:
           - update
         serviceAccountName: neteye-operator
