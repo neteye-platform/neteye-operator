@@ -103,30 +103,33 @@ func reconcileBindings(ctx context.Context, api *AdminAPI, realm, alias string, 
 	if len(bindings) == 0 {
 		return false, nil
 	}
-	changed := false
+	realmRep, err := api.GetRealm(ctx, realm)
+	if err != nil {
+		return false, fmt.Errorf("get realm %q: %w", realm, err)
+	}
+	update := representation{}
 	for _, binding := range bindings {
 		field, ok := realmFlowFields[string(binding)]
 		if !ok {
 			continue
 		}
-		realmRep, err := api.GetRealm(ctx, realm)
-		if err != nil {
-			return changed, fmt.Errorf("get realm %q: %w", realm, err)
-		}
 		if stringValue(realmRep, field) == alias {
 			continue
 		}
-		update := representation{}
-		for k, v := range realmRep {
+		update[field] = alias
+	}
+	if len(update) == 0 {
+		return false, nil
+	}
+	for k, v := range realmRep {
+		if _, overridden := update[k]; !overridden {
 			update[k] = v
 		}
-		update[field] = alias
-		if err := api.UpdateRealm(ctx, realm, update); err != nil {
-			return changed, fmt.Errorf("bind flow %q to realm %q %s: %w", alias, realm, binding, err)
-		}
-		changed = true
 	}
-	return changed, nil
+	if err := api.UpdateRealm(ctx, realm, update); err != nil {
+		return false, fmt.Errorf("bind flow %q to realm %q: %w", alias, realm, err)
+	}
+	return true, nil
 }
 
 // PermanentDeleteError wraps a DeleteFlow failure that no retry can fix, such
