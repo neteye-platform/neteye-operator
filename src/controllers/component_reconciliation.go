@@ -14,6 +14,9 @@ type componentID string
 type componentState string
 
 const (
+	identityComponentID      componentID = "identity"
+	otelCollectorComponentID componentID = "otel-collector"
+
 	componentStateReady       componentState = "Ready"
 	componentStateProgressing componentState = "Progressing"
 	componentStateDegraded    componentState = "Degraded"
@@ -21,6 +24,11 @@ const (
 
 	dependencyNotReadyReason = "DependencyNotReady"
 )
+
+// componentOperation performs one component reconciliation. Its returned
+// error is reserved for adapter and contract failures; operational failures
+// are represented by a degraded componentResult.
+type componentOperation func() (componentResult, error)
 
 // componentResult is the observation made for one component in a reconciliation pass.
 type componentResult struct {
@@ -190,9 +198,102 @@ func (g *lifecycleGraph) blockingDependencies(id componentID, results map[compon
 func blockingDependenciesForNode(node lifecycleNode, results map[componentID]componentResult) []componentID {
 	blocking := make([]componentID, 0, len(node.Dependencies))
 	for _, dependency := range node.Dependencies {
-		if results[dependency].State != componentStateReady {
+		if !isReadyEquivalent(results[dependency].State) {
 			blocking = append(blocking, dependency)
 		}
 	}
 	return blocking
+}
+
+func isReadyEquivalent(state componentState) bool {
+	return state == componentStateReady
+}
+
+// runComponentOperations executes a complete lifecycle graph synchronously in
+// deterministic topological order. It validates the operation contract before
+// executing any operation, so mismatches are systemic failures.
+func runComponentOperations(g *lifecycleGraph, operations map[componentID]componentOperation) (map[componentID]componentResult, error) {
+	if len(operations) != len(g.nodes) {
+		return nil, fmt.Errorf("component operations do not match lifecycle graph")
+	}
+	for id, operation := range operations {
+		if _, exists := g.nodes[id]; !exists || operation == nil {
+			return nil, fmt.Errorf("component operation %q does not match lifecycle graph", id)
+		}
+	}
+
+	results := make(map[componentID]componentResult, len(g.nodes))
+	for _, node := range g.orderedNodes() {
+		blocking := blockingDependenciesForNode(node, results)
+		if len(blocking) > 0 {
+			result, err := blockedResult(node.ID, blocking, "waiting for dependencies: "+componentIDsMessage(blocking), 0)
+			if err != nil {
+				return nil, fmt.Errorf("construct blocked result for %q: %w", node.ID, err)
+			}
+			results[node.ID] = result
+			continue
+		}
+		result, err := operations[node.ID]()
+		if err != nil {
+			return nil, fmt.Errorf("reconcile component %q: %w", node.ID, err)
+		}
+		if err := validateOperationResult(node.ID, result); err != nil {
+			return nil, err
+		}
+		results[node.ID] = result
+	}
+	return results, nil
+}
+
+func validateOperationResult(id componentID, result componentResult) error {
+	if result.ID != id {
+		return fmt.Errorf("component operation %q returned result for %q", id, result.ID)
+	}
+	if result.RequeueAfter < 0 {
+		return fmt.Errorf("component operation %q returned negative requeue delay", id)
+	}
+	switch result.State {
+	case componentStateReady, componentStateProgressing, componentStateDegraded, componentStateBlocked:
+	default:
+		return fmt.Errorf("component operation %q returned invalid state %q", id, result.State)
+	}
+	if result.State != componentStateDegraded && result.Err != nil {
+		return fmt.Errorf("component operation %q returned error for non-degraded result", id)
+	}
+	if result.State == componentStateDegraded && result.Err == nil {
+		return fmt.Errorf("component operation %q returned degraded result without error", id)
+	}
+	if result.State != componentStateBlocked && len(result.BlockingDependencies) != 0 {
+		return fmt.Errorf("component operation %q returned blocking dependencies for non-blocked result", id)
+	}
+	if result.State == componentStateBlocked {
+		if result.Reason != dependencyNotReadyReason {
+			return fmt.Errorf("component operation %q returned blocked result with reason %q", id, result.Reason)
+		}
+		if len(result.BlockingDependencies) == 0 {
+			return fmt.Errorf("component operation %q returned blocked result without dependencies", id)
+		}
+		seen := make(map[componentID]struct{}, len(result.BlockingDependencies))
+		for _, blocker := range result.BlockingDependencies {
+			if err := validateComponentID(blocker); err != nil {
+				return fmt.Errorf("component operation %q returned invalid blocking dependency: %w", id, err)
+			}
+			if _, exists := seen[blocker]; exists {
+				return fmt.Errorf("component operation %q returned duplicate blocking dependency %q", id, blocker)
+			}
+			seen[blocker] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func componentIDsMessage(ids []componentID) string {
+	message := ""
+	for i, id := range ids {
+		if i > 0 {
+			message += ", "
+		}
+		message += string(id)
+	}
+	return message
 }
