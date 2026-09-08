@@ -145,8 +145,8 @@ func TestLifecycleGraphOrdersNewlyAvailableNodesDeterministically(t *testing.T) 
 
 func TestRunComponentOperationsIsolatesFailuresAndBlocksDependants(t *testing.T) {
 	g, err := newLifecycleGraph([]lifecycleNode{
-		{ID: identityComponentID}, {ID: telemetryComponentID},
-		{ID: "dashboard", Dependencies: []componentID{telemetryComponentID}},
+		{ID: identityComponentID}, {ID: otelCollectorComponentID},
+		{ID: "dashboard", Dependencies: []componentID{otelCollectorComponentID}},
 		{ID: "child", Dependencies: []componentID{"dashboard"}},
 	})
 	if err != nil {
@@ -159,9 +159,9 @@ func TestRunComponentOperationsIsolatesFailuresAndBlocksDependants(t *testing.T)
 			identityCalls++
 			return readyResult(identityComponentID, "Available", "ready")
 		},
-		telemetryComponentID: func() (componentResult, error) {
+		otelCollectorComponentID: func() (componentResult, error) {
 			telemetryCalls++
-			return degradedResult(telemetryComponentID, "ApplyFailed", "failed", time.Minute, failure)
+			return degradedResult(otelCollectorComponentID, "ApplyFailed", "failed", time.Minute, failure)
 		},
 		"dashboard": func() (componentResult, error) { blockedCalls++; return readyResult("dashboard", "Available", "ready") },
 		"child":     func() (componentResult, error) { blockedCalls++; return readyResult("child", "Available", "ready") },
@@ -172,10 +172,10 @@ func TestRunComponentOperationsIsolatesFailuresAndBlocksDependants(t *testing.T)
 	if identityCalls != 1 || telemetryCalls != 1 || blockedCalls != 0 {
 		t.Errorf("calls = identity:%d telemetry:%d blocked:%d", identityCalls, telemetryCalls, blockedCalls)
 	}
-	if len(results) != 4 || results[identityComponentID].State != componentStateReady || !errors.Is(results[telemetryComponentID].Err, failure) {
+	if len(results) != 4 || results[identityComponentID].State != componentStateReady || !errors.Is(results[otelCollectorComponentID].Err, failure) {
 		t.Errorf("results = %+v", results)
 	}
-	for id, blocker := range map[componentID]componentID{"dashboard": telemetryComponentID, "child": "dashboard"} {
+	for id, blocker := range map[componentID]componentID{"dashboard": otelCollectorComponentID, "child": "dashboard"} {
 		result := results[id]
 		if result.State != componentStateBlocked || result.Reason != dependencyNotReadyReason || !reflect.DeepEqual(result.BlockingDependencies, []componentID{blocker}) {
 			t.Errorf("%s result = %+v", id, result)
@@ -212,7 +212,7 @@ func TestValidateOperationResultRejectsMalformedResults(t *testing.T) {
 }
 
 func TestRunComponentOperationsIsolatesIdentityFailureFromTelemetry(t *testing.T) {
-	g, err := newLifecycleGraph([]lifecycleNode{{ID: identityComponentID}, {ID: telemetryComponentID}})
+	g, err := newLifecycleGraph([]lifecycleNode{{ID: identityComponentID}, {ID: otelCollectorComponentID}})
 	if err != nil {
 		t.Fatalf("new graph: %v", err)
 	}
@@ -222,15 +222,15 @@ func TestRunComponentOperationsIsolatesIdentityFailureFromTelemetry(t *testing.T
 		identityComponentID: func() (componentResult, error) {
 			return degradedResult(identityComponentID, "ApplyFailed", "failed", time.Minute, failure)
 		},
-		telemetryComponentID: func() (componentResult, error) {
+		otelCollectorComponentID: func() (componentResult, error) {
 			telemetryCalls++
-			return readyResult(telemetryComponentID, "Available", "ready")
+			return readyResult(otelCollectorComponentID, "Available", "ready")
 		},
 	})
 	if err != nil {
 		t.Fatalf("run operations: %v", err)
 	}
-	if telemetryCalls != 1 || len(results) != 2 || !errors.Is(results[identityComponentID].Err, failure) || results[telemetryComponentID].State != componentStateReady {
+	if telemetryCalls != 1 || len(results) != 2 || !errors.Is(results[identityComponentID].Err, failure) || results[otelCollectorComponentID].State != componentStateReady {
 		t.Errorf("calls=%d results=%+v", telemetryCalls, results)
 	}
 }

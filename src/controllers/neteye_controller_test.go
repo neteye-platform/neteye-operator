@@ -400,11 +400,11 @@ func TestAggregateComponentPhasePreservesReadyIdentityWithDegradedTelemetry(t *t
 	if err != nil {
 		t.Fatalf("identity result: %v", err)
 	}
-	telemetry, err := degradedResult(telemetryComponentID, "ReconcileFailed", "failed", time.Minute, errors.New("failed"))
+	telemetry, err := degradedResult(otelCollectorComponentID, "ReconcileFailed", "failed", time.Minute, errors.New("failed"))
 	if err != nil {
 		t.Fatalf("telemetry result: %v", err)
 	}
-	phase, _ := aggregateComponentPhase(map[componentID]componentResult{identityComponentID: identity, telemetryComponentID: telemetry})
+	phase, _ := aggregateComponentPhase(map[componentID]componentResult{identityComponentID: identity, otelCollectorComponentID: telemetry})
 	if identity.State != componentStateReady || phase != neteye.PhaseFailed {
 		t.Errorf("identity=%+v phase=%q", identity, phase)
 	}

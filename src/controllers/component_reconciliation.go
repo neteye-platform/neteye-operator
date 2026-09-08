@@ -14,8 +14,8 @@ type componentID string
 type componentState string
 
 const (
-	identityComponentID  componentID = "identity"
-	telemetryComponentID componentID = "telemetry"
+	identityComponentID      componentID = "identity"
+	otelCollectorComponentID componentID = "otel-collector"
 
 	componentStateReady       componentState = "Ready"
 	componentStateProgressing componentState = "Progressing"

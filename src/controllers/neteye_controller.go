@@ -145,13 +145,13 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared default-deny network policy: %w", err)
 	}
 
-	graph, err := newLifecycleGraph([]lifecycleNode{{ID: identityComponentID}, {ID: telemetryComponentID}})
+	graph, err := newLifecycleGraph([]lifecycleNode{{ID: identityComponentID}, {ID: otelCollectorComponentID}})
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("construct component lifecycle graph: %w", err)
 	}
 	results, err := runComponentOperations(graph, map[componentID]componentOperation{
 		identityComponentID: func() (componentResult, error) { return r.reconcileKeycloak(ctx, ne, components.KeycloakImage) },
-		telemetryComponentID: func() (componentResult, error) {
+		otelCollectorComponentID: func() (componentResult, error) {
 			return r.reconcileElasticStack(ctx, ne, components.OTelCollectorImage)
 		},
 	})
@@ -186,15 +186,15 @@ func (r *NetEyeReconciler) reconcileElasticStack(ctx context.Context, ne *neteye
 	ne.Status.ServicesStatus.ElasticStack = &neteye.NetEyeElasticStackStatus{Status: outcome.Module.Status, Message: outcome.Module.Message, OTelCollector: outcome.Collector}
 	requeueAfter := r.resultForRequeue(outcome.Requeue).RequeueAfter
 	if outcome.Err != nil {
-		return degradedResult(telemetryComponentID, "ReconcileFailed", outcome.Err.Error(), requeueAfter, outcome.Err)
+		return degradedResult(otelCollectorComponentID, "ReconcileFailed", outcome.Err.Error(), requeueAfter, outcome.Err)
 	}
 	if outcome.Requeue == elasticstack.RequeueProgressing {
-		return progressingResult(telemetryComponentID, "Progressing", outcome.Module.Message, requeueAfter)
+		return progressingResult(otelCollectorComponentID, "Progressing", outcome.Module.Message, requeueAfter)
 	}
 	if outcome.Module.Status == neteye.ServiceStateDisabled {
-		return readyResult(telemetryComponentID, "Disabled", outcome.Module.Message)
+		return readyResult(otelCollectorComponentID, "Disabled", outcome.Module.Message)
 	}
-	return readyResult(telemetryComponentID, "Available", outcome.Module.Message)
+	return readyResult(otelCollectorComponentID, "Available", outcome.Module.Message)
 }
 
 func (r *NetEyeReconciler) resultForRequeue(reason elasticstack.RequeueReason) ctrl.Result {
