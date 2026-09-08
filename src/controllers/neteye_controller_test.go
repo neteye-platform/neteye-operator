@@ -206,38 +206,41 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 		wantServiceState   neteye.ServiceState
 		wantServiceMessage string
 		wantModuleMessage  string
-		wantPhase          neteye.NetEyePhase
-		wantPhaseMessage   string
 		wantRequeue        time.Duration
 		wantErr            bool
 		wantDeletes        int
+		wantResultState    componentState
+		wantResultReason   string
 	}{
 		{
 			name:             "ready",
 			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{ready: true},
 			wantServiceState: neteye.ServiceStateReady, wantServiceMessage: "OpenTelemetry Collector is ready", wantModuleMessage: "Elastic Stack feature module is ready",
-			wantPhase: neteye.PhaseReady, wantPhaseMessage: "previous phase",
+			wantResultState: componentStateReady, wantResultReason: "Available",
 		},
 		{
 			name:             "not ready uses progressing override",
 			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{message: "required user-managed Secret is missing"},
 			wantServiceState: neteye.ServiceStateNotReady, wantServiceMessage: "required user-managed Secret is missing", wantModuleMessage: "Elastic Stack feature module is not ready",
-			wantPhase: neteye.PhaseNotReady, wantPhaseMessage: "Check services status for details", wantRequeue: 7 * time.Second,
+			wantRequeue:     7 * time.Second,
+			wantResultState: componentStateProgressing, wantResultReason: "Progressing",
 		},
 		{
 			name:             "failed uses failure override",
 			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{err: errors.New("ensure failed")},
 			wantServiceState: neteye.ServiceStateFailed, wantServiceMessage: "ensure failed", wantModuleMessage: "Elastic Stack feature module is unavailable",
-			wantPhase: neteye.PhaseFailed, wantPhaseMessage: "Check services status for details", wantRequeue: 11 * time.Second, wantErr: true,
+			wantRequeue: 11 * time.Second, wantErr: true,
+			wantResultState: componentStateDegraded, wantResultReason: "ReconcileFailed",
 		},
 		{
 			name:             "disabled cleans up",
 			component:        &elasticStackResources{},
 			wantServiceState: neteye.ServiceStateDisabled, wantServiceMessage: "OpenTelemetry Collector is disabled", wantModuleMessage: "Elastic Stack feature module is disabled",
-			wantPhase: neteye.PhaseReady, wantPhaseMessage: "previous phase", wantDeletes: 1,
+			wantDeletes:     1,
+			wantResultState: componentStateReady, wantResultReason: "Disabled",
 		},
 	}
 
@@ -254,11 +257,17 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 			}
 
 			result, err := r.reconcileElasticStack(context.Background(), ne, "collector-image")
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("error = %v, want error=%t", err, tt.wantErr)
+			if err != nil {
+				t.Fatalf("systemic error = %v", err)
+			}
+			if (result.Err != nil) != tt.wantErr {
+				t.Errorf("component error = %v, want error=%t", result.Err, tt.wantErr)
 			}
 			if result.RequeueAfter != tt.wantRequeue {
 				t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, tt.wantRequeue)
+			}
+			if result.State != tt.wantResultState || result.Reason != tt.wantResultReason {
+				t.Errorf("component result = %+v, want state=%q reason=%q", result, tt.wantResultState, tt.wantResultReason)
 			}
 			collector := ne.Status.ServicesStatus.ElasticStack.OTelCollector
 			if module := ne.Status.ServicesStatus.ElasticStack; module.Status != tt.wantServiceState || module.Message != tt.wantModuleMessage {
@@ -267,13 +276,38 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 			if collector.Status != tt.wantServiceState || collector.Message != tt.wantServiceMessage || collector.ResolvedImage != "collector-image" {
 				t.Errorf("ElasticStack collector status = %+v, want state=%q message=%q image=collector-image", collector, tt.wantServiceState, tt.wantServiceMessage)
 			}
-			if ne.Status.Phase != tt.wantPhase || ne.Status.Message != tt.wantPhaseMessage {
-				t.Errorf("phase = %q/%q, want %q/%q", ne.Status.Phase, ne.Status.Message, tt.wantPhase, tt.wantPhaseMessage)
-			}
 			if tt.component.deletes != tt.wantDeletes {
 				t.Errorf("delete calls = %d, want %d", tt.component.deletes, tt.wantDeletes)
 			}
 		})
+	}
+}
+
+func TestEarliestComponentRequeue(t *testing.T) {
+	results := map[componentID]componentResult{
+		"none": {ID: "none"}, "late": {ID: "late", RequeueAfter: 2 * time.Minute},
+		"early": {ID: "early", RequeueAfter: 30 * time.Second}, "negative": {ID: "negative", RequeueAfter: -time.Second},
+	}
+	if got := earliestComponentRequeue(results); got != 30*time.Second {
+		t.Errorf("earliest = %v, want 30s", got)
+	}
+	if got := earliestComponentRequeue(map[componentID]componentResult{"none": {ID: "none"}}); got != 0 {
+		t.Errorf("empty earliest = %v, want 0", got)
+	}
+}
+
+func TestAggregateComponentPhasePreservesReadyIdentityWithDegradedTelemetry(t *testing.T) {
+	identity, err := readyResult(identityComponentID, "Available", "Identity service is ready")
+	if err != nil {
+		t.Fatalf("identity result: %v", err)
+	}
+	telemetry, err := degradedResult(telemetryComponentID, "ReconcileFailed", "failed", time.Minute, errors.New("failed"))
+	if err != nil {
+		t.Fatalf("telemetry result: %v", err)
+	}
+	phase, _ := aggregateComponentPhase(map[componentID]componentResult{identityComponentID: identity, telemetryComponentID: telemetry})
+	if identity.State != componentStateReady || phase != neteye.PhaseFailed {
+		t.Errorf("identity=%+v phase=%q", identity, phase)
 	}
 }
 

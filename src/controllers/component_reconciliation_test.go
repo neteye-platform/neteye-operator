@@ -143,6 +143,98 @@ func TestLifecycleGraphOrdersNewlyAvailableNodesDeterministically(t *testing.T) 
 	}
 }
 
+func TestRunComponentOperationsIsolatesFailuresAndBlocksDependants(t *testing.T) {
+	g, err := newLifecycleGraph([]lifecycleNode{
+		{ID: identityComponentID}, {ID: telemetryComponentID},
+		{ID: "dashboard", Dependencies: []componentID{telemetryComponentID}},
+		{ID: "child", Dependencies: []componentID{"dashboard"}},
+	})
+	if err != nil {
+		t.Fatalf("new graph: %v", err)
+	}
+	identityCalls, telemetryCalls, blockedCalls := 0, 0, 0
+	failure := errors.New("telemetry failed")
+	results, err := runComponentOperations(g, map[componentID]componentOperation{
+		identityComponentID: func() (componentResult, error) {
+			identityCalls++
+			return readyResult(identityComponentID, "Available", "ready")
+		},
+		telemetryComponentID: func() (componentResult, error) {
+			telemetryCalls++
+			return degradedResult(telemetryComponentID, "ApplyFailed", "failed", time.Minute, failure)
+		},
+		"dashboard": func() (componentResult, error) { blockedCalls++; return readyResult("dashboard", "Available", "ready") },
+		"child":     func() (componentResult, error) { blockedCalls++; return readyResult("child", "Available", "ready") },
+	})
+	if err != nil {
+		t.Fatalf("run operations: %v", err)
+	}
+	if identityCalls != 1 || telemetryCalls != 1 || blockedCalls != 0 {
+		t.Errorf("calls = identity:%d telemetry:%d blocked:%d", identityCalls, telemetryCalls, blockedCalls)
+	}
+	if len(results) != 4 || results[identityComponentID].State != componentStateReady || !errors.Is(results[telemetryComponentID].Err, failure) {
+		t.Errorf("results = %+v", results)
+	}
+	for id, blocker := range map[componentID]componentID{"dashboard": telemetryComponentID, "child": "dashboard"} {
+		result := results[id]
+		if result.State != componentStateBlocked || result.Reason != dependencyNotReadyReason || !reflect.DeepEqual(result.BlockingDependencies, []componentID{blocker}) {
+			t.Errorf("%s result = %+v", id, result)
+		}
+	}
+}
+
+func TestRunComponentOperationsRejectsMismatchedOperationsBeforeInvocation(t *testing.T) {
+	g, err := newLifecycleGraph([]lifecycleNode{{ID: "a"}})
+	if err != nil {
+		t.Fatalf("new graph: %v", err)
+	}
+	called := false
+	_, err = runComponentOperations(g, map[componentID]componentOperation{"b": func() (componentResult, error) { called = true; return readyResult("b", "", "") }})
+	if err == nil || called {
+		t.Errorf("err=%v called=%t, want systemic mismatch without invocation", err, called)
+	}
+}
+
+func TestValidateOperationResultRejectsMalformedResults(t *testing.T) {
+	failure := errors.New("failure")
+	for _, result := range []componentResult{
+		{ID: "a", State: componentStateReady, Err: failure},
+		{ID: "a", State: componentStateProgressing, Err: failure},
+		{ID: "a", State: componentStateBlocked, Reason: dependencyNotReadyReason},
+		{ID: "a", State: componentStateBlocked, Reason: "WrongReason", BlockingDependencies: []componentID{"b"}},
+		{ID: "a", State: componentStateBlocked, Reason: dependencyNotReadyReason, BlockingDependencies: []componentID{"b"}, Err: failure},
+		{ID: "a", State: componentStateReady, BlockingDependencies: []componentID{"b"}},
+	} {
+		if err := validateOperationResult("a", result); err == nil {
+			t.Errorf("malformed result %+v was accepted", result)
+		}
+	}
+}
+
+func TestRunComponentOperationsIsolatesIdentityFailureFromTelemetry(t *testing.T) {
+	g, err := newLifecycleGraph([]lifecycleNode{{ID: identityComponentID}, {ID: telemetryComponentID}})
+	if err != nil {
+		t.Fatalf("new graph: %v", err)
+	}
+	failure := errors.New("identity failed")
+	telemetryCalls := 0
+	results, err := runComponentOperations(g, map[componentID]componentOperation{
+		identityComponentID: func() (componentResult, error) {
+			return degradedResult(identityComponentID, "ApplyFailed", "failed", time.Minute, failure)
+		},
+		telemetryComponentID: func() (componentResult, error) {
+			telemetryCalls++
+			return readyResult(telemetryComponentID, "Available", "ready")
+		},
+	})
+	if err != nil {
+		t.Fatalf("run operations: %v", err)
+	}
+	if telemetryCalls != 1 || len(results) != 2 || !errors.Is(results[identityComponentID].Err, failure) || results[telemetryComponentID].State != componentStateReady {
+		t.Errorf("calls=%d results=%+v", telemetryCalls, results)
+	}
+}
+
 func ids(nodes []lifecycleNode) []componentID {
 	ids := make([]componentID, len(nodes))
 	for i, node := range nodes {

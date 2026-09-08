@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -89,6 +90,36 @@ func TestReconcileElasticStackDisabledDoesNotCreateCollector(t *testing.T) {
 		t.Fatalf("Elastic Stack feature module deployment exists or lookup failed while disabled: %v", err)
 	}
 	_ = s
+}
+
+func TestReconcileTelemetryFailureDoesNotReturnGlobalErrorOrHideIdentityStatus(t *testing.T) {
+	config := &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}}
+	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
+	telemetryFailure := errors.New("telemetry failure")
+	r.ElasticStackReconciler = elasticstack.NewReconciler(&elasticStackResources{err: telemetryFailure})
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)})
+	if err != nil {
+		t.Fatalf("reconcile returned component failure globally: %v", err)
+	}
+	if result.RequeueAfter != DefaultFailureRequeueAfter {
+		t.Errorf("requeueAfter = %v, want %v", result.RequeueAfter, DefaultFailureRequeueAfter)
+	}
+	current := &neteye.NetEye{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatalf("get neteye: %v", err)
+	}
+	if current.Status.Phase != neteye.PhaseFailed {
+		t.Errorf("phase = %q, want %q", current.Status.Phase, neteye.PhaseFailed)
+	}
+	if identity := current.Status.ServicesStatus.Identity; identity == nil || identity.Status != neteye.ServiceStateReady {
+		t.Errorf("identity status = %+v, want Ready", identity)
+	}
+	if module := current.Status.ServicesStatus.ElasticStack; module == nil || module.Status != neteye.ServiceStateFailed || module.Message != "Elastic Stack feature module is unavailable" {
+		t.Errorf("ElasticStack status = %+v, want Failed/unavailable", module)
+	} else if module.OTelCollector == nil || module.OTelCollector.Status != neteye.ServiceStateFailed || module.OTelCollector.Message != telemetryFailure.Error() {
+		t.Errorf("OTel collector status = %+v, want Failed/%q", module.OTelCollector, telemetryFailure)
+	}
 }
 
 func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {

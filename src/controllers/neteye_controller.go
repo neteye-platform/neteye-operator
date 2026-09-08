@@ -136,28 +136,37 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared default-deny network policy: %w", err)
 	}
 
-	keycloakResult, keycloakErr := r.reconcileKeycloak(ctx, ne, components.KeycloakImage)
-	elasticResult, elasticErr := r.reconcileElasticStack(ctx, ne, components.OTelCollectorImage)
-	combinedResult := combineResults(keycloakResult, elasticResult)
-
-	if keycloakErr != nil {
-		return combinedResult, keycloakErr
+	graph, err := newLifecycleGraph([]lifecycleNode{{ID: identityComponentID}, {ID: telemetryComponentID}})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("construct component lifecycle graph: %w", err)
 	}
-	if elasticErr != nil {
-		return combinedResult, elasticErr
+	results, err := runComponentOperations(graph, map[componentID]componentOperation{
+		identityComponentID: func() (componentResult, error) { return r.reconcileKeycloak(ctx, ne, components.KeycloakImage) },
+		telemetryComponentID: func() (componentResult, error) {
+			return r.reconcileElasticStack(ctx, ne, components.OTelCollectorImage)
+		},
+	})
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	if !combinedResult.IsZero() {
-		return combinedResult, nil
+	phase, message := aggregateComponentPhase(results)
+	setPhase(ne, phase, message)
+	requeueAfter := earliestComponentRequeue(results)
+	if requeueAfter == 0 {
+		requeueAfter = r.reconciliationRequeue()
 	}
-
-	setPhase(ne, neteye.PhaseReady, "All components are ready")
-	ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateReady, "Identity service is ready", components.KeycloakImage)
-
-	log.Info("NetEye is ready", "namespace", ne.Namespace, "name", ne.Name, "requeueAfter", r.reconciliationRequeue())
-	return ctrl.Result{RequeueAfter: r.reconciliationRequeue()}, nil
+	for _, result := range results {
+		if result.Err != nil {
+			log.Error(result.Err, "component reconciliation failed", "component", result.ID, "reason", result.Reason, "requeueAfter", result.RequeueAfter)
+		}
+	}
+	if phase == neteye.PhaseReady {
+		log.Info("NetEye is ready", "namespace", ne.Namespace, "name", ne.Name, "requeueAfter", requeueAfter)
+	}
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-func (r *NetEyeReconciler) reconcileElasticStack(ctx context.Context, ne *neteye.NetEye, collectorImage string) (ctrl.Result, error) {
+func (r *NetEyeReconciler) reconcileElasticStack(ctx context.Context, ne *neteye.NetEye, collectorImage string) (componentResult, error) {
 	if r.ElasticStackReconciler == nil {
 		r.ElasticStackReconciler = elasticstack.NewReconciler(nil)
 	}
@@ -166,10 +175,17 @@ func (r *NetEyeReconciler) reconcileElasticStack(ctx context.Context, ne *neteye
 		GatewayNamespace: keycloak.WorkloadNamespace, GatewayName: ne.Spec.Gateway.Name, IssuerRef: issuerRefFor(ne), Owner: ownerReferenceFor(ne),
 	})
 	ne.Status.ServicesStatus.ElasticStack = &neteye.NetEyeElasticStackStatus{Status: outcome.Module.Status, Message: outcome.Module.Message, OTelCollector: outcome.Collector}
-	if outcome.Phase != "" {
-		setPhase(ne, outcome.Phase, outcome.PhaseMessage)
+	requeueAfter := r.resultForRequeue(outcome.Requeue).RequeueAfter
+	if outcome.Err != nil {
+		return degradedResult(telemetryComponentID, "ReconcileFailed", outcome.Err.Error(), requeueAfter, outcome.Err)
 	}
-	return r.resultForRequeue(outcome.Requeue), outcome.Err
+	if outcome.Requeue == elasticstack.RequeueProgressing {
+		return progressingResult(telemetryComponentID, "Progressing", outcome.Module.Message, requeueAfter)
+	}
+	if outcome.Module.Status == neteye.ServiceStateDisabled {
+		return readyResult(telemetryComponentID, "Disabled", outcome.Module.Message)
+	}
+	return readyResult(telemetryComponentID, "Available", outcome.Module.Message)
 }
 
 func (r *NetEyeReconciler) resultForRequeue(reason elasticstack.RequeueReason) ctrl.Result {
@@ -198,25 +214,30 @@ func shouldReturn(result ctrl.Result, err error) bool {
 	return err != nil || !result.IsZero()
 }
 
-// combineResults returns a requeue request that honors both reconciliation outcomes.
-// When both request a delayed requeue, the earliest one takes precedence.
-func combineResults(a, b ctrl.Result) ctrl.Result {
-	var result ctrl.Result
-
-	switch {
-	case a.RequeueAfter > 0 && b.RequeueAfter > 0:
-		if a.RequeueAfter < b.RequeueAfter {
-			result.RequeueAfter = a.RequeueAfter
-		} else {
-			result.RequeueAfter = b.RequeueAfter
+func aggregateComponentPhase(results map[componentID]componentResult) (neteye.NetEyePhase, string) {
+	hasProgressing := false
+	for _, result := range results {
+		switch result.State {
+		case componentStateDegraded:
+			return neteye.PhaseFailed, "Check services status for details"
+		case componentStateProgressing, componentStateBlocked:
+			hasProgressing = true
 		}
-	case a.RequeueAfter > 0:
-		result.RequeueAfter = a.RequeueAfter
-	case b.RequeueAfter > 0:
-		result.RequeueAfter = b.RequeueAfter
 	}
+	if hasProgressing {
+		return neteye.PhaseNotReady, "Check services status for details"
+	}
+	return neteye.PhaseReady, "All components are ready"
+}
 
-	return result
+func earliestComponentRequeue(results map[componentID]componentResult) time.Duration {
+	var earliest time.Duration
+	for _, result := range results {
+		if result.RequeueAfter > 0 && (earliest == 0 || result.RequeueAfter < earliest) {
+			earliest = result.RequeueAfter
+		}
+	}
+	return earliest
 }
 
 func (r *NetEyeReconciler) waitForProgressingRequeue() time.Duration {
@@ -284,48 +305,46 @@ func gatewayListeners(ne *neteye.NetEye) []resources.GatewayListener {
 	return listeners
 }
 
-func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.NetEye, image string) (ctrl.Result, error) {
+func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.NetEye, image string) (componentResult, error) {
 	log := ctrl.LoggerFrom(ctx)
 	owner := ownerReferenceFor(ne)
 	log.Info("Started Keycloak reconciliation", "namespace", ne.Namespace, "name", owner.Name)
 	if err := r.ensureClusterAuthority(ctx, ne); err != nil {
-		setPhase(ne, neteye.PhaseFailed, err.Error())
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, err.Error(), image)
+		return degradedResult(identityComponentID, "ClusterAuthorityFailed", err.Error(), r.failureRequeue(), err)
 	}
 	issuerRef := issuerRefFor(ne)
 	if err := resources.EnsureIssuerExists(ctx, r.Client, keycloak.WorkloadNamespace, issuerRef); err != nil {
 		if apierrors.IsNotFound(err) {
-			setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("cert-manager Issuer '%q' was not found in namespace %q; create it before creating or reconciling this NetEye resource", issuerRef.Name, keycloak.WorkloadNamespace))
-			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+			message := fmt.Sprintf("cert-manager Issuer '%q' was not found in namespace %q; create it before creating or reconciling this NetEye resource", issuerRef.Name, keycloak.WorkloadNamespace)
+			ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, message, image)
+			return degradedResult(identityComponentID, "IssuerNotFound", message, r.failureRequeue(), err)
 		}
-		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure cert-manager Issuer '%q' exists in namespace %q: %v", issuerRef.Name, keycloak.WorkloadNamespace, err))
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared Keycloak issuer exists: %w", err)
+		message := fmt.Sprintf("failed to ensure cert-manager Issuer '%q' exists in namespace %q: %v", issuerRef.Name, keycloak.WorkloadNamespace, err)
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, message, image)
+		return degradedResult(identityComponentID, "IssuerCheckFailed", message, r.failureRequeue(), err)
 	}
 	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, ne.Spec.Identity, keycloak.WorkloadNamespace, ne.Spec.Gateway.Name, issuerRef, owner)
 	if err != nil {
 		log.Error(err, "failed to ensure keycloak resources", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to ensure keycloak resources in namespace %q: %v", keycloak.WorkloadNamespace, err), image)
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure keycloak resources: %w", err)
+		return degradedResult(identityComponentID, "EnsureResourcesFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
 	}
 	if !keycloakResourcesReady {
 		log.V(1).Info("identity resources are not ready", "reason", keycloakResourcesMessage, "requeueAfter", r.waitForProgressingRequeue())
-		setPhase(ne, neteye.PhaseNotReady, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, keycloakResourcesMessage, image)
-		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
+		return progressingResult(identityComponentID, "ResourcesNotReady", keycloakResourcesMessage, r.waitForProgressingRequeue())
 	}
 	keycloakReady, keycloakMessage, err := r.KeycloakComponent.IsReady(ctx, keycloak.WorkloadNamespace)
 	if err != nil {
 		log.Error(err, "failed to check keycloak readiness", "namespace", ne.Namespace, "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to check keycloak readiness: %v", err), image)
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("check keycloak readiness: %w", err)
+		return degradedResult(identityComponentID, "ReadinessCheckFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
 	}
 	if !keycloakReady {
 		log.V(1).Info("identity service is not ready", "reason", keycloakMessage, "requeueAfter", r.waitForProgressingRequeue())
-		setPhase(ne, neteye.PhaseNotReady, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, keycloakMessage, image)
-		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
+		return progressingResult(identityComponentID, "ServiceNotReady", keycloakMessage, r.waitForProgressingRequeue())
 	}
 
 	// The instance is up, so the Admin API is reachable and the KeycloakUser
@@ -334,16 +353,14 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 	// the bootstrap admin.
 	if err := r.KeycloakComponent.EnsureInternalAdminUser(ctx, keycloak.WorkloadNamespace); err != nil {
 		log.Error(err, "failed to declare the Keycloak internal admin user", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the Keycloak internal admin user: %v", err), image)
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure keycloak internal admin user: %w", err)
+		return degradedResult(identityComponentID, "EnsureAdminUserFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
 	}
 
 	if err := r.KeycloakComponent.EnsureNetEyeClient(ctx, keycloak.WorkloadNamespace); err != nil {
 		log.Error(err, "failed to declare the NetEye Keycloak client", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the NetEye Keycloak client: %v", err), image)
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure neteye keycloak client: %w", err)
+		return degradedResult(identityComponentID, "EnsureClientFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
 	}
 
 	// Once the internal admin is usable the bootstrap account has served its
@@ -353,11 +370,13 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		// so this is reported and retried promptly rather than failing the
 		// reconciliation.
 		log.Error(err, "failed to disable the Keycloak bootstrap admin", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateReady, "Identity service is ready; bootstrap admin disable is pending", image)
+		return progressingResult(identityComponentID, "BootstrapAdminDisablePending", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue())
 	}
 
 	log.Info("Keycloak reconciled and ready", "namespace", ne.Namespace, "name", owner.Name)
-	return ctrl.Result{}, nil
+	ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateReady, "Identity service is ready", image)
+	return readyResult(identityComponentID, "Available", "Identity service is ready")
 }
 
 func (r *NetEyeReconciler) ensureClusterAuthority(ctx context.Context, ne *neteye.NetEye) error {
