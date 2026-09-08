@@ -142,5 +142,6 @@ func idpDiscoveryFlowSpec() neteye.KeycloakAuthFlowSpec {
 			},
 		},
 		DeletionPolicy: neteye.KeycloakDeletionPolicyOrphan,
+		Bindings:       []neteye.KeycloakAuthFlowBinding{"browser"},
 	}
 }
