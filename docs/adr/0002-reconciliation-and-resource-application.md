@@ -137,6 +137,13 @@ dynamic because components will be added as NetEye moves to Kubernetes. Each
 entry reports at least its readiness state, observed generation, reason, and a
 human-readable message.
 
+A reconciliation failure in one component must not prevent the operator from
+refreshing status for other desired components. Components that cannot progress
+because of a dependency are reported separately from the component that
+actually failed. The orchestrator computes top-level conditions only after it
+has collected the component outcomes for the complete reconciliation pass, as
+defined in ADR-0005.
+
 Each managed component also reports `resolvedImages`. This is the complete set
 of container images selected by the operator for that component. Every entry
 has a stable logical name and an exact, digest-pinned image reference. A
@@ -189,6 +196,8 @@ versioning. The following rules remain stable:
 - resolved images use complete OCI references pinned by digest;
 - adding a new component key is backward compatible;
 - callers must tolerate component keys they do not recognize;
+- partial convergence remains visible: a ready component stays ready in status
+  when an independent component is degraded;
 - status reports observed state and never becomes an alternative desired-state
   interface.
 
@@ -273,5 +282,6 @@ generic reconciler from making unsafe lifecycle decisions.
 ## References
 
 - [ADR-0001: NetEye Resource Scope and Ownership](0001-neteye-resource-scope-and-ownership.md)
+- [ADR-0005: Component Lifecycle and Dependency Orchestration](0005-component-lifecycle-and-dependency-orchestration.md)
 - [Kubernetes Server-Side Apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/)
 - [Kubernetes API conventions: Conditions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties)

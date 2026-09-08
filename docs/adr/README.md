@@ -72,7 +72,7 @@ The following statuses are used:
 | [ADR-0002](0002-reconciliation-and-resource-application.md) | Reconciliation and Resource Application | Server-Side Apply, field ownership, delegated resources, readiness, and component status | Accepted |
 | [ADR-0003](0003-neteye-and-operator-version-model.md) | NetEye and Operator Version Model | Product and operator versions, OLM channels, upgrade authorization, and resolved images | Accepted |
 | [ADR-0004](0004-delegated-operator-lifecycle-and-ownership.md) | Delegated Operator Lifecycle and Ownership | Dependent catalogs and extensions, tested versions, readiness, drift, and deletion | Accepted |
-| [ADR-0005](0005-component-lifecycle-and-dependency-orchestration.md) | Component Lifecycle and Dependency Orchestration | Installation and upgrade graphs, scheduling, migrations, failure recovery, and deletion order | Accepted |
+| [ADR-0005](0005-component-lifecycle-and-dependency-orchestration.md) | Component Lifecycle and Dependency Orchestration | Installation and upgrade graphs, best-effort scheduling, failure isolation, migrations, recovery, and deletion order | Accepted |
 | [ADR-0006](0006-neteye-upgrade-coordination.md) | NetEye Upgrade Coordination | Upgrade authorization, Ansible gates, spec locking, recovery amendments, and completion | Accepted |
 | [ADR-0007](0007-tenant-namespace-and-isolation-model.md) | Tenant Namespace and Isolation Model | Tenant placement, identity, namespace lifecycle, isolation, component scope, and deletion | Accepted |
 | [ADR-0008](0008-custom-resource-api-evolution-and-compatibility.md) | Custom Resource API Evolution and Compatibility | API maturity, compatible schema changes, validation, conversion, storage versions, and deprecation | Accepted |
