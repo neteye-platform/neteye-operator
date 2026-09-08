@@ -394,7 +394,7 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		log.V(1).Info("root user is not ready", "reason", rootUserMessage, "requeueAfter", r.waitForProgressingRequeue())
 		setPhase(ne, neteye.PhaseNotReady, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, rootUserMessage, image)
-		return degradedResult(identityComponentID, "RootUserNotReady", rootUserMessage, r.waitForProgressingRequeue(), nil)
+		return progressingResult(identityComponentID, "RootUserNotReady", rootUserMessage, r.waitForProgressingRequeue())
 	}
 
 	if err := r.KeycloakComponent.EnsureNetEyeClient(ctx, keycloak.WorkloadNamespace); err != nil {
