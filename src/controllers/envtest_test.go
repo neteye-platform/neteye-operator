@@ -92,6 +92,32 @@ func TestReconcileElasticStackDisabledDoesNotCreateCollector(t *testing.T) {
 	_ = s
 }
 
+func TestReconcileKeycloakCustomConfiguration(t *testing.T) {
+	c, _, ctx, _, _ := readyElasticStackTestPlatform(t, nil)
+	kc := requireExists(ctx, t, c, schema.GroupVersionKind{Group: "k8s.keycloak.org", Version: "v2beta1", Kind: "Keycloak"}, keycloak.WorkloadNamespace, keycloak.InstanceName)
+
+	env, found, err := unstructured.NestedSlice(kc.Object, "spec", "env")
+	if err != nil || !found {
+		t.Fatalf("read Keycloak env: found=%t err=%v", found, err)
+	}
+	wantEnv := []any{map[string]any{"name": "JAVA_OPTS_APPEND", "value": "-Djava.net.preferIPv6Addresses=true"}}
+	if !reflect.DeepEqual(env, wantEnv) {
+		t.Errorf("Keycloak env = %#v, want %#v", env, wantEnv)
+	}
+
+	options, found, err := unstructured.NestedSlice(kc.Object, "spec", "additionalOptions")
+	if err != nil || !found {
+		t.Fatalf("read Keycloak additionalOptions: found=%t err=%v", found, err)
+	}
+	wantOption := map[string]any{"name": "spi-connections-http-client--default--connection-pool-size", "value": "20"}
+	for _, option := range options {
+		if reflect.DeepEqual(option, wantOption) {
+			return
+		}
+	}
+	t.Errorf("Keycloak additionalOptions = %#v, missing %#v", options, wantOption)
+}
+
 func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	config := &neteye.NetEyeElasticStackSpec{
 		Enabled:       true,
@@ -238,7 +264,30 @@ func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeEla
 	if err := c.Create(ctx, newUnstructured(issuerGVK, namespace, "internal-issuer")); err != nil {
 		t.Fatal(err)
 	}
-	ne := &neteye.NetEye{ObjectMeta: metav1.ObjectMeta{Name: "platform", Namespace: namespace}, Spec: neteye.NetEyeSpec{Version: neteye.CurrentNetEyeVersion, InternalCertificateIssuerRef: "internal-issuer", Gateway: neteye.NetEyeGatewaySpec{Name: "neteye", ClassName: "cilium"}, Identity: neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", DBConnection: neteye.NetEyeDBConnectionSpec{Host: "mariadb.example.com", DBName: "keycloak", UsernameSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"}, PasswordSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"}}}, ElasticStack: elasticConfig}}
+	ne := &neteye.NetEye{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform", Namespace: namespace},
+		Spec: neteye.NetEyeSpec{
+			Version:                      neteye.CurrentNetEyeVersion,
+			InternalCertificateIssuerRef: "internal-issuer",
+			Gateway:                      neteye.NetEyeGatewaySpec{Name: "neteye", ClassName: "cilium"},
+			Identity: neteye.NetEyeIdentitySpec{
+				Hostname: "keycloak.example.com",
+				PodExtraEnvVars: []neteye.NetEyeEnvVar{
+					{Name: "JAVA_OPTS_APPEND", Value: "-Djava.net.preferIPv6Addresses=true"},
+				},
+				AdditionalOptions: []neteye.NetEyeKeycloakOption{
+					{Name: "spi-connections-http-client--default--connection-pool-size", Value: "20"},
+				},
+				DBConnection: neteye.NetEyeDBConnectionSpec{
+					Host:           "mariadb.example.com",
+					DBName:         "keycloak",
+					UsernameSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"},
+					PasswordSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
+				},
+			},
+			ElasticStack: elasticConfig,
+		},
+	}
 	if err := c.Create(ctx, ne); err != nil {
 		t.Fatal(err)
 	}

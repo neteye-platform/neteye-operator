@@ -15,7 +15,11 @@ spec:
     replicas: 1
     hostname: keycloak.example.com
     podExtraEnvVars:
-      - JAVA_OPTS_APPEND=-Djava.net.preferIPv6Addresses=true
+      - name: JAVA_OPTS_APPEND
+        value: -Djava.net.preferIPv6Addresses=true
+    additionalOptions:
+      - name: spi-connections-http-client--default--connection-pool-size
+        value: "20"
     dbConnection:
       host: mariadb.example.com
       port: 3306
