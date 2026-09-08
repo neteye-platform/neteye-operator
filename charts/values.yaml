@@ -6,9 +6,9 @@ operator:
   namespace: neteye-system
   packageName: neteye-operator
   catalogName: neteye-catalog
-  catalogImage: 172.19.69.253:5000/neteye-operator-catalog:0.2.0-dev.20260908074800.d80b184
-  versionRange: "0.2.0-dev.20260908074800.d80b184"
-  channel: dev
+  catalogImage: ghcr.io/neteye-platform/neteye-operator-catalog:latest
+  versionRange: ">=0.1.0-alpha9"
+  channel: alpha
   upgradeConstraintPolicy: CatalogProvided
   pollIntervalMinutes: 10
 

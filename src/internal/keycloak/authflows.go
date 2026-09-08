@@ -62,9 +62,11 @@ func (c *Component) ensureAuthFlow(ctx context.Context, namespace, name string, 
 	return nil
 }
 
-// firstBrokerLoginFlowSpec detects an existing broker user by the identity
-// provider's configured attribute reference and links the account
-// automatically, without prompting the user.
+// firstBrokerLoginFlowSpec detects whether the identity the broker just
+// authenticated already matches an existing local user (Keycloak's
+// idp-detect-existing-broker-user authenticator takes no configuration; it
+// looks the user up by the identity provider's federated identity) and links
+// the account automatically, without prompting the user.
 //
 // Orphan: this resource is redeclared by the operator whenever it is missing,
 // so deleting it must not take the remote flow down with it.
@@ -77,13 +79,6 @@ func firstBrokerLoginFlowSpec() neteye.KeycloakAuthFlowSpec {
 				Requirement:   "REQUIRED",
 				Authenticator: "idp-detect-existing-broker-user",
 				Alias:         "Detect existing broker user",
-				Config: &neteye.KeycloakAuthFlowConfig{
-					Alias: "test",
-					Values: map[string]string{
-						"authenticatorReference":       "some-reference",
-						"authenticatorReferenceMaxAge": "3600",
-					},
-				},
 			},
 			{
 				Requirement:   "REQUIRED",
@@ -96,9 +91,12 @@ func firstBrokerLoginFlowSpec() neteye.KeycloakAuthFlowSpec {
 }
 
 // idpDiscoveryFlowSpec is the platform's browser flow: it tries the session
-// cookie, then discovers the identity provider from the ADFS default and the
-// user's email domain, blocking LDAP accounts from falling back to
-// username/password before they reach it.
+// cookie, then honors an explicit kc_idp_hint if the request carries one,
+// then discovers the identity provider from the user's email domain,
+// blocking LDAP accounts from falling back to username/password before they
+// reach it. No default provider is configured, so a request without
+// kc_idp_hint is never redirected straight to ADFS ahead of email-domain
+// discovery.
 func idpDiscoveryFlowSpec() neteye.KeycloakAuthFlowSpec {
 	alias := IdpDiscoveryFlowResourceName
 	return neteye.KeycloakAuthFlowSpec{
@@ -113,11 +111,7 @@ func idpDiscoveryFlowSpec() neteye.KeycloakAuthFlowSpec {
 			{
 				Requirement:   "ALTERNATIVE",
 				Authenticator: "identity-provider-redirector",
-				Alias:         alias + " adfs",
-				Config: &neteye.KeycloakAuthFlowConfig{
-					Alias:  "adfs",
-					Values: map[string]string{"defaultProvider": "adfs"},
-				},
+				Alias:         alias + " kc_idp_hint",
 			},
 			{
 				Requirement:   "ALTERNATIVE",
@@ -135,7 +129,7 @@ func idpDiscoveryFlowSpec() neteye.KeycloakAuthFlowSpec {
 				},
 			},
 			{
-				Requirement: "DISABLED",
+				Requirement: "CONDITIONAL",
 				Flow: &neteye.KeycloakAuthFlowExecutionSpecL2{
 					Alias: alias + " Block LDAP logins",
 					Executions: []neteye.KeycloakAuthFlowExecutionL2{
@@ -182,5 +176,6 @@ func idpDiscoveryFlowSpec() neteye.KeycloakAuthFlowSpec {
 			},
 		},
 		DeletionPolicy: neteye.KeycloakDeletionPolicyOrphan,
+		Bindings:       []neteye.KeycloakAuthFlowBinding{"browser"},
 	}
 }

@@ -24,12 +24,15 @@ type KeycloakAuthFlowConfig struct {
 // CRD OpenAPI schema for a recursive Go type, since it truncates the schema
 // at a fixed depth and emits an empty (typeless) items schema beyond it,
 // which the API server rejects as a structural schema violation.
+// +kubebuilder:validation:XValidation:rule="(has(self.authenticator) && self.authenticator != \"\") != has(self.flow)",message="exactly one of authenticator or flow must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.config) || (has(self.authenticator) && self.authenticator != \"\")",message="config requires authenticator"
 type KeycloakAuthFlowExecution struct {
 	// Alias identifies an authenticator execution where Keycloak exposes an alias.
 	// +kubebuilder:validation:Optional
 	Alias string `json:"alias,omitempty"`
 	// Requirement is the Keycloak execution requirement, such as REQUIRED or ALTERNATIVE.
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=REQUIRED;ALTERNATIVE;CONDITIONAL;DISABLED
 	Requirement string `json:"requirement,omitempty"`
 	// Authenticator is the Keycloak authenticator provider identifier.
 	// +kubebuilder:validation:Optional
@@ -61,12 +64,15 @@ type KeycloakAuthFlowExecutionSpecL2 struct {
 
 // KeycloakAuthFlowExecutionL2 is KeycloakAuthFlowExecution one level deeper;
 // its own nested Flow is the last allowed level (KeycloakAuthFlowExecutionL3).
+// +kubebuilder:validation:XValidation:rule="(has(self.authenticator) && self.authenticator != \"\") != has(self.flow)",message="exactly one of authenticator or flow must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.config) || (has(self.authenticator) && self.authenticator != \"\")",message="config requires authenticator"
 type KeycloakAuthFlowExecutionL2 struct {
 	// Alias identifies an authenticator execution where Keycloak exposes an alias.
 	// +kubebuilder:validation:Optional
 	Alias string `json:"alias,omitempty"`
 	// Requirement is the Keycloak execution requirement, such as REQUIRED or ALTERNATIVE.
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=REQUIRED;ALTERNATIVE;CONDITIONAL;DISABLED
 	Requirement string `json:"requirement,omitempty"`
 	// Authenticator is the Keycloak authenticator provider identifier.
 	// +kubebuilder:validation:Optional
@@ -105,6 +111,7 @@ type KeycloakAuthFlowExecutionL3 struct {
 	Alias string `json:"alias,omitempty"`
 	// Requirement is the Keycloak execution requirement, such as REQUIRED or ALTERNATIVE.
 	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=REQUIRED;ALTERNATIVE;CONDITIONAL;DISABLED
 	Requirement string `json:"requirement,omitempty"`
 	// Authenticator is the Keycloak authenticator provider identifier.
 	// +kubebuilder:validation:Required
@@ -136,7 +143,18 @@ type KeycloakAuthFlowSpec struct {
 	// DeletionPolicy decides whether deleting this resource removes the remote flow.
 	// +kubebuilder:validation:Optional
 	DeletionPolicy KeycloakDeletionPolicy `json:"deletionPolicy,omitempty"`
+	// Bindings are the realm-level flow purposes this flow is set as, such as
+	// browser. Binding is additive: the operator points the named realm
+	// binding at this flow, but never clears a binding that is no longer
+	// listed here.
+	// +kubebuilder:validation:Optional
+	Bindings []KeycloakAuthFlowBinding `json:"bindings,omitempty"`
 }
+
+// KeycloakAuthFlowBinding is a realm-level authentication flow purpose that a
+// KeycloakAuthFlow can be bound to.
+// +kubebuilder:validation:Enum=browser;registration;directGrant;resetCredentials;clientAuthentication;dockerAuthentication
+type KeycloakAuthFlowBinding string
 
 // KeycloakAuthFlowStatus defines the observed state of a KeycloakAuthFlow.
 type KeycloakAuthFlowStatus struct {

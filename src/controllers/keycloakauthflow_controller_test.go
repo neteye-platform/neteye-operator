@@ -12,9 +12,11 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
@@ -23,6 +25,7 @@ import (
 type stubKeycloakFlows struct {
 	flows      map[string]map[string]any
 	executions map[string][]map[string]any
+	realms     map[string]map[string]any
 }
 
 func newStubKeycloakFlows() *stubKeycloakFlows {
@@ -35,6 +38,30 @@ func (s *stubKeycloakFlows) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/admin/realms/") && !strings.Contains(strings.TrimPrefix(r.URL.Path, "/admin/realms/"), "/") {
+		realm := parts[len(parts)-1]
+		if s.realms == nil {
+			s.realms = map[string]map[string]any{}
+		}
+		rep, ok := s.realms[realm]
+		if !ok {
+			rep = map[string]any{"realm": realm}
+			s.realms[realm] = rep
+		}
+		_ = json.NewEncoder(w).Encode(rep)
+		return
+	}
+	if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/admin/realms/") && !strings.Contains(strings.TrimPrefix(r.URL.Path, "/admin/realms/"), "/") {
+		realm := parts[len(parts)-1]
+		var rep map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&rep)
+		if s.realms == nil {
+			s.realms = map[string]map[string]any{}
+		}
+		s.realms[realm] = rep
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/authentication/flows") {
 		values := []map[string]any{}
 		for _, flow := range s.flows {
@@ -117,6 +144,17 @@ func TestKeycloakAuthFlowReconcileCreatesRootFlowWithExecutions(t *testing.T) {
 		t.Errorf("status = %q", updated.Status.Status)
 	}
 }
+func TestKeycloakAuthFlowReconcileBindsFlowToRealm(t *testing.T) {
+	stub := newStubKeycloakFlows()
+	flow := &neteye.KeycloakAuthFlow{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "browser"}, Spec: neteye.KeycloakAuthFlowSpec{Realm: "master", Alias: "neteye-first-broker-login-flow", Bindings: []neteye.KeycloakAuthFlowBinding{"browser"}}}
+	r, _ := newKeycloakAuthFlowReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), flow)
+	if _, err := r.Reconcile(context.Background(), requestFor(flow)); err != nil {
+		t.Fatal(err)
+	}
+	if got := stub.realms["master"]["browserFlow"]; got != "neteye-first-broker-login-flow" {
+		t.Fatalf("realm browserFlow = %v, want neteye-first-broker-login-flow", got)
+	}
+}
 func TestKeycloakAuthFlowDeleteHonorsOrphanAndBuiltInRefusal(t *testing.T) {
 	for name, test := range map[string]struct {
 		policy  neteye.KeycloakDeletionPolicy
@@ -127,12 +165,19 @@ func TestKeycloakAuthFlowDeleteHonorsOrphanAndBuiltInRefusal(t *testing.T) {
 			stub.flows["browser"] = map[string]any{"id": "flow-browser", "alias": "browser", "builtIn": test.builtIn}
 			now := metav1.Now()
 			flow := &neteye.KeycloakAuthFlow{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "browser", Finalizers: []string{KeycloakAuthFlowFinalizer}, DeletionTimestamp: &now}, Spec: neteye.KeycloakAuthFlowSpec{Alias: "browser", DeletionPolicy: test.policy}}
-			r, _ := newKeycloakAuthFlowReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), flow)
+			r, c := newKeycloakAuthFlowReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), flow)
 			if _, err := r.Reconcile(context.Background(), requestFor(flow)); err != nil {
 				t.Fatal(err)
 			}
 			if _, ok := stub.flows["browser"]; !ok {
 				t.Fatal("flow must remain")
+			}
+			updated := &neteye.KeycloakAuthFlow{}
+			err := c.Get(context.Background(), requestFor(flow).NamespacedName, updated)
+			if err == nil && controllerutil.ContainsFinalizer(updated, KeycloakAuthFlowFinalizer) {
+				t.Error("finalizer must be removed")
+			} else if err != nil && !apierrors.IsNotFound(err) {
+				t.Fatal(err)
 			}
 		})
 	}

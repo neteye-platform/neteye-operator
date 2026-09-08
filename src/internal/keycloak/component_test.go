@@ -53,17 +53,38 @@ func TestResourceURI(t *testing.T) {
 	}
 }
 
-func TestPodExtraEnvVars(t *testing.T) {
-	got := podExtraEnvVars([]string{"KC_FEATURES", "JAVA_OPTS=-Xmx1g"})
+func TestKeycloakEnv(t *testing.T) {
+	got := keycloakEnv([]neteye.NetEyeEnvVar{
+		{Name: "KC_FEATURES", Value: "preview"},
+		{Name: "JAVA_OPTS", Value: "-Xmx1g"},
+		{Name: "EMPTY", Value: ""},
+	})
 	want := []any{
-		map[string]any{"name": "KC_FEATURES"},
+		map[string]any{"name": "KC_FEATURES", "value": "preview"},
 		map[string]any{"name": "JAVA_OPTS", "value": "-Xmx1g"},
+		map[string]any{"name": "EMPTY", "value": ""},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("podExtraEnvVars() = %#v, want %#v", got, want)
+		t.Errorf("keycloakEnv() = %#v, want %#v", got, want)
 	}
-	if len(podExtraEnvVars(nil)) != 0 {
-		t.Errorf("podExtraEnvVars(nil) should be empty")
+	if len(keycloakEnv(nil)) != 0 {
+		t.Errorf("keycloakEnv(nil) should be empty")
+	}
+}
+
+func TestKeycloakAdditionalOptions(t *testing.T) {
+	got := keycloakAdditionalOptions([]neteye.NetEyeKeycloakOption{
+		{Name: "spi-cache-embedded--default--cluster-name", Value: "custom-cluster"},
+		{Name: "proxy-headers", Value: "forwarded"},
+		{Name: "spi-connections-http-client--default--connection-pool-size", Value: "20"},
+	})
+	want := []any{
+		map[string]any{"name": "http-relative-path", "value": HTTPRelativePath},
+		map[string]any{"name": "spi-cache-embedded--default--cluster-name", "value": InfinispanClusterName},
+		map[string]any{"name": "spi-connections-http-client--default--connection-pool-size", "value": "20"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("keycloakAdditionalOptions() = %#v, want %#v", got, want)
 	}
 }
 
@@ -87,9 +108,14 @@ func TestClusterExtensionSpec(t *testing.T) {
 
 func TestKeycloakInstanceSpec(t *testing.T) {
 	identity := neteye.NetEyeIdentitySpec{
-		Replicas:        2,
-		Hostname:        "kc.example.com",
-		PodExtraEnvVars: []string{"KC_FEATURES"},
+		Replicas: 2,
+		Hostname: "kc.example.com",
+		PodExtraEnvVars: []neteye.NetEyeEnvVar{
+			{Name: "KC_FEATURES", Value: "preview"},
+		},
+		AdditionalOptions: []neteye.NetEyeKeycloakOption{
+			{Name: "spi-connections-http-client--default--connection-pool-size", Value: "20"},
+		},
 		DBConnection: neteye.NetEyeDBConnectionSpec{
 			Host:           "db.example.com",
 			Port:           3307,
@@ -130,8 +156,11 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 	if hostname["hostname"] != resourceURI("kc.example.com") {
 		t.Errorf("hostname.hostname = %v, want %v", hostname["hostname"], resourceURI("kc.example.com"))
 	}
-	if _, ok := spec["env"]; !ok {
-		t.Errorf("env should be set when PodExtraEnvVars is provided")
+	if want := keycloakEnv(identity.PodExtraEnvVars); !reflect.DeepEqual(spec["env"], want) {
+		t.Errorf("env = %#v, want %#v", spec["env"], want)
+	}
+	if want := keycloakAdditionalOptions(identity.AdditionalOptions); !reflect.DeepEqual(spec["additionalOptions"], want) {
+		t.Errorf("additionalOptions = %#v, want %#v", spec["additionalOptions"], want)
 	}
 	if _, ok := spec["networkPolicy"]; !ok {
 		t.Error("networkPolicy should always be configured")
@@ -141,7 +170,7 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 func TestKeycloakInstanceSpecOmitsEnvWhenEmpty(t *testing.T) {
 	spec := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "h"})
 	if _, ok := spec["env"]; ok {
-		t.Errorf("env should not be set when PodExtraEnvVars is empty")
+		t.Errorf("env should not be set when Env is empty")
 	}
 }
 

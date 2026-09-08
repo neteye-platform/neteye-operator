@@ -376,6 +376,12 @@ func (a *AdminAPI) CreateExecution(ctx context.Context, realm, flow, provider st
 func (a *AdminAPI) UpdateExecutionRequirement(ctx context.Context, realm, flow, id, requirement string) error {
 	return a.do(ctx, http.MethodPut, fmt.Sprintf("/admin/realms/%s/authentication/flows/%s/executions", url.PathEscape(realm), url.PathEscape(flow)), representation{"id": id, "requirement": requirement}, nil)
 }
+
+// UpdateExecution replaces an execution's AuthenticationExecutionInfoRepresentation,
+// such as its displayName, within flow.
+func (a *AdminAPI) UpdateExecution(ctx context.Context, realm, flow string, execution representation) error {
+	return a.do(ctx, http.MethodPut, fmt.Sprintf("/admin/realms/%s/authentication/flows/%s/executions", url.PathEscape(realm), url.PathEscape(flow)), execution, nil)
+}
 func (a *AdminAPI) RaiseExecutionPriority(ctx context.Context, realm, id string) error {
 	return a.do(ctx, http.MethodPost, fmt.Sprintf("/admin/realms/%s/authentication/executions/%s/raise-priority", url.PathEscape(realm), url.PathEscape(id)), nil, nil)
 }

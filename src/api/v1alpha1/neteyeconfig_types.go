@@ -66,6 +66,33 @@ type NetEyeDBConnectionSpec struct {
 	PasswordSecret NetEyeSecretKeySelector `json:"passwordSecret"`
 }
 
+// NetEyeEnvVar defines an environment variable.
+type NetEyeEnvVar struct {
+	// Name is the environment variable name.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
+	Name string `json:"name"`
+
+	// Value is the environment variable value. It is stored in plaintext and
+	// must not contain secrets.
+	// +kubebuilder:validation:Required
+	Value string `json:"value"`
+}
+
+// NetEyeKeycloakOption defines an additional Keycloak server option.
+type NetEyeKeycloakOption struct {
+	// Name is the Keycloak server option name.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]*$`
+	Name string `json:"name"`
+
+	// Value is the Keycloak server option value. It is stored in plaintext in the
+	// NetEye and Keycloak resources and must not contain secrets.
+	// +kubebuilder:validation:Required
+	Value string `json:"value"`
+}
+
 // NetEyeIdentitySpec defines the identity service deployment options.
 type NetEyeIdentitySpec struct {
 	// Replicas is the number of identity service replicas to deploy.
@@ -80,13 +107,19 @@ type NetEyeIdentitySpec struct {
 	// +kubebuilder:example="keycloak.example.com"
 	Hostname string `json:"hostname"`
 
-	// PodExtraEnvVars lists extra environment variables for identity pods. Entries
-	// can be plain names, such as "KC_FEATURES", or name/value pairs, such as
-	// "JAVA_OPTS_APPEND=-Djava.net.preferIPv6Addresses=true". Plain names are
-	// passed to the identity service with an empty value.
+	// PodExtraEnvVars lists extra non-sensitive environment variables for
+	// Keycloak pods.
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:items:Pattern=`^[A-Za-z_][A-Za-z0-9_]*(=.*)?$`
-	PodExtraEnvVars []string `json:"podExtraEnvVars,omitempty"`
+	// +listType=map
+	// +listMapKey=name
+	PodExtraEnvVars []NetEyeEnvVar `json:"podExtraEnvVars,omitempty"`
+
+	// AdditionalOptions lists non-sensitive Keycloak server options. Options
+	// managed by the operator cannot be configured here.
+	// +kubebuilder:validation:Optional
+	// +listType=map
+	// +listMapKey=name
+	AdditionalOptions []NetEyeKeycloakOption `json:"additionalOptions,omitempty"`
 
 	// DBConnection configures the MariaDB database used by identity services.
 	// Credential Secrets must exist in the shared Keycloak workload namespace.

@@ -7,7 +7,6 @@ package keycloak
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +20,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/keycloakconfig"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -43,9 +43,9 @@ const (
 	// JDBC_PING discovery rows keyed by cluster name; a shared default name
 	// ("ISPN") makes each side's independently-formed view register its own
 	// coordinator row, which the "cluster health check" reads as a split brain.
-	InfinispanClusterName = "neteye-k8s-ispn"
+	InfinispanClusterName = keycloakconfig.InfinispanClusterName
 	HTTPPort              = int64(8080)
-	HTTPRelativePath      = "/auth"
+	HTTPRelativePath      = keycloakconfig.HTTPRelativePath
 	KubeSystemNamespace   = "kube-system"
 	// OperatorSystemNamespace runs the NetEye operator itself, which reaches the
 	// Keycloak Admin API in-cluster to reconcile KeycloakClient resources.
@@ -227,6 +227,27 @@ func (c *Component) IsReady(ctx context.Context, namespace string) (bool, string
 	return resources.ReadyConditionMessage(kc, "Keycloak")
 }
 
+// IsUserReady reports whether the named KeycloakUser has reached the Ready
+// state. It does not wait; callers should requeue and check again later.
+func (c *Component) IsUserReady(ctx context.Context, namespace, name string) (bool, string, error) {
+	user := &neteye.KeycloakUser{}
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	if err := c.client.Get(ctx, key, user); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, fmt.Sprintf("waiting for KeycloakUser %q to be created", name), nil
+		}
+		return false, "", fmt.Errorf("get keycloak user %q: %w", name, err)
+	}
+	if user.Status.Status != neteye.ServiceStateReady {
+		message := user.Status.Message
+		if message == "" {
+			message = fmt.Sprintf("waiting for KeycloakUser %q to be ready", name)
+		}
+		return false, message, nil
+	}
+	return true, "", nil
+}
+
 func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, owner *metav1.OwnerReference) error {
 	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:       keycloakGVK(),
@@ -281,18 +302,9 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 		"proxy": map[string]any{
 			"headers": "xforwarded",
 		},
-		"additionalOptions": []any{
-			map[string]any{
-				"name":  "http-relative-path",
-				"value": HTTPRelativePath,
-			},
-			map[string]any{
-				"name":  "spi-cache-embedded--default--cluster-name",
-				"value": InfinispanClusterName,
-			},
-		},
+		"additionalOptions": keycloakAdditionalOptions(identity.AdditionalOptions),
 	}
-	if env := podExtraEnvVars(identity.PodExtraEnvVars); len(env) > 0 {
+	if env := keycloakEnv(identity.PodExtraEnvVars); len(env) > 0 {
 		spec["env"] = env
 	}
 	return spec
@@ -427,17 +439,33 @@ func externalDatabasePort(database neteye.NetEyeDBConnectionSpec) int32 {
 	return database.Port
 }
 
-func podExtraEnvVars(values []string) []any {
+func keycloakEnv(values []neteye.NetEyeEnvVar) []any {
 	env := make([]any, 0, len(values))
-	for _, raw := range values {
-		name, value, hasValue := strings.Cut(raw, "=")
-		entry := map[string]any{"name": name}
-		if hasValue {
-			entry["value"] = value
-		}
-		env = append(env, entry)
+	for _, value := range values {
+		env = append(env, nameValue(value.Name, value.Value))
 	}
 	return env
+}
+
+func keycloakAdditionalOptions(values []neteye.NetEyeKeycloakOption) []any {
+	managedOptions := keycloakconfig.ManagedOptions()
+	options := make([]any, 0, len(managedOptions)+len(values))
+	for _, option := range managedOptions {
+		if option.EmitAsServerOption {
+			options = append(options, nameValue(option.Name, option.Value))
+		}
+	}
+	for _, option := range values {
+		if keycloakconfig.IsManagedOption(option.Name) {
+			continue
+		}
+		options = append(options, nameValue(option.Name, option.Value))
+	}
+	return options
+}
+
+func nameValue(name, value string) map[string]any {
+	return map[string]any{"name": name, "value": value}
 }
 
 func keycloakGVK() schema.GroupVersionKind {

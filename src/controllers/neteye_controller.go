@@ -19,7 +19,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -338,6 +337,42 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the Keycloak internal admin user: %v", err), image)
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure keycloak internal admin user: %w", err)
 	}
+	internalAdminReady, internalAdminMessage, err := r.KeycloakComponent.IsUserReady(ctx, keycloak.WorkloadNamespace, keycloak.InternalAdminResourceName)
+	if err != nil {
+		log.Error(err, "failed to check the Keycloak internal admin user readiness", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to check the Keycloak internal admin user readiness: %v", err), image)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("check keycloak internal admin user readiness: %w", err)
+	}
+	if !internalAdminReady {
+		log.V(1).Info("internal admin user is not ready", "reason", internalAdminMessage, "requeueAfter", r.waitForProgressingRequeue())
+		setPhase(ne, neteye.PhaseNotReady, "Check services status for details")
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, internalAdminMessage, image)
+		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
+	}
+
+	// The internal admin is usable now too, so the root account IcingaWeb2
+	// authenticates as can be declared the same way, replacing the Ansible
+	// "Create root user" task.
+	if err := r.KeycloakComponent.EnsureRootUser(ctx, keycloak.WorkloadNamespace); err != nil {
+		log.Error(err, "failed to declare the Keycloak root user", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the Keycloak root user: %v", err), image)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure keycloak root user: %w", err)
+	}
+	rootUserReady, rootUserMessage, err := r.KeycloakComponent.IsUserReady(ctx, keycloak.WorkloadNamespace, keycloak.RootResourceName)
+	if err != nil {
+		log.Error(err, "failed to check the Keycloak root user readiness", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to check the Keycloak root user readiness: %v", err), image)
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("check keycloak root user readiness: %w", err)
+	}
+	if !rootUserReady {
+		log.V(1).Info("root user is not ready", "reason", rootUserMessage, "requeueAfter", r.waitForProgressingRequeue())
+		setPhase(ne, neteye.PhaseNotReady, "Check services status for details")
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, rootUserMessage, image)
+		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
+	}
 
 	if err := r.KeycloakComponent.EnsureNetEyeClient(ctx, keycloak.WorkloadNamespace); err != nil {
 		log.Error(err, "failed to declare the NetEye Keycloak client", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
@@ -458,6 +493,6 @@ func identityStatus(state neteye.ServiceState, message, image string) *neteye.Ne
 
 func (r *NetEyeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&neteye.NetEye{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&neteye.NetEye{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Complete(r)
 }
