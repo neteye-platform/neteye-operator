@@ -85,6 +85,18 @@ On every reconciliation, the orchestrator derives eligible work from the
 desired release, the lifecycle graph, and observed cluster state. It does not
 depend on an in-memory queue or on having observed every earlier event.
 
+Without an active upgrade, the orchestrator uses the installation dependencies
+for the achieved release. When an accepted `NetEyeUpgrade` is active, it enters
+upgrade-aware reconciliation and uses the explicit source-to-target upgrade
+graph together with the transaction's durable progress. `NetEye`
+reconciliation is not suspended during an upgrade.
+
+The upgrade controller owns transaction validation, external gates, attempts,
+and upgrade status. The component orchestrator remains the sole scheduler and
+writer for component resources. It performs only transitions that are eligible
+in the active graph, continues observing the complete component set, and does
+not let a second controller reconcile the same component resources.
+
 Each pass observes every desired component and evaluates the complete
 applicable graph. Every node whose prerequisites are satisfied is given an
 opportunity to progress. The orchestrator does not stop the pass after the
@@ -103,8 +115,10 @@ gated transition. Its status distinguishes being blocked by a dependency from
 failing its own reconciliation and identifies the prerequisite through a
 stable machine-readable reason.
 
-During normal reconciliation, component controllers continue correcting drift
-in the fields they own according to ADR-0002.
+During steady-state and upgrade-aware reconciliation, component controllers
+continue correcting safe drift in the fields they own according to ADR-0002.
+They must not apply target-release state before the corresponding upgrade node
+is eligible.
 
 The maximum amount of concurrent work is an implementation and operational
 tuning detail. It does not change the graph semantics.
@@ -157,10 +171,10 @@ repeatedly failing branch must not impose a global backoff that prevents newly
 eligible or independent work from running. Watches and scheduled retries cause
 the orchestrator to evaluate the complete graph again.
 
-For example, if the telemetry component cannot find a required ConfigMap while
-the identity component has no dependency on telemetry, telemetry reports its
-own failure, identity is still reconciled and can report ready, `Ready` remains
-false, and `Degraded` reports the partial failure.
+For example, if the `otel-collector` component cannot find a required ConfigMap
+while the identity component has no dependency on it, `otel-collector` reports
+its own failure, identity is still reconciled and can report ready, `Ready`
+remains false, and `Degraded` reports the partial failure.
 
 ### Migration steps
 
@@ -267,6 +281,14 @@ is safer and follows Kubernetes reconciliation semantics.
 This would allow one workflow to control every migration. It was not chosen
 because it would mix ownership domains, credentials, failure models, and legacy
 infrastructure behavior into the Kubernetes controller.
+
+### Suspend NetEye reconciliation during an upgrade
+
+This would prevent ordinary reconciliation from interfering with an upgrade,
+but it would also stop component transitions, drift correction, retries, and
+status refresh unless the upgrade controller duplicated the component
+orchestrator. Upgrade-aware reconciliation keeps one component writer and uses
+the active upgrade graph to constrain its work instead.
 
 ### Require a manual retry or allow migrations to be skipped
 

@@ -25,27 +25,35 @@ identity, external gates, progress, or a recovery protocol.
 ### Upgrade resource
 
 `NetEyeUpgrade` is the authorization and coordination resource for a NetEye
-product upgrade. Authorized lifecycle automation creates it in the same
-namespace as the referenced `NetEye` resource.
+product upgrade. Authorized lifecycle automation creates it in
+`neteye-tenant-shared`, the namespace of the singleton `NetEye` resource. It
+binds implicitly to that singleton and does not contain a `NetEye` reference.
 
 Its specification contains at least:
 
-- a reference to the `NetEye` resource;
 - the target NetEye release;
 - acknowledgements for completed external gates.
 
 The target release is immutable. Gate acknowledgements are append-only after
 the operator accepts them.
 
-Only one non-terminal `NetEyeUpgrade` may exist for a `NetEye` installation.
-The validating webhook rejects a second active upgrade, an unsupported forward
-transition, or a downgrade.
+Only one non-terminal `NetEyeUpgrade` may exist in the cluster. The validating
+webhook rejects an upgrade outside `neteye-tenant-shared`, an upgrade when the
+singleton is absent or ambiguous, a second active upgrade, an unsupported
+forward transition, or a downgrade.
+
+When it accepts an upgrade, the controller records the singleton `NetEye` UID
+as part of the transaction identity. If that resource disappears or is
+recreated with a different UID, the active upgrade stops and reports a
+degraded condition. It never silently attaches the transaction to a replacement
+installation.
 
 The upgrade status uses standard conditions and reports at least:
 
 - whether the request was accepted;
 - whether work is progressing, waiting, degraded, or complete;
 - the source and target NetEye releases;
+- the UID of the bound `NetEye` installation;
 - the NetEye generation used by the current attempt;
 - currently eligible external gates and blocked components.
 
@@ -69,6 +77,24 @@ the current and target releases. It then creates a `NetEyeUpgrade` whose
 immutable `spec.targetVersion` is the only desired release for that
 transaction. The upgrade controller validates the request and coordinates the
 installation toward that target without copying it into `NetEye.spec`.
+
+The validation uses the reconstructed `NetEye.status.currentVersion` as the
+observed source and requires the exact source-to-target transition to be
+declared by the installed operator, as defined in ADR-0003.
+
+### Controller responsibilities during an upgrade
+
+An active upgrade does not suspend reconciliation of the `NetEye` resource.
+The `NetEyeUpgrade` controller owns transaction acceptance, specification
+locking, external gates, attempt state, and upgrade status. It does not
+independently mutate component resources.
+
+The component orchestrator defined by ADR-0005 remains the sole scheduler and
+writer for component resources. While the upgrade is active, it reconciles
+against the source-to-target upgrade graph, observes every component, performs
+only eligible transitions, refreshes status, and continues independent graph
+branches after a component failure. This avoids two controllers racing over
+the same resources while still allowing the upgrade to progress and recover.
 
 ### External gates
 
@@ -153,6 +179,15 @@ always moves the observed installation forward toward the authorized target.
 
 ## Alternatives considered
 
+### Reference the NetEye resource from every upgrade
+
+An explicit reference would make the target installation visible in
+`NetEyeUpgrade.spec`. It was not chosen because ADR-0001 permits only one
+active `NetEye` resource in the cluster and ADR-0007 fixes its namespace. The
+reference would therefore add a redundant input and an invalid state without
+providing a meaningful choice. Binding the accepted transaction to the
+singleton UID preserves identity across the upgrade.
+
 ### Put the target version in `NetEye.spec`
 
 This would keep configuration and the upgrade target in one resource, but it
@@ -178,6 +213,14 @@ This would keep orchestration in one process. It was not chosen because it
 would require the operator to contain external credentials, Ansible behavior,
 and failure handling outside its Kubernetes ownership boundary.
 
+### Suspend NetEye reconciliation during an upgrade
+
+This would isolate the transaction from ordinary component reconciliation, but
+the upgrade would then need a second executor for the same component resources.
+It was not chosen because upgrade-aware reconciliation through the existing
+component orchestrator preserves one writer, keeps status current, and provides
+the retries required to complete the transaction.
+
 ### Allow normal configuration changes during an upgrade
 
 This would reduce admission restrictions but could let different components
@@ -198,6 +241,11 @@ irreversible and NetEye downgrades are not supported.
 
 Upgrade authorization exists only in a dedicated, auditable resource and never
 passes through `NetEye.spec`.
+
+The upgrade resource is implicitly associated with the singleton installation,
+so clients do not provide a redundant resource reference. Recording the
+installation UID prevents an active transaction from moving to a replacement
+resource with the same name.
 
 Ansible and the NetEye Operator remain separate executors. They coordinate
 through typed gates whose state survives restarts without sharing process
@@ -228,4 +276,5 @@ automation retain one clear ownership boundary for all `NetEye.spec` fields.
 - [ADR-0002: Reconciliation and Resource Application](0002-reconciliation-and-resource-application.md)
 - [ADR-0003: NetEye and Operator Version Model](0003-neteye-and-operator-version-model.md)
 - [ADR-0005: Component Lifecycle and Dependency Orchestration](0005-component-lifecycle-and-dependency-orchestration.md)
+- [ADR-0007: Tenant Namespace and Isolation Model](0007-tenant-namespace-and-isolation-model.md)
 - [Kubernetes API conventions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md)
