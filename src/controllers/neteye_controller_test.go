@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,6 +22,7 @@ import (
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
+	"github.com/neteye-platform/neteye-operator/internal/keycloak"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -29,6 +31,9 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	s := runtime.NewScheme()
 	if err := neteye.AddToScheme(s); err != nil {
 		t.Fatalf("add neteye scheme: %v", err)
+	}
+	if err := coordinationv1.AddToScheme(s); err != nil {
+		t.Fatalf("add coordination scheme: %v", err)
 	}
 	return s
 }
@@ -114,6 +119,100 @@ func TestReconcileNotFound(t *testing.T) {
 	}
 	if !res.IsZero() {
 		t.Errorf("expected an empty result, got %+v", res)
+	}
+}
+
+func TestReconcileClusterAuthorityFailurePreventsManagedResourceMutations(t *testing.T) {
+	s := testScheme(t)
+	ne := newNetEye(neteye.CurrentNetEyeVersion)
+	ne.UID = "platform-uid"
+	authorityFailure := errors.New("authority unavailable")
+	createCalls, updateCalls := 0, 0
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(ne).WithObjects(ne).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, underlying client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+			if _, ok := object.(*coordinationv1.Lease); ok {
+				return authorityFailure
+			}
+			return underlying.Get(ctx, key, object, options...)
+		},
+		Create: func(ctx context.Context, underlying client.WithWatch, object client.Object, options ...client.CreateOption) error {
+			createCalls++
+			return underlying.Create(ctx, object, options...)
+		},
+		Update: func(ctx context.Context, underlying client.WithWatch, object client.Object, options ...client.UpdateOption) error {
+			updateCalls++
+			return underlying.Update(ctx, object, options...)
+		},
+	}).Build()
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard())}
+
+	result, err := reconcileNetEye(t, r, ne)
+	if !errors.Is(err, authorityFailure) {
+		t.Fatalf("error = %v, want authority failure", err)
+	}
+	if result.RequeueAfter != DefaultFailureRequeueAfter {
+		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, DefaultFailureRequeueAfter)
+	}
+	if createCalls != 0 || updateCalls != 0 {
+		t.Errorf("managed resource mutations = creates:%d updates:%d, want none", createCalls, updateCalls)
+	}
+	got := &neteye.NetEye{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(ne), got); err != nil {
+		t.Fatalf("get neteye: %v", err)
+	}
+	if got.Status.Phase != neteye.PhaseFailed {
+		t.Errorf("phase = %q, want %q", got.Status.Phase, neteye.PhaseFailed)
+	}
+	if identity := got.Status.ServicesStatus.Identity; identity == nil || identity.Status != neteye.ServiceStateUnknown {
+		t.Errorf("identity status = %+v, want Unknown", identity)
+	}
+	if elasticStack := got.Status.ServicesStatus.ElasticStack; elasticStack == nil || elasticStack.Status != neteye.ServiceStateUnknown || elasticStack.OTelCollector == nil || elasticStack.OTelCollector.Status != neteye.ServiceStateUnknown {
+		t.Errorf("Elastic Stack status = %+v, want module and collector Unknown", elasticStack)
+	}
+}
+
+func TestReconcileReturnsStatusUpdateFailure(t *testing.T) {
+	s := testScheme(t)
+	ne := newNetEye(neteye.PreviousNetEyeVersion)
+	statusFailure := errors.New("status unavailable")
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(ne).WithObjects(ne).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+			return statusFailure
+		},
+	}).Build()
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s}
+
+	result, err := reconcileNetEye(t, r, ne)
+	if !errors.Is(err, statusFailure) {
+		t.Fatalf("error = %v, want status failure", err)
+	}
+	if result.RequeueAfter != DefaultFailureRequeueAfter {
+		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, DefaultFailureRequeueAfter)
+	}
+}
+
+func TestReconcileJoinsSystemicAndStatusUpdateFailures(t *testing.T) {
+	s := testScheme(t)
+	ne := newNetEye(neteye.CurrentNetEyeVersion)
+	ne.UID = "platform-uid"
+	authorityFailure := errors.New("authority unavailable")
+	statusFailure := errors.New("status unavailable")
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(ne).WithObjects(ne).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, underlying client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+			if _, ok := object.(*coordinationv1.Lease); ok {
+				return authorityFailure
+			}
+			return underlying.Get(ctx, key, object, options...)
+		},
+		SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+			return statusFailure
+		},
+	}).Build()
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard())}
+
+	_, err := reconcileNetEye(t, r, ne)
+	if !errors.Is(err, authorityFailure) || !errors.Is(err, statusFailure) {
+		t.Fatalf("error = %v, want joined authority and status failures", err)
 	}
 }
 

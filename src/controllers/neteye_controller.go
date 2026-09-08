@@ -6,6 +6,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -72,7 +73,7 @@ type NetEyeReconciler struct {
 // +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;list;watch;create;update;delete
 
 // Reconcile reconciles a NetEye resource with the desired cluster state.
-func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, reconcileErr error) {
 	log := r.Log.WithValues("neteye", req.NamespacedName)
 	ctx = ctrl.LoggerInto(ctx, log)
 
@@ -99,7 +100,9 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	defer func() {
 		if err := r.updateStatus(ctx, req.NamespacedName, ne.Status); err != nil {
-			log.Error(err, "unable to update NetEye status")
+			statusErr := fmt.Errorf("update NetEye status: %w", err)
+			log.Error(statusErr, "unable to update NetEye status")
+			reconcileErr = errors.Join(reconcileErr, statusErr)
 		}
 	}()
 
@@ -126,6 +129,12 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("keycloak component is not initialized")
 	}
 	log.V(1).Info("Components loaded", "version", ne.Spec.Version)
+
+	if err := r.ensureClusterAuthority(ctx, ne); err != nil {
+		log.Error(err, "failed to establish NetEye cluster authority", "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, err.Error())
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure NetEye cluster authority: %w", err)
+	}
 
 	if result, err := r.reconcileBaseResources(ctx, ne); shouldReturn(result, err) {
 		return result, err
@@ -206,7 +215,7 @@ func (r *NetEyeReconciler) updateStatus(ctx context.Context, key client.ObjectKe
 			return client.IgnoreNotFound(err)
 		}
 		current.Status = status
-		return r.Status().Update(ctx, current)
+		return client.IgnoreNotFound(r.Status().Update(ctx, current))
 	})
 }
 
@@ -309,10 +318,6 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 	log := ctrl.LoggerFrom(ctx)
 	owner := ownerReferenceFor(ne)
 	log.Info("Started Keycloak reconciliation", "namespace", ne.Namespace, "name", owner.Name)
-	if err := r.ensureClusterAuthority(ctx, ne); err != nil {
-		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, err.Error(), image)
-		return degradedResult(identityComponentID, "ClusterAuthorityFailed", err.Error(), r.failureRequeue(), err)
-	}
 	issuerRef := issuerRefFor(ne)
 	if err := resources.EnsureIssuerExists(ctx, r.Client, keycloak.WorkloadNamespace, issuerRef); err != nil {
 		if apierrors.IsNotFound(err) {
