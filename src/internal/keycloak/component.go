@@ -227,6 +227,27 @@ func (c *Component) IsReady(ctx context.Context, namespace string) (bool, string
 	return resources.ReadyConditionMessage(kc, "Keycloak")
 }
 
+// IsUserReady reports whether the named KeycloakUser has reached the Ready
+// state. It does not wait; callers should requeue and check again later.
+func (c *Component) IsUserReady(ctx context.Context, namespace, name string) (bool, string, error) {
+	user := &neteye.KeycloakUser{}
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	if err := c.client.Get(ctx, key, user); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, fmt.Sprintf("waiting for KeycloakUser %q to be created", name), nil
+		}
+		return false, "", fmt.Errorf("get keycloak user %q: %w", name, err)
+	}
+	if user.Status.Status != neteye.ServiceStateReady {
+		message := user.Status.Message
+		if message == "" {
+			message = fmt.Sprintf("waiting for KeycloakUser %q to be ready", name)
+		}
+		return false, message, nil
+	}
+	return true, "", nil
+}
+
 func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, owner *metav1.OwnerReference) error {
 	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:       keycloakGVK(),
