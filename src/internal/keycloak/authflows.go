@@ -87,7 +87,6 @@ func firstBrokerLoginFlowSpec() neteye.KeycloakAuthFlowSpec {
 			},
 		},
 		DeletionPolicy: neteye.KeycloakDeletionPolicyOrphan,
-		Bindings:       []neteye.KeycloakAuthFlowBinding{"browser"},
 	}
 }
 
@@ -177,5 +176,6 @@ func idpDiscoveryFlowSpec() neteye.KeycloakAuthFlowSpec {
 			},
 		},
 		DeletionPolicy: neteye.KeycloakDeletionPolicyOrphan,
+		Bindings:       []neteye.KeycloakAuthFlowBinding{"browser"},
 	}
 }
