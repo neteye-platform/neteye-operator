@@ -126,7 +126,7 @@ func main() {
 		setupLog.Error(err, "unable to create NetEye controller")
 		os.Exit(1)
 	}
-	// One provider for both controllers: they authenticate as the same account,
+	// One provider for all Keycloak controllers: they authenticate as the same account,
 	// so they may as well share the client and its token.
 	adminProvider := keycloak.NewAdminProvider(mgr.GetClient(), keycloak.WorkloadNamespace, nil)
 	if err := (&controllers.KeycloakClientReconciler{
@@ -153,6 +153,19 @@ func main() {
 		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create KeycloakUser controller")
+		os.Exit(1)
+	}
+	if err := (&controllers.KeycloakAuthFlowReconciler{
+		KeycloakAPIReconciler: controllers.KeycloakAPIReconciler{
+			Client:                     mgr.GetClient(),
+			AdminProvider:              adminProvider,
+			Log:                        ctrl.Log.WithName("keycloak-auth-flow-reconciler"),
+			Scheme:                     mgr.GetScheme(),
+			FailureRequeueAfter:        failureRequeue,
+			ReconciliationRequeueAfter: reconciliationRequeue,
+		},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create KeycloakAuthFlow controller")
 		os.Exit(1)
 	}
 	if err := neteye.SetupNetEyeWebhookWithManager(mgr); err != nil {

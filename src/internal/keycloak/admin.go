@@ -307,9 +307,109 @@ func (a *AdminAPI) AddClientScope(ctx context.Context, realm, uuid, kind, scopeI
 	return a.do(ctx, http.MethodPut, path, nil, nil)
 }
 
+// GetAuthFlow returns the authentication flow with alias, or nil when absent.
+func (a *AdminAPI) GetAuthFlow(ctx context.Context, realm, alias string) (representation, error) {
+	var flows []representation
+	if err := a.do(ctx, http.MethodGet, fmt.Sprintf("/admin/realms/%s/authentication/flows", url.PathEscape(realm)), nil, &flows); err != nil {
+		return nil, err
+	}
+	for _, flow := range flows {
+		if stringValue(flow, "alias") == alias {
+			return flow, nil
+		}
+	}
+	return nil, nil
+}
+func (a *AdminAPI) GetAuthFlowByID(ctx context.Context, realm, id string) (representation, error) {
+	var flow representation
+	err := a.do(ctx, http.MethodGet, fmt.Sprintf("/admin/realms/%s/authentication/flows/%s", url.PathEscape(realm), url.PathEscape(id)), nil, &flow)
+	return flow, err
+}
+func (a *AdminAPI) CreateAuthFlow(ctx context.Context, realm string, flow representation) error {
+	return a.do(ctx, http.MethodPost, fmt.Sprintf("/admin/realms/%s/authentication/flows", url.PathEscape(realm)), flow, nil)
+}
+func (a *AdminAPI) CreateSubflow(ctx context.Context, realm, parent string, flow representation) error {
+	return a.do(ctx, http.MethodPost, fmt.Sprintf("/admin/realms/%s/authentication/flows/%s/executions/flow", url.PathEscape(realm), url.PathEscape(parent)), flow, nil)
+}
+func (a *AdminAPI) ListDirectExecutions(ctx context.Context, realm, flow string) ([]representation, error) {
+	var all []representation
+	err := a.do(ctx, http.MethodGet, fmt.Sprintf("/admin/realms/%s/authentication/flows/%s/executions", url.PathEscape(realm), url.PathEscape(flow)), nil, &all)
+	if err != nil {
+		return nil, err
+	}
+	direct := make([]representation, 0, len(all))
+	for _, e := range all {
+		if intValue(e, "level") == 0 {
+			direct = append(direct, e)
+		}
+	}
+	return direct, nil
+}
+func (a *AdminAPI) CreateExecution(ctx context.Context, realm, flow, provider string) error {
+	return a.do(ctx, http.MethodPost, fmt.Sprintf("/admin/realms/%s/authentication/flows/%s/executions/execution", url.PathEscape(realm), url.PathEscape(flow)), representation{"provider": provider}, nil)
+}
+func (a *AdminAPI) UpdateExecutionRequirement(ctx context.Context, realm, flow, id, requirement string) error {
+	return a.do(ctx, http.MethodPut, fmt.Sprintf("/admin/realms/%s/authentication/flows/%s/executions", url.PathEscape(realm), url.PathEscape(flow)), representation{"id": id, "requirement": requirement}, nil)
+}
+
+// UpdateExecution replaces an execution's AuthenticationExecutionInfoRepresentation,
+// such as its displayName, within flow.
+func (a *AdminAPI) UpdateExecution(ctx context.Context, realm, flow string, execution representation) error {
+	return a.do(ctx, http.MethodPut, fmt.Sprintf("/admin/realms/%s/authentication/flows/%s/executions", url.PathEscape(realm), url.PathEscape(flow)), execution, nil)
+}
+func (a *AdminAPI) RaiseExecutionPriority(ctx context.Context, realm, id string) error {
+	return a.do(ctx, http.MethodPost, fmt.Sprintf("/admin/realms/%s/authentication/executions/%s/raise-priority", url.PathEscape(realm), url.PathEscape(id)), nil, nil)
+}
+func (a *AdminAPI) LowerExecutionPriority(ctx context.Context, realm, id string) error {
+	return a.do(ctx, http.MethodPost, fmt.Sprintf("/admin/realms/%s/authentication/executions/%s/lower-priority", url.PathEscape(realm), url.PathEscape(id)), nil, nil)
+}
+func (a *AdminAPI) GetAuthenticatorConfig(ctx context.Context, realm, id string) (representation, error) {
+	var config representation
+	err := a.do(ctx, http.MethodGet, fmt.Sprintf("/admin/realms/%s/authentication/config/%s", url.PathEscape(realm), url.PathEscape(id)), nil, &config)
+	return config, err
+}
+func (a *AdminAPI) CreateAuthenticatorConfig(ctx context.Context, realm, executionID string, config representation) error {
+	return a.do(ctx, http.MethodPost, fmt.Sprintf("/admin/realms/%s/authentication/executions/%s/config", url.PathEscape(realm), url.PathEscape(executionID)), config, nil)
+}
+func (a *AdminAPI) UpdateAuthenticatorConfig(ctx context.Context, realm, id string, config representation) error {
+	return a.do(ctx, http.MethodPut, fmt.Sprintf("/admin/realms/%s/authentication/config/%s", url.PathEscape(realm), url.PathEscape(id)), config, nil)
+}
+func (a *AdminAPI) DeleteExecution(ctx context.Context, realm, id string) error {
+	return a.do(ctx, http.MethodDelete, fmt.Sprintf("/admin/realms/%s/authentication/executions/%s", url.PathEscape(realm), url.PathEscape(id)), nil, nil)
+}
+func (a *AdminAPI) DeleteAuthFlow(ctx context.Context, realm, id string) error {
+	return a.do(ctx, http.MethodDelete, fmt.Sprintf("/admin/realms/%s/authentication/flows/%s", url.PathEscape(realm), url.PathEscape(id)), nil, nil)
+}
+
+// GetRealm returns the realm representation.
+func (a *AdminAPI) GetRealm(ctx context.Context, realm string) (representation, error) {
+	var rep representation
+	if err := a.do(ctx, http.MethodGet, fmt.Sprintf("/admin/realms/%s", url.PathEscape(realm)), nil, &rep); err != nil {
+		return nil, err
+	}
+	return rep, nil
+}
+
+// UpdateRealm merges fields into the realm representation.
+func (a *AdminAPI) UpdateRealm(ctx context.Context, realm string, fields representation) error {
+	return a.do(ctx, http.MethodPut, fmt.Sprintf("/admin/realms/%s", url.PathEscape(realm)), fields, nil)
+}
+
 func stringValue(rep representation, key string) string {
 	value, _ := rep[key].(string)
 	return value
+}
+
+func intValue(rep representation, key string) int {
+	switch v := rep[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	}
+	return 0
 }
 
 func truncate(body []byte) string {

@@ -17,6 +17,11 @@
         kind: KeycloakUser
         name: keycloakusers.neteye.cloud
         version: v1alpha1
+      - description: KeycloakAuthFlow declares a Keycloak authentication flow the operator keeps continuously reconciled in the identity service.
+        displayName: Keycloak Auth Flow
+        kind: KeycloakAuthFlow
+        name: keycloakauthflows.neteye.cloud
+        version: v1alpha1
     required:
       - {displayName: cert-manager Certificate, kind: Certificate, name: certificates.cert-manager.io, version: v1}
       - {displayName: cert-manager Issuer, kind: Issuer, name: issuers.cert-manager.io, version: v1}
