@@ -78,99 +78,64 @@ func firstBrokerLoginFlowSpec() neteye.KeycloakAuthFlowSpec {
 			{
 				Requirement:   "REQUIRED",
 				Authenticator: "idp-detect-existing-broker-user",
-				Alias:         "Detect existing broker user",
 			},
 			{
 				Requirement:   "REQUIRED",
 				Authenticator: "idp-auto-link",
-				Alias:         "Automatically set existing user",
 			},
 		},
 		DeletionPolicy: neteye.KeycloakDeletionPolicyOrphan,
-		Bindings:       []neteye.KeycloakAuthFlowBinding{"browser"},
 	}
 }
 
-// idpDiscoveryFlowSpec is the platform's browser flow: it tries the session
-// cookie, then honors an explicit kc_idp_hint if the request carries one,
-// then discovers the identity provider from the user's email domain,
-// blocking LDAP accounts from falling back to username/password before they
-// reach it. No default provider is configured, so a request without
-// kc_idp_hint is never redirected straight to ADFS ahead of email-domain
-// discovery.
+// idpDiscoveryFlowSpec is the platform's browser flow: session cookie, then
+// kc_idp_hint, then identity provider discovery by email domain, then a local
+// username/password form.
+//
+// It mirrors the reference flow the NetEye Keycloak Ansible role installs
+// under templates/flows/neteye-idp-discovery-flow; keep the two in sync. It
+// binds the realm's browser flow to this flow. Binding is additive: the
+// operator points the browser binding here but never clears an existing one.
 func idpDiscoveryFlowSpec() neteye.KeycloakAuthFlowSpec {
-	alias := IdpDiscoveryFlowResourceName
 	return neteye.KeycloakAuthFlowSpec{
 		Realm: masterRealm,
-		Alias: alias,
+		Alias: IdpDiscoveryFlowResourceName,
 		Executions: []neteye.KeycloakAuthFlowExecution{
 			{
 				Requirement:   "ALTERNATIVE",
 				Authenticator: "auth-cookie",
-				Alias:         "Cookie",
 			},
 			{
-				Requirement:   "ALTERNATIVE",
+				// DISABLED as in the reference flow.
+				Requirement:   "DISABLED",
 				Authenticator: "identity-provider-redirector",
-				Alias:         alias + " kc_idp_hint",
 			},
 			{
 				Requirement:   "ALTERNATIVE",
 				Authenticator: "home-idp-discovery",
-				Alias:         alias + " home-idp-discovery",
+				Alias:         "home-idp-discovery",
 				Config: &neteye.KeycloakAuthFlowConfig{
 					Alias: "home-idp-discovery",
 					Values: map[string]string{
-						"forwardToFirstMatch":    "true",
-						"bypassLoginPage":        "true",
-						"forwardToLinkedIdp":     "false",
-						"forwardUnverifiedEmail": "true",
-						"userAttribute":          "email",
-					},
-				},
-			},
-			{
-				Requirement: "CONDITIONAL",
-				Flow: &neteye.KeycloakAuthFlowExecutionSpecL2{
-					Alias: alias + " Block LDAP logins",
-					Executions: []neteye.KeycloakAuthFlowExecutionL2{
-						{
-							Requirement:   "REQUIRED",
-							Authenticator: "conditional-user-attribute",
-							Alias:         alias + " check-ldap-user",
-							Config: &neteye.KeycloakAuthFlowConfig{
-								Alias: "check-ldap-user",
-								Values: map[string]string{
-									"attribute_expected_value": ".+",
-									"attribute_name":           "LDAP_ID",
-									"regex":                    "true",
-								},
-							},
-						},
-						{
-							Requirement:   "REQUIRED",
-							Authenticator: "deny-access-authenticator",
-							Alias:         alias + " deny-ldap",
-							Config: &neteye.KeycloakAuthFlowConfig{
-								Alias: "deny-ldap",
-								Values: map[string]string{
-									"denyErrorMessage": "Login through pb***** is not supported anymore, please use as username WN***@wgs.wuerth.com or name.surname@wuerth-it.com",
-								},
-							},
-						},
+						"default.reference.value":  "",
+						"default.reference.maxAge": "",
+						"bypassLoginPage":          "true",
+						"forwardToFirstMatch":      "true",
+						"userAttribute":            "email",
+						"forwardUnverifiedEmail":   "true",
+						"forwardToLinkedIdp":       "false",
 					},
 				},
 			},
 			{
 				Requirement: "ALTERNATIVE",
 				Flow: &neteye.KeycloakAuthFlowExecutionSpecL2{
-					Alias:    alias + " username-password",
+					Alias:    "username-password",
 					Provider: "basic-flow",
 					Executions: []neteye.KeycloakAuthFlowExecutionL2{
 						{
 							Requirement:   "REQUIRED",
 							Authenticator: "auth-username-password-form",
-							Alias:         "Username Password Form",
 						},
 					},
 				},
