@@ -16,6 +16,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/neteye-platform/neteye-operator/internal/keycloakconfig"
 )
 
 const (
@@ -43,6 +45,9 @@ func (v *NetEyeValidator) ValidateCreate(ctx context.Context, obj *NetEye) (admi
 	if err := validateNamespace(obj); err != nil {
 		return nil, err
 	}
+	if err := validateIdentity(obj); err != nil {
+		return nil, err
+	}
 	if err := validateElasticStack(obj); err != nil {
 		return nil, err
 	}
@@ -59,6 +64,9 @@ func (v *NetEyeValidator) ValidateCreate(ctx context.Context, obj *NetEye) (admi
 // ValidateUpdate validates NetEye version transitions on update.
 func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *NetEye) (admission.Warnings, error) {
 	if err := validateNamespace(newObj); err != nil {
+		return nil, err
+	}
+	if err := validateIdentity(newObj); err != nil {
 		return nil, err
 	}
 	if err := validateElasticStack(newObj); err != nil {
@@ -78,6 +86,20 @@ func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *Ne
 		newObj,
 		fmt.Sprintf("NetEye version can only remain at %s or upgrade from %s to %s", CurrentNetEyeVersion, PreviousNetEyeVersion, CurrentNetEyeVersion),
 	)
+}
+
+func validateIdentity(neteye *NetEye) error {
+	path := field.NewPath("spec", "identity", "additionalOptions")
+	var errors field.ErrorList
+	for i, option := range neteye.Spec.Identity.AdditionalOptions {
+		if keycloakconfig.IsManagedOption(option.Name) {
+			errors = append(errors, field.Forbidden(path.Index(i).Child("name"), "option is managed by the NetEye operator"))
+		}
+	}
+	if len(errors) > 0 {
+		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, errors)
+	}
+	return nil
 }
 
 func validateElasticStack(neteye *NetEye) error {
