@@ -168,6 +168,19 @@ func main() {
 		setupLog.Error(err, "unable to create KeycloakAuthFlow controller")
 		os.Exit(1)
 	}
+	if err := (&controllers.KeycloakRealmReconciler{
+		KeycloakAPIReconciler: controllers.KeycloakAPIReconciler{
+			Client:                     mgr.GetClient(),
+			AdminProvider:              adminProvider,
+			Log:                        ctrl.Log.WithName("keycloak-realm-reconciler"),
+			Scheme:                     mgr.GetScheme(),
+			FailureRequeueAfter:        failureRequeue,
+			ReconciliationRequeueAfter: reconciliationRequeue,
+		},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create KeycloakRealm controller")
+		os.Exit(1)
+	}
 	if err := neteye.SetupNetEyeWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create NetEye webhook")
 		os.Exit(1)
