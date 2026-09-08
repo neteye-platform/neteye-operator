@@ -46,6 +46,10 @@ func TestEnsureFirstBrokerLoginFlowDeclaresTheFlow(t *testing.T) {
 	if flow.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
 		t.Errorf("deletionPolicy = %q, want Orphan for a resource the operator redeclares", flow.Spec.DeletionPolicy)
 	}
+	// Binding a flow to a realm purpose is the administrator's decision.
+	if len(flow.Spec.Bindings) != 0 {
+		t.Errorf("bindings = %v, want none declared by the operator", flow.Spec.Bindings)
+	}
 }
 
 func TestEnsureFirstBrokerLoginFlowKeepsAdministratorEdits(t *testing.T) {
@@ -86,18 +90,43 @@ func TestEnsureIdpDiscoveryFlowDeclaresTheFlow(t *testing.T) {
 	if err := c.Get(context.Background(), key, flow); err != nil {
 		t.Fatalf("the KeycloakAuthFlow was not created: %v", err)
 	}
-	if len(flow.Spec.Executions) != 5 {
-		t.Fatalf("executions = %d, want 5", len(flow.Spec.Executions))
+	// The four steps of the reference flow the Keycloak Ansible role installs.
+	if len(flow.Spec.Executions) != 4 {
+		t.Fatalf("executions = %d, want 4", len(flow.Spec.Executions))
 	}
-	blockLDAP := flow.Spec.Executions[3]
-	if blockLDAP.Flow == nil || len(blockLDAP.Flow.Executions) != 2 {
-		t.Fatalf("Block LDAP logins subflow = %+v, want 2 nested executions", blockLDAP.Flow)
+	wantLeaves := []struct {
+		authenticator string
+		requirement   string
+	}{
+		{"auth-cookie", "ALTERNATIVE"},
+		{"identity-provider-redirector", "DISABLED"},
+		{"home-idp-discovery", "ALTERNATIVE"},
 	}
-	usernamePassword := flow.Spec.Executions[4]
+	for i, want := range wantLeaves {
+		got := flow.Spec.Executions[i]
+		if got.Authenticator != want.authenticator || got.Requirement != want.requirement {
+			t.Errorf("execution %d = %q/%q, want %q/%q", i, got.Authenticator, got.Requirement, want.authenticator, want.requirement)
+		}
+	}
+	usernamePassword := flow.Spec.Executions[3]
 	if usernamePassword.Flow == nil || len(usernamePassword.Flow.Executions) != 1 {
 		t.Fatalf("username-password subflow = %+v, want 1 nested execution", usernamePassword.Flow)
 	}
+	if usernamePassword.Flow.Alias != "username-password" {
+		t.Errorf("subflow alias = %q, want %q as in the reference flow", usernamePassword.Flow.Alias, "username-password")
+	}
+	// A CONDITIONAL subflow at the top level makes Keycloak ignore every
+	// ALTERNATIVE beside it.
+	for i, execution := range flow.Spec.Executions {
+		if execution.Requirement == "CONDITIONAL" {
+			t.Errorf("execution %d is CONDITIONAL at the top level of a browser flow", i)
+		}
+	}
 	if flow.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
 		t.Errorf("deletionPolicy = %q, want Orphan for a resource the operator redeclares", flow.Spec.DeletionPolicy)
+	}
+	// Binding a flow to a realm purpose is the administrator's decision.
+	if len(flow.Spec.Bindings) != 0 {
+		t.Errorf("bindings = %v, want none declared by the operator", flow.Spec.Bindings)
 	}
 }

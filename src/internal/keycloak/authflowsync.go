@@ -228,17 +228,8 @@ func reconcileFlowExecutions(ctx context.Context, api *AdminAPI, realm, alias st
 			}
 			updated = true
 		}
-		if want.Flow == nil && want.Alias != "" && want.Alias != stringValue(current, "displayName") {
-			leaf := representation{}
-			for k, v := range current {
-				leaf[k] = v
-			}
-			leaf["displayName"] = want.Alias
-			if err := api.UpdateExecution(ctx, realm, alias, leaf); err != nil {
-				return created, updated, fmt.Errorf("rename execution %q: %w", id, err)
-			}
-			updated = true
-		}
+		// A leaf execution's displayName is read-only, so Spec.Alias is only
+		// matching input (see matchingExecution), never written back.
 		if want.Flow != nil {
 			flowID := stringValue(current, "flowId")
 			if flowID == "" {
@@ -340,9 +331,16 @@ func reconcileAuthenticatorConfig(ctx context.Context, api *AdminAPI, realm stri
 	}
 	return true, api.UpdateAuthenticatorConfig(ctx, realm, id, want)
 }
+
+// stringMapRepresentation renders an authenticator config, dropping empty
+// values: Keycloak discards those, so keeping them would rewrite the config on
+// every reconciliation.
 func stringMapRepresentation(values map[string]string) representation {
 	result := representation{}
 	for key, value := range values {
+		if value == "" {
+			continue
+		}
 		result[key] = value
 	}
 	return result
@@ -357,11 +355,12 @@ func jsonEqual(left, right any) bool {
 	return json.Unmarshal(leftJSON, &normalizedLeft) == nil && json.Unmarshal(rightJSON, &normalizedRight) == nil && reflect.DeepEqual(normalizedLeft, normalizedRight)
 }
 
-// reconcileExecutionOrder moves each desired execution into place. The live
-// ordering is fetched once and then kept up to date locally after every
-// successful priority change, since raise/lower-priority only swaps two
-// adjacent executions and the resulting order is fully predictable — this
-// avoids a GET per desired execution.
+// reconcileExecutionOrder gives each desired execution an explicit priority
+// matching its position in the spec.
+//
+// Not raise-priority/lower-priority: those swap the priority of two adjacent
+// siblings, and Keycloak creates every execution with priority 0, so each swap
+// is a no-op and the order never moves.
 func reconcileExecutionOrder(ctx context.Context, api *AdminAPI, realm, alias string, desired []flowExecution) (bool, error) {
 	changed := false
 	live, err := api.ListDirectExecutions(ctx, realm, alias)
@@ -370,35 +369,24 @@ func reconcileExecutionOrder(ctx context.Context, api *AdminAPI, realm, alias st
 	}
 	sort.SliceStable(live, func(i, j int) bool { return intValue(live[i], "index") < intValue(live[j], "index") })
 	used := map[string]bool{}
-	for wantIndex, want := range desired {
+	for wantPriority, want := range desired {
 		current := matchingExecution(live, want, used)
 		if current == nil {
 			continue
 		}
 		used[stringValue(current, "id")] = true
-		index := -1
-		for i, item := range live {
-			if stringValue(item, "id") == stringValue(current, "id") {
-				index = i
-				break
-			}
+		if intValue(current, "priority") == wantPriority {
+			continue
 		}
-		for index > wantIndex {
-			if err := api.RaiseExecutionPriority(ctx, realm, stringValue(current, "id")); err != nil {
-				return changed, err
-			}
-			live[index], live[index-1] = live[index-1], live[index]
-			index--
-			changed = true
+		update := representation{}
+		for k, v := range current {
+			update[k] = v
 		}
-		for index < wantIndex {
-			if err := api.LowerExecutionPriority(ctx, realm, stringValue(current, "id")); err != nil {
-				return changed, err
-			}
-			live[index], live[index+1] = live[index+1], live[index]
-			index++
-			changed = true
+		update["priority"] = wantPriority
+		if err := api.UpdateExecution(ctx, realm, alias, update); err != nil {
+			return changed, fmt.Errorf("set priority of execution %q in flow %q: %w", stringValue(current, "id"), alias, err)
 		}
+		changed = true
 	}
 	return changed, nil
 }
