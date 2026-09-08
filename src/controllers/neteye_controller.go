@@ -365,13 +365,13 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		log.Error(err, "failed to check the Keycloak internal admin user readiness", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to check the Keycloak internal admin user readiness: %v", err), image)
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("check keycloak internal admin user readiness: %w", err)
+		return degradedResult(identityComponentID, "CheckAdminUserReadinessFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
 	}
 	if !internalAdminReady {
 		log.V(1).Info("internal admin user is not ready", "reason", internalAdminMessage, "requeueAfter", r.waitForProgressingRequeue())
 		setPhase(ne, neteye.PhaseNotReady, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, internalAdminMessage, image)
-		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
+		return progressingResult(identityComponentID, "AdminUserNotReady", internalAdminMessage, r.waitForProgressingRequeue())
 	}
 
 	// The internal admin is usable now too, so the root account IcingaWeb2
@@ -381,20 +381,20 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		log.Error(err, "failed to declare the Keycloak root user", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the Keycloak root user: %v", err), image)
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure keycloak root user: %w", err)
+		return degradedResult(identityComponentID, "EnsureRootUserFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
 	}
 	rootUserReady, rootUserMessage, err := r.KeycloakComponent.IsUserReady(ctx, keycloak.WorkloadNamespace, keycloak.RootResourceName)
 	if err != nil {
 		log.Error(err, "failed to check the Keycloak root user readiness", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to check the Keycloak root user readiness: %v", err), image)
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("check keycloak root user readiness: %w", err)
+		return degradedResult(identityComponentID, "CheckRootUserReadinessFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
 	}
 	if !rootUserReady {
 		log.V(1).Info("root user is not ready", "reason", rootUserMessage, "requeueAfter", r.waitForProgressingRequeue())
 		setPhase(ne, neteye.PhaseNotReady, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, rootUserMessage, image)
-		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}, nil
+		return degradedResult(identityComponentID, "RootUserNotReady", rootUserMessage, r.waitForProgressingRequeue(), nil)
 	}
 
 	if err := r.KeycloakComponent.EnsureNetEyeClient(ctx, keycloak.WorkloadNamespace); err != nil {
@@ -407,14 +407,14 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		log.Error(err, "failed to declare the first-broker-login Keycloak auth flow", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the first-broker-login Keycloak auth flow: %v", err), image)
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure first broker login flow: %w", err)
+		return degradedResult(identityComponentID, "EnsureFirstBrokerLoginFlowFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
 	}
 
 	if err := r.KeycloakComponent.EnsureIdpDiscoveryFlow(ctx, keycloak.WorkloadNamespace); err != nil {
 		log.Error(err, "failed to declare the IdP-discovery Keycloak auth flow", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the IdP-discovery Keycloak auth flow: %v", err), image)
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure idp discovery flow: %w", err)
+		return degradedResult(identityComponentID, "EnsureIdpDiscoveryFlowFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
 	}
 
 	// Once the internal admin is usable the bootstrap account has served its
