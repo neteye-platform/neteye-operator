@@ -500,9 +500,22 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
+	keycloakInstance := requireExists(ctx, t, c, schema.GroupVersionKind{Group: "k8s.keycloak.org", Version: "v2beta1", Kind: "Keycloak"}, keycloak.WorkloadNamespace, keycloak.InstanceName)
+	if err := unstructured.SetNestedField(keycloakInstance.Object, keycloakInstance.GetGeneration(), "status", "observedGeneration"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedSlice(keycloakInstance.Object, []any{map[string]any{"type": "Ready", "status": "True"}}, "status", "conditions"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Status().Update(ctx, keycloakInstance); err != nil {
+		t.Fatalf("update keycloak instance status: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("third reconcile: %v", err)
+	}
 	route := requireExists(ctx, t, c, httpRouteGVK, keycloak.WorkloadNamespace, keycloak.HTTPRouteName)
 	assertNetEyeOwner(t, route)
-	assertNetEyeOwner(t, requireExists(ctx, t, c, schema.GroupVersionKind{Group: "k8s.keycloak.org", Version: "v2beta1", Kind: "Keycloak"}, keycloak.WorkloadNamespace, keycloak.InstanceName))
+	assertNetEyeOwner(t, keycloakInstance)
 	assertNetEyeOwner(t, requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.EgressPolicyName))
 	assertNetEyeOwner(t, requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.IngressPolicyName))
 	assertNetEyeOwner(t, requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.HostPolicyName))
