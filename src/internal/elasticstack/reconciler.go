@@ -72,8 +72,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, request Request) Outcome {
 	if r.component == nil {
 		return failedOutcome(fmt.Errorf("elastic stack feature module component is not initialized"), request.CollectorImage)
 	}
-	if request.Config.OTelCollector == nil {
-		return Outcome{Phase: neteye.PhaseNotReady, PhaseMessage: "Check services status for details", Module: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateNotReady, Message: "Elastic Stack feature module configuration is incomplete: otelCollector is required when enabled"}, Requeue: RequeueProgressing}
+	if request.Config.Telemetry == nil {
+		return incompleteOutcome("telemetry is required when elasticStack.enabled is true", request.CollectorImage)
+	}
+	if request.Config.Telemetry.OTelCollector == nil {
+		return incompleteOutcome("telemetry.otelCollector is required when elasticStack.enabled is true", request.CollectorImage)
+	}
+	if request.Config.Telemetry.EDOTGateway == nil {
+		return incompleteOutcome("telemetry.edotGateway is required when elasticStack.enabled is true", request.CollectorImage)
 	}
 
 	ready, message, err := r.component.EnsureResources(ctx, request.Namespace, *request.Config, request.IdentityHostname, request.GatewayNamespace, request.GatewayName, request.CollectorImage, request.IssuerRef, request.Owner)
@@ -90,6 +96,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, request Request) Outcome {
 		}
 	}
 	return elasticStackOutcome(neteye.ServiceStateReady, "Elastic Stack feature module is ready", neteye.ServiceStateReady, "OpenTelemetry Collector is ready", request.CollectorImage)
+}
+
+func incompleteOutcome(message, image string) Outcome {
+	return Outcome{Phase: neteye.PhaseNotReady, PhaseMessage: "Check services status for details", Module: neteye.NetEyeServiceStatus{Status: neteye.ServiceStateNotReady, Message: message}, Collector: ptrTo(collectorStatus(neteye.ServiceStateNotReady, message, image)), Requeue: RequeueProgressing}
 }
 
 func failedOutcome(err error, image string) Outcome {

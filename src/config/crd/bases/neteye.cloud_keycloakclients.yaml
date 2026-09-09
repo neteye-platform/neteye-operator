@@ -80,13 +80,13 @@ spec:
                   operator never touches it, so no Pod can mount it from the cluster.
                 properties:
                   key:
-                    description: Key is the key inside the Secret containing the database
-                      credential value.
+                    description: Key is the key inside the Secret containing the referenced
+                      value.
                     minLength: 1
                     type: string
                   name:
-                    description: Name is the name of the Secret containing the database
-                      credential.
+                    description: Name is the name of the Secret containing the referenced
+                      value.
                     minLength: 1
                     type: string
                 required:

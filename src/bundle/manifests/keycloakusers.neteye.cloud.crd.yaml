@@ -88,12 +88,12 @@ spec:
                     properties:
                       key:
                         description: Key is the key inside the Secret containing the
-                          database credential value.
+                          referenced value.
                         minLength: 1
                         type: string
                       name:
                         description: Name is the name of the Secret containing the
-                          database credential.
+                          referenced value.
                         minLength: 1
                         type: string
                     required:

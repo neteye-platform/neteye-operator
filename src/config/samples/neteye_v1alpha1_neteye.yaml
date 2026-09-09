@@ -28,13 +28,8 @@ spec:
       passwordSecret: {name: keycloak-db-secret, key: password}
   elasticStack:
     enabled: true
-    otelCollector:
-      replicas: 1
-    edotGateway:
-      replicas: 1
-      elasticsearchEndpoints:
-        - https://elasticsearch.example.com:9200
-      apiKeySecret:
-        name: elasticsearch-api-key
-        key: api_key
-      rootCASecretName: neteye-root-ca
+    telemetry:
+      otelCollector: {}
+      edotGateway:
+        elasticsearchEndpoints:
+          - https://elasticsearch.example.com:9200

@@ -332,14 +332,14 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 	}{
 		{
 			name:             "ready",
-			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
+			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}}},
 			component:        &elasticStackResources{ready: true},
 			wantServiceState: neteye.ServiceStateReady, wantServiceMessage: "OpenTelemetry Collector is ready", wantModuleMessage: "Elastic Stack feature module is ready",
 			wantResultState: componentStateReady, wantResultReason: "Available",
 		},
 		{
 			name:             "not ready uses progressing override",
-			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
+			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}}},
 			component:        &elasticStackResources{message: "required user-managed Secret is missing"},
 			wantServiceState: neteye.ServiceStateNotReady, wantServiceMessage: "required user-managed Secret is missing", wantModuleMessage: "Elastic Stack feature module is not ready",
 			wantRequeue:     7 * time.Second,
@@ -347,7 +347,7 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 		},
 		{
 			name:             "failed uses failure override",
-			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
+			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}}},
 			component:        &elasticStackResources{err: errors.New("ensure failed")},
 			wantServiceState: neteye.ServiceStateFailed, wantServiceMessage: "ensure failed", wantModuleMessage: "Elastic Stack feature module is unavailable",
 			wantRequeue: 11 * time.Second, wantErr: true,

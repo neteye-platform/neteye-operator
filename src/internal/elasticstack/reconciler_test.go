@@ -10,7 +10,9 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
@@ -89,3 +91,16 @@ func (c *recordingComponent) DeleteResources(context.Context, string, metav1.Own
 }
 
 var _ ResourceReconciler = (*recordingComponent)(nil)
+
+func elasticScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func elasticConfig() neteye.NetEyeElasticStackSpec {
+	return neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com:9200"}}}}
+}

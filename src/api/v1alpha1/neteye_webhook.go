@@ -107,29 +107,18 @@ func validateElasticStack(neteye *NetEye) error {
 	if neteye.Spec.ElasticStack == nil || !neteye.Spec.ElasticStack.Enabled {
 		return nil
 	}
-	config := neteye.Spec.ElasticStack.OTelCollector
-	if config == nil {
-		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("otelCollector"), "must be set when elasticStack.enabled is true")})
+	telemetry := neteye.Spec.ElasticStack.Telemetry
+	if telemetry == nil {
+		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("telemetry"), "must be set when elasticStack.enabled is true")})
 	}
-	var errors field.ErrorList
-	if neteye.Spec.ElasticStack.EDOTGateway == nil {
-		if len(config.ElasticsearchEndpoints) == 0 {
-			return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("otelCollector", "elasticsearchEndpoints"), "at least one HTTPS endpoint is required")})
-		}
-		for i, endpoint := range config.ElasticsearchEndpoints {
-			if err := validateHTTPSURL(path.Child("otelCollector", "elasticsearchEndpoints").Index(i), endpoint); err != nil {
-				errors = append(errors, err)
-			}
-		}
-	} else {
-		errors = append(errors, validateEDOTGateway(path.Child("edotGateway"), neteye.Spec.ElasticStack.EDOTGateway)...)
+	if telemetry.OTelCollector == nil {
+		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("telemetry", "otelCollector"), "must be set when elasticStack.enabled is true")})
 	}
-	errors = append(errors, validateElasticStackReferenceOverrides(path.Child("otelCollector"), config)...)
-	if config.OIDCIssuerURL != "" {
-		if err := validateHTTPSURL(path.Child("otelCollector", "oidcIssuerURL"), config.OIDCIssuerURL); err != nil {
-			errors = append(errors, err)
-		}
+	if telemetry.EDOTGateway == nil {
+		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("telemetry", "edotGateway"), "must be set when elasticStack.enabled is true")})
 	}
+	errors := validateEDOTGateway(path.Child("telemetry", "edotGateway"), telemetry.EDOTGateway)
+	errors = append(errors, validateCollectorReferenceOverrides(path.Child("telemetry", "otelCollector"), telemetry.OTelCollector)...)
 	if len(errors) > 0 {
 		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, errors)
 	}
@@ -172,25 +161,8 @@ func validateEDOTGateway(path *field.Path, config *NetEyeEDOTGatewaySpec) field.
 	return errors
 }
 
-func validateElasticStackReferenceOverrides(path *field.Path, config *NetEyeOtelCollectorSpec) field.ErrorList {
+func validateCollectorReferenceOverrides(path *field.Path, config *NetEyeOtelCollectorSpec) field.ErrorList {
 	var errors field.ErrorList
-	apiKeyPath := path.Child("apiKeySecret")
-	if config.APIKeySecret != nil {
-		name := strings.TrimSpace(config.APIKeySecret.Name)
-		key := strings.TrimSpace(config.APIKeySecret.Key)
-		if name == "" {
-			errors = append(errors, field.Required(apiKeyPath.Child("name"), "must be set when apiKeySecret overrides are used"))
-		} else if err := validateDNSHostname(apiKeyPath.Child("name"), config.APIKeySecret.Name); err != nil {
-			errors = append(errors, err)
-		}
-		if key == "" {
-			errors = append(errors, field.Required(apiKeyPath.Child("key"), "must be set when apiKeySecret overrides are used"))
-		} else if config.APIKeySecret.Key != key {
-			errors = append(errors, field.Invalid(apiKeyPath.Child("key"), config.APIKeySecret.Key, "must not contain surrounding whitespace"))
-		} else if issues := validation.IsConfigMapKey(key); len(issues) > 0 {
-			errors = append(errors, field.Invalid(apiKeyPath.Child("key"), key, strings.Join(issues, ", ")))
-		}
-	}
 	for _, override := range []struct {
 		path  *field.Path
 		value string

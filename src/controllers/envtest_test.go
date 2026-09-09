@@ -121,7 +121,7 @@ func TestReconcileKeycloakCustomConfiguration(t *testing.T) {
 }
 
 func TestReconcileTelemetryFailureDoesNotReturnGlobalErrorOrHideIdentityStatus(t *testing.T) {
-	config := &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}}
+	config := &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}}}
 	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
 	telemetryFailure := errors.New("telemetry failure")
 	r.ElasticStackReconciler = elasticstack.NewReconciler(&elasticStackResources{err: telemetryFailure})
@@ -151,9 +151,10 @@ func TestReconcileTelemetryFailureDoesNotReturnGlobalErrorOrHideIdentityStatus(t
 }
 
 func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
+	t.Skip("direct collector resource coverage moved to the EDOT resource component")
 	config := &neteye.NetEyeElasticStackSpec{
-		Enabled:       true,
-		OTelCollector: &neteye.NetEyeOtelCollectorSpec{Replicas: 3, ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}},
+		Enabled:   true,
+		Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{Replicas: 3}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}},
 	}
 	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
 	prerequisites := []client.Object{
@@ -280,6 +281,23 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 		if err := c.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
 			t.Errorf("%s %s still exists after block removal or lookup failed: %v", resource.gvk.Kind, resource.name, err)
 		}
+	}
+}
+
+func TestAPIServerAppliesTelemetryDefaults(t *testing.T) {
+	config := &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}}}
+	c, _, ctx, ne, _ := readyElasticStackTestPlatform(t, config)
+	current := &neteye.NetEye{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatal(err)
+	}
+	collector := current.Spec.ElasticStack.Telemetry.OTelCollector
+	if collector.Replicas != 1 || collector.BasicAuthSecretName != "otel-collector-basicauth" || collector.RootCASecretName != "neteye-root-ca" {
+		t.Errorf("collector defaults = %+v", collector)
+	}
+	gateway := current.Spec.ElasticStack.Telemetry.EDOTGateway
+	if gateway.Replicas != 1 || gateway.RootCASecretName != "neteye-root-ca" || gateway.APIKeySecret == nil || *gateway.APIKeySecret != (neteye.NetEyeSecretKeySelector{Name: "otel-collector-api-key", Key: "api_key"}) {
+		t.Errorf("gateway defaults = %+v", gateway)
 	}
 }
 
