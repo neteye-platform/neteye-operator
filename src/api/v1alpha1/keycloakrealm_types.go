@@ -6,7 +6,11 @@ package v1alpha1
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 // KeycloakRealmEvents configures the realm's login and admin action event
-// logging. It is always enforced by the operator: see ADR-0004.
+// logging. It is always enforced by the operator, unlike optional
+// sub-resources elsewhere in this API group (for example
+// KeycloakClientSpec.ServiceAccount): every field defaults to the value that
+// keeps event logging on, so a realm reconciled with this block entirely
+// omitted still gets it, rather than silently leaving logging unmanaged.
 type KeycloakRealmEvents struct {
 	// EventsEnabled enables login event logging.
 	// +kubebuilder:validation:Optional
@@ -36,9 +40,12 @@ type KeycloakRealmEvents struct {
 }
 
 // KeycloakRealmBruteForceProtection configures the realm's account-lockout
-// defense against repeated failed logins. It is always enforced by the
-// operator: see ADR-0004. Permanent lockout is never enabled and is not
-// exposed as a field.
+// defense against repeated failed logins. Like Events, it is always
+// enforced by the operator rather than left as an opt-in sub-resource, so a
+// realm can't end up with lockout protection silently unmanaged. Permanent
+// lockout is never enabled and is not exposed as a field: no realm has
+// needed a different value, and locking users out permanently rather than
+// temporarily is not a choice this API should make easy to reach for.
 type KeycloakRealmBruteForceProtection struct {
 	// BruteForceProtected enables brute force detection.
 	// +kubebuilder:validation:Optional
@@ -129,13 +136,14 @@ type KeycloakRealmSpec struct {
 	RememberMe *bool `json:"rememberMe,omitempty"`
 
 	// Events configures login and admin action event logging. Always
-	// enforced by the operator; see ADR-0004.
+	// enforced by the operator; see KeycloakRealmEvents.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default={}
 	Events KeycloakRealmEvents `json:"events,omitempty"`
 
 	// BruteForceProtection configures account-lockout defense against
-	// repeated failed logins. Always enforced by the operator; see ADR-0004.
+	// repeated failed logins. Always enforced by the operator; see
+	// KeycloakRealmBruteForceProtection.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default={}
 	BruteForceProtection KeycloakRealmBruteForceProtection `json:"bruteForceProtection,omitempty"`

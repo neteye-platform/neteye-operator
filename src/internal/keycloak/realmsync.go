@@ -83,7 +83,7 @@ func desiredRealmRepresentation(spec neteye.KeycloakRealmSpec) representation {
 }
 
 // applyEvents adds the realm's login and admin action event logging
-// settings. Always enforced by the operator; see ADR-0004.
+// settings. Always enforced by the operator; see KeycloakRealmEvents.
 func applyEvents(desired representation, events neteye.KeycloakRealmEvents) {
 	desired["eventsEnabled"] = boolValue(events.EventsEnabled, true)
 	desired["adminEventsEnabled"] = boolValue(events.AdminEventsEnabled, true)
@@ -100,8 +100,9 @@ func applyEvents(desired representation, events neteye.KeycloakRealmEvents) {
 }
 
 // applyBruteForceProtection adds the realm's account-lockout defense
-// settings. Always enforced by the operator; see ADR-0004. permanentLockout
-// is never exposed as a spec field: see ADR-0004.
+// settings. Always enforced by the operator; see
+// KeycloakRealmBruteForceProtection. permanentLockout is never exposed as a
+// spec field for the same reason.
 func applyBruteForceProtection(desired representation, bfp neteye.KeycloakRealmBruteForceProtection) {
 	desired["bruteForceProtected"] = boolValue(bfp.BruteForceProtected, true)
 	desired["maxDeltaTimeSeconds"] = float64Value(bfp.MaxDeltaTimeSeconds, 43200)

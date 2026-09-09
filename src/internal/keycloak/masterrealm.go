@@ -62,10 +62,11 @@ func (c *Component) EnsureMasterRealm(ctx context.Context, namespace string) err
 // masterRealmSpec configures the master realm. Events and
 // BruteForceProtection are left at their zero value: the KeycloakRealm
 // controller always enforces its own defaults for them regardless (see
-// ADR-0004), so there is nothing to set here. Theme is set explicitly
-// because it is optional and opt-in on KeycloakRealmSpec — unlike Events and
-// BruteForceProtection, "neteye" is NetEye's own branding, not a
-// Keycloak-side default the CRD schema enforces on every realm.
+// KeycloakRealmEvents and KeycloakRealmBruteForceProtection), so there is
+// nothing to set here. Theme is set explicitly because it is optional and
+// opt-in on KeycloakRealmSpec — unlike Events and BruteForceProtection,
+// "neteye" is NetEye's own branding, not a Keycloak-side default the CRD
+// schema enforces on every realm.
 func masterRealmSpec() neteye.KeycloakRealmSpec {
 	return neteye.KeycloakRealmSpec{
 		Realm:       masterRealm,
