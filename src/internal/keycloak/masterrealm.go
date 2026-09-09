@@ -19,21 +19,17 @@ const (
 	// MasterRealmResourceName is the KeycloakRealm resource declaring the
 	// master realm's configuration.
 	MasterRealmResourceName = masterRealm
-	// masterRealmTheme is the Keycloak theme every NetEye installation uses,
-	// the same one the keycloak-setup Ansible role's setup_theme.yml applies.
-	masterRealmTheme = "wp"
-	// masterRealmDisplayName is the realm display name the Ansible role's
-	// "Change meta title" task sets unconditionally.
+	// masterRealmTheme is the Keycloak theme every NetEye installation uses.
+	masterRealmTheme = "neteye"
+	// masterRealmDisplayName is the realm display name shown in the admin console.
 	masterRealmDisplayName = "NetEye"
 )
 
-// EnsureMasterRealm declares the master realm's Events,
-// BruteForceProtection, and Theme configuration as a KeycloakRealm, so that
-// the KeycloakRealm controller reconciles ansible parity into it without
-// anyone applying a manifest by hand. This replaces the Ansible
-// "Setup Realm" and "Setup Theme" tasks, both of which ran against the master
-// realm: NetEye's single-tenant setup is the master realm itself, the same
-// realm EnsureNetEyeClient declares the NetEye client in.
+// EnsureMasterRealm declares the master realm's Events, BruteForceProtection,
+// and Theme configuration as a KeycloakRealm, so the KeycloakRealm controller
+// reconciles it without anyone applying a manifest by hand. NetEye's
+// single-tenant setup is the master realm itself, the same realm
+// EnsureNetEyeClient declares the NetEye client in.
 //
 // It only creates the resource when it is missing: an administrator who
 // edits the CR keeps their changes, which would not survive an unconditional
@@ -63,13 +59,13 @@ func (c *Component) EnsureMasterRealm(ctx context.Context, namespace string) err
 	return nil
 }
 
-// masterRealmSpec mirrors the Ansible role's "Setup Realm" and "Setup Theme"
-// tasks. Events and BruteForceProtection are left at their zero value: the
-// KeycloakRealm controller always enforces ansible-parity defaults for them
-// regardless (see ADR-0004), so there is nothing to set here. Theme is set
-// explicitly because it is optional and opt-in on KeycloakRealmSpec — unlike
-// Events and BruteForceProtection, "wp" is NetEye's own branding, not a
-// Keycloak-side default the CRD schema enforces on every realm.
+// masterRealmSpec configures the master realm. Events and
+// BruteForceProtection are left at their zero value: the KeycloakRealm
+// controller always enforces its own defaults for them regardless (see
+// ADR-0004), so there is nothing to set here. Theme is set explicitly
+// because it is optional and opt-in on KeycloakRealmSpec — unlike Events and
+// BruteForceProtection, "wp" is NetEye's own branding, not a Keycloak-side
+// default the CRD schema enforces on every realm.
 func masterRealmSpec() neteye.KeycloakRealmSpec {
 	return neteye.KeycloakRealmSpec{
 		Realm:       masterRealm,

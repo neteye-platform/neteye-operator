@@ -69,10 +69,9 @@ func desiredRealmRepresentation(spec neteye.KeycloakRealmSpec) representation {
 		desired["displayName"] = spec.DisplayName
 	}
 	// Unlike DisplayName, DisplayNameHTML is sent unconditionally: it is
-	// always-enforced ansible parity (default ""), not an opt-in override
-	// like DisplayName or Theme. An empty value here deliberately clears any
-	// HTML variant set outside this resource, matching the ansible task this
-	// CRD replaces, which always resets it to "".
+	// always-enforced (default ""), not an opt-in override like DisplayName
+	// or Theme. An empty value here deliberately clears any HTML variant set
+	// outside this resource.
 	desired["displayNameHtml"] = spec.DisplayNameHTML
 	desired["rememberMe"] = boolValue(spec.RememberMe, true)
 
