@@ -82,6 +82,56 @@ func TestTelemetryDefaults(t *testing.T) {
 	}
 }
 
+func TestTelemetryEffectiveValuesPreserveExplicitConfiguration(t *testing.T) {
+	collector := &NetEyeOtelCollectorSpec{
+		Replicas:            -2,
+		BasicAuthSecretName: " basic-auth ",
+		RootCASecretName:    " root-ca ",
+	}
+	if got := collector.EffectiveReplicas(); got != -2 {
+		t.Errorf("collector negative replicas = %d, want -2", got)
+	}
+	if got := collector.EffectiveBasicAuthSecretName(); got != " basic-auth " {
+		t.Errorf("collector basic-auth name = %q, want explicit whitespace-preserving value", got)
+	}
+	if got := collector.EffectiveRootCASecretName(); got != " root-ca " {
+		t.Errorf("collector root CA name = %q, want explicit whitespace-preserving value", got)
+	}
+
+	partial := &NetEyeSecretKeySelector{Name: "api-key"}
+	gateway := &NetEyeEDOTGatewaySpec{Replicas: -3, APIKeySecret: partial, RootCASecretName: " root-ca "}
+	if got := gateway.EffectiveReplicas(); got != -3 {
+		t.Errorf("gateway negative replicas = %d, want -3", got)
+	}
+	if got := gateway.EffectiveAPIKeySecret(); got != *partial {
+		t.Errorf("partial API-key selector = %+v, want %+v", got, *partial)
+	}
+	if got := gateway.EffectiveRootCASecretName(); got != " root-ca " {
+		t.Errorf("gateway root CA name = %q, want explicit whitespace-preserving value", got)
+	}
+}
+
+func TestTelemetryEffectiveValuesDefaultOnlyOmittedValues(t *testing.T) {
+	var collector *NetEyeOtelCollectorSpec
+	if collector.EffectiveReplicas() != DefaultOTelCollectorReplicas || collector.EffectiveBasicAuthSecretName() != DefaultOTelCollectorBasicAuthName || collector.EffectiveRootCASecretName() != DefaultOTelCollectorRootCAName {
+		t.Fatal("nil collector did not use documented defaults")
+	}
+	if got := (&NetEyeOtelCollectorSpec{}).EffectiveReplicas(); got != DefaultOTelCollectorReplicas {
+		t.Errorf("zero collector replicas = %d, want %d", got, DefaultOTelCollectorReplicas)
+	}
+	if got := (&NetEyeOtelCollectorSpec{BasicAuthSecretName: "   "}).EffectiveBasicAuthSecretName(); got != "   " {
+		t.Errorf("whitespace-only basic-auth name = %q, want explicit value", got)
+	}
+
+	var gateway *NetEyeEDOTGatewaySpec
+	if gateway.EffectiveReplicas() != DefaultEDOTGatewayReplicas || gateway.EffectiveAPIKeySecret() != (NetEyeSecretKeySelector{Name: DefaultEDOTGatewayAPIKeySecretName, Key: DefaultEDOTGatewayAPIKeySecretKey}) || gateway.EffectiveRootCASecretName() != DefaultEDOTGatewayRootCAName {
+		t.Fatal("nil gateway did not use documented defaults")
+	}
+	if got := (&NetEyeEDOTGatewaySpec{}).EffectiveReplicas(); got != DefaultEDOTGatewayReplicas {
+		t.Errorf("zero gateway replicas = %d, want %d", got, DefaultEDOTGatewayReplicas)
+	}
+}
+
 func TestGeneratedCRDUsesFinalTelemetrySchema(t *testing.T) {
 	data, err := os.ReadFile("../../config/crd/bases/neteye.cloud_neteyes.yaml")
 	if err != nil {

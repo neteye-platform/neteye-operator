@@ -199,7 +199,7 @@ type NetEyeEDOTGatewaySpec struct {
 // EffectiveReplicas returns the collector default for objects that bypassed
 // admission defaulting.
 func (s *NetEyeOtelCollectorSpec) EffectiveReplicas() int32 {
-	if s == nil || s.Replicas < 1 {
+	if s == nil || s.Replicas == 0 {
 		return DefaultOTelCollectorReplicas
 	}
 	return s.Replicas
@@ -208,7 +208,7 @@ func (s *NetEyeOtelCollectorSpec) EffectiveReplicas() int32 {
 // EffectiveReplicas returns the gateway default for objects that bypassed
 // admission defaulting.
 func (s *NetEyeEDOTGatewaySpec) EffectiveReplicas() int32 {
-	if s == nil || s.Replicas < 1 {
+	if s == nil || s.Replicas == 0 {
 		return DefaultEDOTGatewayReplicas
 	}
 	return s.Replicas
@@ -216,7 +216,7 @@ func (s *NetEyeEDOTGatewaySpec) EffectiveReplicas() int32 {
 
 // EffectiveBasicAuthSecretName returns the collector basic-auth Secret name.
 func (s *NetEyeOtelCollectorSpec) EffectiveBasicAuthSecretName() string {
-	if s == nil || strings.TrimSpace(s.BasicAuthSecretName) == "" {
+	if s == nil || s.BasicAuthSecretName == "" {
 		return DefaultOTelCollectorBasicAuthName
 	}
 	return s.BasicAuthSecretName
@@ -224,7 +224,7 @@ func (s *NetEyeOtelCollectorSpec) EffectiveBasicAuthSecretName() string {
 
 // EffectiveRootCASecretName returns the collector trusted-CA Secret name.
 func (s *NetEyeOtelCollectorSpec) EffectiveRootCASecretName() string {
-	if s == nil || strings.TrimSpace(s.RootCASecretName) == "" {
+	if s == nil || s.RootCASecretName == "" {
 		return DefaultOTelCollectorRootCAName
 	}
 	return s.RootCASecretName
@@ -232,7 +232,7 @@ func (s *NetEyeOtelCollectorSpec) EffectiveRootCASecretName() string {
 
 // EffectiveAPIKeySecret returns the gateway API-key Secret selector.
 func (s *NetEyeEDOTGatewaySpec) EffectiveAPIKeySecret() NetEyeSecretKeySelector {
-	if s == nil || s.APIKeySecret == nil || strings.TrimSpace(s.APIKeySecret.Name) == "" || strings.TrimSpace(s.APIKeySecret.Key) == "" {
+	if s == nil || s.APIKeySecret == nil {
 		return NetEyeSecretKeySelector{Name: DefaultEDOTGatewayAPIKeySecretName, Key: DefaultEDOTGatewayAPIKeySecretKey}
 	}
 	return *s.APIKeySecret
@@ -240,7 +240,7 @@ func (s *NetEyeEDOTGatewaySpec) EffectiveAPIKeySecret() NetEyeSecretKeySelector 
 
 // EffectiveRootCASecretName returns the gateway trusted-CA Secret name.
 func (s *NetEyeEDOTGatewaySpec) EffectiveRootCASecretName() string {
-	if s == nil || strings.TrimSpace(s.RootCASecretName) == "" {
+	if s == nil || s.RootCASecretName == "" {
 		return DefaultEDOTGatewayRootCAName
 	}
 	return s.RootCASecretName
