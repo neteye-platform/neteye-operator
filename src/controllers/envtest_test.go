@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -116,6 +117,36 @@ func TestReconcileKeycloakCustomConfiguration(t *testing.T) {
 		}
 	}
 	t.Errorf("Keycloak additionalOptions = %#v, missing %#v", options, wantOption)
+}
+
+func TestReconcileTelemetryFailureDoesNotReturnGlobalErrorOrHideIdentityStatus(t *testing.T) {
+	config := &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}}
+	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
+	telemetryFailure := errors.New("telemetry failure")
+	r.ElasticStackReconciler = elasticstack.NewReconciler(&elasticStackResources{err: telemetryFailure})
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)})
+	if err != nil {
+		t.Fatalf("reconcile returned component failure globally: %v", err)
+	}
+	if result.RequeueAfter != DefaultFailureRequeueAfter {
+		t.Errorf("requeueAfter = %v, want %v", result.RequeueAfter, DefaultFailureRequeueAfter)
+	}
+	current := &neteye.NetEye{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatalf("get neteye: %v", err)
+	}
+	if current.Status.Phase != neteye.PhaseFailed {
+		t.Errorf("phase = %q, want %q", current.Status.Phase, neteye.PhaseFailed)
+	}
+	if identity := current.Status.ServicesStatus.Identity; identity == nil || identity.Status != neteye.ServiceStateReady {
+		t.Errorf("identity status = %+v, want Ready", identity)
+	}
+	if module := current.Status.ServicesStatus.ElasticStack; module == nil || module.Status != neteye.ServiceStateFailed || module.Message != "Elastic Stack feature module is unavailable" {
+		t.Errorf("ElasticStack status = %+v, want Failed/unavailable", module)
+	} else if module.OTelCollector == nil || module.OTelCollector.Status != neteye.ServiceStateFailed || module.OTelCollector.Message != telemetryFailure.Error() {
+		t.Errorf("OTel collector status = %+v, want Failed/%q", module.OTelCollector, telemetryFailure)
+	}
 }
 
 func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
@@ -310,6 +341,17 @@ func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeEla
 	if err := c.Status().Update(ctx, kc); err != nil {
 		t.Fatal(err)
 	}
+	// No KeycloakUser controller runs under envtest, so drive the identity
+	// readiness gates by hand: one reconcile per user, since the root user is
+	// only declared once the internal admin is Ready.
+	if _, err := r.Reconcile(ctx, request); err != nil {
+		t.Fatalf("reconcile to declare the internal admin user: %v", err)
+	}
+	markUserReady(ctx, t, c, namespace, keycloak.InternalAdminResourceName)
+	if _, err := r.Reconcile(ctx, request); err != nil {
+		t.Fatalf("reconcile to declare the root user: %v", err)
+	}
+	markUserReady(ctx, t, c, namespace, keycloak.RootResourceName)
 	return c, s, ctx, ne, r
 }
 
@@ -320,6 +362,18 @@ func markReady(ctx context.Context, t *testing.T, c client.Client, object *unstr
 	}
 	if err := c.Status().Update(ctx, object); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func markUserReady(ctx context.Context, t *testing.T, c client.Client, namespace, name string) {
+	t.Helper()
+	user := &neteye.KeycloakUser{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, user); err != nil {
+		t.Fatalf("get keycloak user %q: %v", name, err)
+	}
+	user.Status.Status = neteye.ServiceStateReady
+	if err := c.Status().Update(ctx, user); err != nil {
+		t.Fatalf("mark keycloak user %q ready: %v", name, err)
 	}
 }
 
@@ -469,9 +523,22 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
+	keycloakInstance := requireExists(ctx, t, c, schema.GroupVersionKind{Group: "k8s.keycloak.org", Version: "v2beta1", Kind: "Keycloak"}, keycloak.WorkloadNamespace, keycloak.InstanceName)
+	if err := unstructured.SetNestedField(keycloakInstance.Object, keycloakInstance.GetGeneration(), "status", "observedGeneration"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedSlice(keycloakInstance.Object, []any{map[string]any{"type": "Ready", "status": "True"}}, "status", "conditions"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Status().Update(ctx, keycloakInstance); err != nil {
+		t.Fatalf("update keycloak instance status: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("third reconcile: %v", err)
+	}
 	route := requireExists(ctx, t, c, httpRouteGVK, keycloak.WorkloadNamespace, keycloak.HTTPRouteName)
 	assertNetEyeOwner(t, route)
-	assertNetEyeOwner(t, requireExists(ctx, t, c, schema.GroupVersionKind{Group: "k8s.keycloak.org", Version: "v2beta1", Kind: "Keycloak"}, keycloak.WorkloadNamespace, keycloak.InstanceName))
+	assertNetEyeOwner(t, keycloakInstance)
 	assertNetEyeOwner(t, requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.EgressPolicyName))
 	assertNetEyeOwner(t, requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.IngressPolicyName))
 	assertNetEyeOwner(t, requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.HostPolicyName))
