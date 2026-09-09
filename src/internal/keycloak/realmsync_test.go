@@ -94,6 +94,7 @@ func TestDesiredRealmRepresentationDefaults(t *testing.T) {
 
 	wantBool := map[string]bool{
 		"enabled":                   true,
+		"rememberMe":                true,
 		"eventsEnabled":             true,
 		"adminEventsEnabled":        true,
 		"adminEventsDetailsEnabled": true,
@@ -104,6 +105,13 @@ func TestDesiredRealmRepresentationDefaults(t *testing.T) {
 		if got := desired[key]; got != want {
 			t.Errorf("%s = %v, want %v", key, got, want)
 		}
+	}
+
+	if got := desired["displayNameHtml"]; got != "" {
+		t.Errorf("displayNameHtml = %v, want empty string", got)
+	}
+	if _, ok := desired["loginTheme"]; ok {
+		t.Errorf("loginTheme = %v, want absent when Theme is nil", desired["loginTheme"])
 	}
 
 	wantFloat := map[string]float64{
@@ -159,6 +167,41 @@ func TestDesiredRealmRepresentationOverrides(t *testing.T) {
 	// permanentLockout is never exposed as a spec field: always false.
 	if got := desired["permanentLockout"]; got != false {
 		t.Errorf("permanentLockout = %v, want false", got)
+	}
+}
+
+func TestDesiredRealmRepresentationTheme(t *testing.T) {
+	spec := neteye.KeycloakRealmSpec{
+		Realm:           "neteye",
+		DisplayNameHTML: "<b>NetEye</b>",
+		RememberMe:      ptr.To(false),
+		Theme: &neteye.KeycloakRealmTheme{
+			LoginTheme: "wp",
+			EmailTheme: "wp",
+		},
+	}
+	desired := desiredRealmRepresentation(spec)
+
+	if got := desired["displayNameHtml"]; got != "<b>NetEye</b>" {
+		t.Errorf("displayNameHtml = %v", got)
+	}
+	if got := desired["rememberMe"]; got != false {
+		t.Errorf("rememberMe = %v, want false", got)
+	}
+	if got := desired["loginTheme"]; got != "wp" {
+		t.Errorf("loginTheme = %v, want wp", got)
+	}
+	if got := desired["emailTheme"]; got != "wp" {
+		t.Errorf("emailTheme = %v, want wp", got)
+	}
+	// AdminTheme/AccountTheme were left empty in the spec's Theme block:
+	// the operator must not overwrite whatever Keycloak already has for
+	// them, so they must be entirely absent from desired, not sent as "".
+	if _, ok := desired["adminTheme"]; ok {
+		t.Errorf("adminTheme = %v, want absent for an unset theme field", desired["adminTheme"])
+	}
+	if _, ok := desired["accountTheme"]; ok {
+		t.Errorf("accountTheme = %v, want absent for an unset theme field", desired["accountTheme"])
 	}
 }
 

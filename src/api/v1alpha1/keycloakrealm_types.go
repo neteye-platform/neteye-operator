@@ -79,6 +79,29 @@ type KeycloakRealmBruteForceProtection struct {
 	WaitIncrementSeconds *int64 `json:"waitIncrementSeconds,omitempty"`
 }
 
+// KeycloakRealmTheme configures the Keycloak themes applied to the realm's
+// login, admin console, account console, and emails. Unlike Events and
+// BruteForceProtection, this is optional and opt-in: theme names are
+// installation-specific branding, not a Keycloak-side default worth
+// enforcing. When nil, the operator leaves the realm's themes untouched.
+type KeycloakRealmTheme struct {
+	// LoginTheme is the theme applied to the login pages.
+	// +kubebuilder:validation:Optional
+	LoginTheme string `json:"loginTheme,omitempty"`
+
+	// AdminTheme is the theme applied to the admin console.
+	// +kubebuilder:validation:Optional
+	AdminTheme string `json:"adminTheme,omitempty"`
+
+	// AccountTheme is the theme applied to the account console.
+	// +kubebuilder:validation:Optional
+	AccountTheme string `json:"accountTheme,omitempty"`
+
+	// EmailTheme is the theme applied to outgoing emails.
+	// +kubebuilder:validation:Optional
+	EmailTheme string `json:"emailTheme,omitempty"`
+}
+
 // KeycloakRealmSpec declares the desired state of one Keycloak realm.
 type KeycloakRealmSpec struct {
 	// Realm is the Keycloak realm name, which is immutable after creation.
@@ -90,10 +113,19 @@ type KeycloakRealmSpec struct {
 	// +kubebuilder:validation:Optional
 	DisplayName string `json:"displayName,omitempty"`
 
+	// DisplayNameHTML is the HTML variant of DisplayName shown on realm-themed pages.
+	// +kubebuilder:validation:Optional
+	DisplayNameHTML string `json:"displayNameHtml,omitempty"`
+
 	// Enabled enables the realm in Keycloak.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=true
 	Enabled *bool `json:"enabled,omitempty"`
+
+	// RememberMe enables the "remember me" option on the login form.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=true
+	RememberMe *bool `json:"rememberMe,omitempty"`
 
 	// Events configures login and admin action event logging. Always
 	// enforced by the operator; see ADR-0004.
@@ -106,6 +138,12 @@ type KeycloakRealmSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default={}
 	BruteForceProtection KeycloakRealmBruteForceProtection `json:"bruteForceProtection,omitempty"`
+
+	// Theme configures the realm's login, admin console, account console, and
+	// email themes. Optional: when omitted, the operator does not manage
+	// themes and leaves whatever is already set in Keycloak.
+	// +kubebuilder:validation:Optional
+	Theme *KeycloakRealmTheme `json:"theme,omitempty"`
 
 	// DeletionPolicy decides whether deleting this resource removes the remote realm.
 	// +kubebuilder:validation:Optional

@@ -68,8 +68,24 @@ func desiredRealmRepresentation(spec neteye.KeycloakRealmSpec) representation {
 	if spec.DisplayName != "" {
 		desired["displayName"] = spec.DisplayName
 	}
+	// Unlike DisplayName, DisplayNameHTML is sent unconditionally: it is
+	// always-enforced ansible parity (default ""), not an opt-in override
+	// like DisplayName or Theme. An empty value here deliberately clears any
+	// HTML variant set outside this resource, matching the ansible task this
+	// CRD replaces, which always resets it to "".
+	desired["displayNameHtml"] = spec.DisplayNameHTML
+	desired["rememberMe"] = boolValue(spec.RememberMe, true)
 
-	events := spec.Events
+	applyEvents(desired, spec.Events)
+	applyBruteForceProtection(desired, spec.BruteForceProtection)
+	applyTheme(desired, spec.Theme)
+
+	return desired
+}
+
+// applyEvents adds the realm's login and admin action event logging
+// settings. Always enforced by the operator; see ADR-0004.
+func applyEvents(desired representation, events neteye.KeycloakRealmEvents) {
 	desired["eventsEnabled"] = boolValue(events.EventsEnabled, true)
 	desired["adminEventsEnabled"] = boolValue(events.AdminEventsEnabled, true)
 	desired["adminEventsDetailsEnabled"] = boolValue(events.AdminEventsDetailsEnabled, true)
@@ -82,8 +98,12 @@ func desiredRealmRepresentation(spec neteye.KeycloakRealmSpec) representation {
 	desired["attributes"] = map[string]any{
 		"adminEventsExpiration": strconv.FormatInt(int64Value(events.AdminEventsExpiration, 15552000), 10),
 	}
+}
 
-	bfp := spec.BruteForceProtection
+// applyBruteForceProtection adds the realm's account-lockout defense
+// settings. Always enforced by the operator; see ADR-0004. permanentLockout
+// is never exposed as a spec field: see ADR-0004.
+func applyBruteForceProtection(desired representation, bfp neteye.KeycloakRealmBruteForceProtection) {
 	desired["bruteForceProtected"] = boolValue(bfp.BruteForceProtected, true)
 	desired["maxDeltaTimeSeconds"] = float64Value(bfp.MaxDeltaTimeSeconds, 43200)
 	desired["maxFailureWaitSeconds"] = float64Value(bfp.MaxFailureWaitSeconds, 900)
@@ -91,10 +111,33 @@ func desiredRealmRepresentation(spec neteye.KeycloakRealmSpec) representation {
 	desired["quickLoginCheckMilliSeconds"] = float64Value(bfp.QuickLoginCheckMilliSeconds, 1000)
 	desired["failureFactor"] = float64Value(bfp.FailureFactor, 30)
 	desired["waitIncrementSeconds"] = float64Value(bfp.WaitIncrementSeconds, 60)
-	// permanentLockout is never exposed as a spec field: see ADR-0004.
 	desired["permanentLockout"] = false
+}
 
-	return desired
+// applyTheme adds the realm's theme settings. Unlike Events and
+// BruteForceProtection, this is optional and opt-in: theme names are
+// installation-specific branding, not a Keycloak-side default worth
+// enforcing. A nil theme, or a theme with an empty field, leaves whatever is
+// already set in Keycloak untouched (see mergeRepresentation: an absent key
+// never overwrites a live one). This also means a theme once set outside
+// this resource cannot be cleared back to Keycloak's built-in default
+// through this field alone; clearing it here only stops the operator from
+// managing it.
+func applyTheme(desired representation, theme *neteye.KeycloakRealmTheme) {
+	if theme == nil {
+		return
+	}
+	fields := map[string]string{
+		"loginTheme":   theme.LoginTheme,
+		"adminTheme":   theme.AdminTheme,
+		"accountTheme": theme.AccountTheme,
+		"emailTheme":   theme.EmailTheme,
+	}
+	for key, value := range fields {
+		if value != "" {
+			desired[key] = value
+		}
+	}
 }
 
 // int64Value returns value's contents, or fallback when value is nil.

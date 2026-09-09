@@ -26,3 +26,9 @@ The realm's account-lockout defense against repeated failed logins (failure
 threshold, wait times, lockout duration). Always enforced by the operator
 with ansible-parity defaults; not opt-in. Permanent lockout is never enabled.
 _Avoid_: Security defenses, lockout policy
+
+**Theme**:
+The set of Keycloak themes (login, admin console, account console, email)
+applied to a realm's pages and emails. Optional and opt-in: unlike Events and
+Brute Force Protection, theme names are installation-specific branding, not
+a Keycloak-side default worth enforcing.
