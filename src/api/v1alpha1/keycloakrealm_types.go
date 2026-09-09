@@ -107,6 +107,7 @@ type KeycloakRealmSpec struct {
 	// Realm is the Keycloak realm name, which is immutable after creation.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="realm is immutable"
 	Realm string `json:"realm"`
 
 	// DisplayName is the human-readable realm name shown in the Keycloak admin console.

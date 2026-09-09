@@ -37,9 +37,9 @@ func TestEnsureMasterRealmDeclaresTheRealm(t *testing.T) {
 	if kcr.Spec.Theme == nil {
 		t.Fatal("theme must be set")
 	}
-	if kcr.Spec.Theme.LoginTheme != "wp" || kcr.Spec.Theme.AdminTheme != "wp" ||
-		kcr.Spec.Theme.AccountTheme != "wp" || kcr.Spec.Theme.EmailTheme != "wp" {
-		t.Errorf("theme = %+v, want every theme set to wp", kcr.Spec.Theme)
+	if kcr.Spec.Theme.LoginTheme != "neteye" || kcr.Spec.Theme.AdminTheme != "neteye" ||
+		kcr.Spec.Theme.AccountTheme != "neteye" || kcr.Spec.Theme.EmailTheme != "neteye" {
+		t.Errorf("theme = %+v, want every theme set to neteye", kcr.Spec.Theme)
 	}
 	if kcr.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
 		t.Errorf("deletionPolicy = %q, want Orphan for a resource the operator redeclares", kcr.Spec.DeletionPolicy)

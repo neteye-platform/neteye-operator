@@ -12,7 +12,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
@@ -67,11 +66,13 @@ func (r *KeycloakRealmReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 func (r *KeycloakRealmReconciler) reconcileDelete(ctx context.Context, realm *neteye.KeycloakRealm, api *keycloak.AdminAPI) (ctrl.Result, error) {
+	log := ctrl.LoggerFrom(ctx)
 	if !controllerutil.ContainsFinalizer(realm, KeycloakRealmFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	if realm.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
 		if err := keycloak.DeleteRealm(ctx, api, realm.Spec); err != nil {
+			log.Error(err, "unable to delete Keycloak realm", "realm", realm.Spec.Realm, "requeueAfter", r.failureRequeue())
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
 	}
@@ -88,5 +89,5 @@ func (r *KeycloakRealmReconciler) setStatus(ctx context.Context, key client.Obje
 }
 
 func (r *KeycloakRealmReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).For(&neteye.KeycloakRealm{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).Complete(r)
+	return ctrl.NewControllerManagedBy(mgr).For(&neteye.KeycloakRealm{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).Complete(r)
 }

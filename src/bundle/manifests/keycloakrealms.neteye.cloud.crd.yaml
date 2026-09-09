@@ -157,6 +157,9 @@ spec:
                   after creation.
                 minLength: 1
                 type: string
+                x-kubernetes-validations:
+                - message: realm is immutable
+                  rule: self == oldSelf
               rememberMe:
                 default: true
                 description: RememberMe enables the "remember me" option on the login
