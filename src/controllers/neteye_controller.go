@@ -392,6 +392,12 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		return progressingResult(identityComponentID, "RootUserNotReady", rootUserMessage, r.waitForProgressingRequeue())
 	}
 
+	if err := r.KeycloakComponent.EnsureMasterRealm(ctx, keycloak.WorkloadNamespace); err != nil {
+		log.Error(err, "failed to declare the master Keycloak realm configuration", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the master Keycloak realm configuration: %v", err), image)
+		return degradedResult(identityComponentID, "EnsureMasterRealmFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
+	}
+
 	if err := r.KeycloakComponent.EnsureNetEyeClient(ctx, keycloak.WorkloadNamespace); err != nil {
 		log.Error(err, "failed to declare the NetEye Keycloak client", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the NetEye Keycloak client: %v", err), image)
