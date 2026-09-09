@@ -107,6 +107,9 @@ func reconcileBindings(ctx context.Context, api *AdminAPI, realm, alias string, 
 	if err != nil {
 		return false, fmt.Errorf("get realm %q: %w", realm, err)
 	}
+	if realmRep == nil {
+		return false, fmt.Errorf("realm %q not found", realm)
+	}
 	update := representation{}
 	for _, binding := range bindings {
 		field, ok := realmFlowFields[string(binding)]
