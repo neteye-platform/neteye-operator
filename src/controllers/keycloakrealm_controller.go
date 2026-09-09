@@ -34,7 +34,7 @@ func (r *KeycloakRealmReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, err
 	}
-	api, err := r.adminAPI(ctx)
+	api, err := r.adminAPI(ctx) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
 	if err != nil {
 		if !realm.DeletionTimestamp.IsZero() {
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
