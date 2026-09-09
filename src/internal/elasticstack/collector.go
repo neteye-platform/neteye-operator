@@ -38,7 +38,7 @@ func NewOTelCollectorComponent(c client.Client) *OTelCollectorComponent {
 	return &OTelCollectorComponent{client: c}
 }
 
-func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeOtelCollectorSpec, identityHostname, gatewayNamespace, gatewayName, image string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) Outcome {
+func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeOtelCollectorSpec, identityHostname, gatewayNamespace, gatewayName, image, caBundleImage string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) Outcome {
 	if spec == nil {
 		return degradedOutcome(ReasonInvalidConfiguration, "otel collector configuration is required", nil)
 	}
@@ -73,7 +73,7 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := resources.EnsureDeployment(ctx, c.client, collectorDeployment(namespace, spec, image, versions), owner); err != nil {
+	if err := resources.EnsureDeployment(ctx, c.client, collectorDeployment(namespace, spec, image, caBundleImage, versions), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureService(ctx, c.client, collectorService(namespace), owner); err != nil {
@@ -136,12 +136,12 @@ func (c *OTelCollectorComponent) ensurePolicies(ctx context.Context, namespace, 
 	return err
 }
 
-func collectorDeployment(namespace string, spec *neteye.NetEyeOtelCollectorSpec, image string, annotations map[string]string) *appsv1.Deployment {
+func collectorDeployment(namespace string, spec *neteye.NetEyeOtelCollectorSpec, image, caBundleImage string, annotations map[string]string) *appsv1.Deployment {
 	labels := map[string]string{"app": collectorAppLabel}
 	mode := int32(0440)
 	replicas := spec.EffectiveReplicas()
 	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: DeploymentName, Namespace: namespace}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To(replicas), Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations}, Spec: corev1.PodSpec{
-		InitContainers: []corev1.Container{{Name: "otel-collector-ca-bundle", Image: "docker.io/alpine:3.23.5", Command: []string{"/bin/sh", "-ec", caBundleCommand}, VolumeMounts: []corev1.VolumeMount{{Name: "trusted-ca", MountPath: "/work"}, {Name: "host-ca", MountPath: "/input/system/tls-ca-bundle.pem", ReadOnly: true}, {Name: "root-ca", MountPath: "/input/neteye", ReadOnly: true}}}},
+		InitContainers: []corev1.Container{{Name: "otel-collector-ca-bundle", Image: caBundleImage, Command: []string{"/bin/sh", "-ec", caBundleCommand}, VolumeMounts: []corev1.VolumeMount{{Name: "trusted-ca", MountPath: "/work"}, {Name: "host-ca", MountPath: "/input/system/tls-ca-bundle.pem", ReadOnly: true}, {Name: "root-ca", MountPath: "/input/neteye", ReadOnly: true}}}},
 		Containers:     []corev1.Container{{Name: "otel-collector", Image: image, Args: []string{"--config", "/etc/otel/config.yaml"}, Ports: collectorPorts(), EnvFrom: []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: VariablesConfigMapName}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/etc/otel", ReadOnly: true}, {Name: "trusted-ca", MountPath: "/etc/pki/tls/certs/ca-bundle.crt", SubPath: "ca-bundle.pem", ReadOnly: true}, {Name: "basic-auth", MountPath: "/etc/otel/basicauth", ReadOnly: true}}, StartupProbe: healthProbe(5, 30), ReadinessProbe: healthProbe(10, 3), LivenessProbe: healthProbe(10, 3)}},
 		Volumes:        []corev1.Volume{{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName}, Items: []corev1.KeyToPath{{Key: "otel-collector-config.yaml", Path: "config.yaml"}}}}}, {Name: "trusted-ca", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, {Name: "host-ca", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", Type: ptr.To(corev1.HostPathFile)}}}, {Name: "root-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: spec.EffectiveRootCASecretName(), Items: []corev1.KeyToPath{{Key: "tls.crt", Path: "ca.crt"}}}}}, {Name: "basic-auth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: spec.EffectiveBasicAuthSecretName(), DefaultMode: &mode}}}},
 	}}}}

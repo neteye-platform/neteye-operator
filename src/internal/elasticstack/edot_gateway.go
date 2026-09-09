@@ -39,7 +39,7 @@ func NewEDOTGatewayComponent(c client.Client) *EDOTGatewayComponent {
 	return &EDOTGatewayComponent{client: c}
 }
 
-func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeEDOTGatewaySpec, image string, owner metav1.OwnerReference) Outcome {
+func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeEDOTGatewaySpec, image, caBundleImage string, owner metav1.OwnerReference) Outcome {
 	if spec == nil {
 		return degradedOutcome(ReasonInvalidConfiguration, "edot gateway configuration is required", nil)
 	}
@@ -76,7 +76,7 @@ func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spe
 	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := resources.EnsureDeployment(ctx, c.client, edotGatewayDeployment(namespace, spec, image, versions), owner); err != nil {
+	if err := resources.EnsureDeployment(ctx, c.client, edotGatewayDeployment(namespace, spec, image, caBundleImage, versions), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureService(ctx, c.client, telemetryService(namespace, EDOTGatewayServiceName, edotGatewayAppLabel), owner); err != nil {
@@ -109,7 +109,7 @@ func (c *EDOTGatewayComponent) ensurePolicies(ctx context.Context, namespace str
 	return err
 }
 
-func edotGatewayDeployment(namespace string, spec *neteye.NetEyeEDOTGatewaySpec, image string, annotations map[string]string) *appsv1.Deployment {
+func edotGatewayDeployment(namespace string, spec *neteye.NetEyeEDOTGatewaySpec, image, caBundleImage string, annotations map[string]string) *appsv1.Deployment {
 	labels := map[string]string{"app": edotGatewayAppLabel}
 	apiKey := spec.EffectiveAPIKeySecret()
 	return &appsv1.Deployment{
@@ -117,7 +117,7 @@ func edotGatewayDeployment(namespace string, spec *neteye.NetEyeEDOTGatewaySpec,
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr.To(spec.EffectiveReplicas()), Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations}, Spec: corev1.PodSpec{
-				InitContainers: []corev1.Container{{Name: "edot-gateway-ca-bundle", Image: "docker.io/alpine:3.23.5", Command: []string{"/bin/sh", "-ec", caBundleCommand}, VolumeMounts: []corev1.VolumeMount{{Name: "trusted-ca", MountPath: "/work"}, {Name: "host-ca", MountPath: "/input/system/tls-ca-bundle.pem", ReadOnly: true}, {Name: "root-ca", MountPath: "/input/neteye", ReadOnly: true}}}},
+				InitContainers: []corev1.Container{{Name: "edot-gateway-ca-bundle", Image: caBundleImage, Command: []string{"/bin/sh", "-ec", caBundleCommand}, VolumeMounts: []corev1.VolumeMount{{Name: "trusted-ca", MountPath: "/work"}, {Name: "host-ca", MountPath: "/input/system/tls-ca-bundle.pem", ReadOnly: true}, {Name: "root-ca", MountPath: "/input/neteye", ReadOnly: true}}}},
 				Containers:     []corev1.Container{{Name: "edot-gateway", Image: image, Args: []string{"--config", "/etc/edot/config.yaml"}, Ports: collectorPorts(), EnvFrom: []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: EDOTGatewayVariablesConfigMapName}}}}, Env: []corev1.EnvVar{{Name: "ELASTICSEARCH_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: apiKey.Name}, Key: apiKey.Key}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/etc/edot", ReadOnly: true}, {Name: "trusted-ca", MountPath: "/etc/pki/tls/certs/ca-bundle.crt", SubPath: "ca-bundle.pem", ReadOnly: true}}, StartupProbe: healthProbe(5, 30), ReadinessProbe: healthProbe(10, 3), LivenessProbe: healthProbe(10, 3)}},
 				Volumes: []corev1.Volume{
 					{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: EDOTGatewayConfigMapName}, Items: []corev1.KeyToPath{{Key: "edot-gateway-config.yaml", Path: "config.yaml"}}}}},

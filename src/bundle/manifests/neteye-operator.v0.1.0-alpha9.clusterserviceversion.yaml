@@ -382,6 +382,8 @@ spec:
                   value: docker.io/otel/opentelemetry-collector-contrib:0.156.0
                 - name: RELATED_IMAGE_EDOT_GATEWAY
                   value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.3
+                - name: RELATED_IMAGE_CA_BUNDLE
+                  value: docker.io/alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
                 image: ghcr.io/neteye-platform/neteye-operator:0.1.0-alpha9
                 imagePullPolicy: Always
                 name: manager
@@ -470,6 +472,8 @@ spec:
     name: neteye-otel-collector
   - image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.3
     name: neteye-edot-gateway
+  - image: docker.io/alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
+    name: neteye-ca-bundle
   version: 0.1.0-alpha9
   webhookdefinitions:
   - admissionReviewVersions:

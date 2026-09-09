@@ -27,7 +27,7 @@ import (
 func TestOTelCollectorBuildsIsolatedIngressResources(t *testing.T) {
 	namespace := "telemetry"
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
-	outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{Replicas: 2}, "identity.example.com", namespace, "gateway", "collector-image", issuerRef(), owner())
+	outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{Replicas: 2}, "identity.example.com", namespace, "gateway", "collector-image", "ca-bundle-image", issuerRef(), owner())
 	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonCertificateNotReady || !strings.Contains(outcome.Message, "TLS Certificate") {
 		t.Fatalf("outcome=%+v", outcome)
 	}
@@ -83,7 +83,7 @@ func TestOTelCollectorPrerequisitesAndInvalidSpecDoNotCreateWorkloads(t *testing
 			if test.name == "invalid identity hostname" {
 				identity = "https://identity.example.com"
 			}
-			outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, test.spec, identity, namespace, "gateway", "image", issuerRef(), owner())
+			outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, test.spec, identity, namespace, "gateway", "image", "ca-bundle-image", issuerRef(), owner())
 			if outcome.Phase != PhaseDegraded || outcome.Reason == "" || outcome.Message == "" {
 				t.Fatalf("outcome=%+v", outcome)
 			}
@@ -98,7 +98,7 @@ func TestEDOTGatewayBuildsElasticsearchBoundary(t *testing.T) {
 	namespace := "telemetry"
 	spec := &neteye.NetEyeEDOTGatewaySpec{Replicas: 2, ElasticsearchEndpoints: []string{"https://elastic.example.com:9243"}, APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: "elastic-key", Key: "key"}, RootCASecretName: "elastic-ca"}
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-key"}, Data: map[string][]byte{"key": []byte("value")}}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-ca"}, Data: map[string][]byte{"tls.crt": []byte("ca")}}).Build()
-	outcome := NewEDOTGatewayComponent(c).Ensure(context.Background(), namespace, spec, "gateway-image", owner())
+	outcome := NewEDOTGatewayComponent(c).Ensure(context.Background(), namespace, spec, "gateway-image", "ca-bundle-image", owner())
 	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonDeploymentNotAvailable {
 		t.Fatalf("outcome=%+v", outcome)
 	}
@@ -131,7 +131,7 @@ func TestInputResourceVersionsChangeDeploymentTemplate(t *testing.T) {
 	namespace := "telemetry"
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
 	component := NewOTelCollectorComponent(c)
-	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", "ca-bundle-image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	before := deploymentAnnotations(t, c, namespace, DeploymentName)
@@ -144,7 +144,7 @@ func TestInputResourceVersionsChangeDeploymentTemplate(t *testing.T) {
 	if err := c.Update(context.Background(), secret); err != nil {
 		t.Fatal(err)
 	}
-	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", "ca-bundle-image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	after := deploymentAnnotations(t, c, namespace, DeploymentName)
@@ -159,7 +159,7 @@ func TestEDOTInputVersionsUseFixedAnnotationKeysWithLongSecretName(t *testing.T)
 	spec := &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com"}, APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: longName, Key: "key"}}
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: longName}, Data: map[string][]byte{"key": []byte("v1")}}, rootCA(namespace)).Build()
 	component := NewEDOTGatewayComponent(c)
-	if outcome := component.Ensure(context.Background(), namespace, spec, "image", owner()); outcome.Phase != PhaseProgressing {
+	if outcome := component.Ensure(context.Background(), namespace, spec, "image", "ca-bundle-image", owner()); outcome.Phase != PhaseProgressing {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	before := deploymentAnnotations(t, c, namespace, EDOTGatewayDeploymentName)
@@ -171,7 +171,7 @@ func TestEDOTInputVersionsUseFixedAnnotationKeysWithLongSecretName(t *testing.T)
 	if err := c.Update(context.Background(), secret); err != nil {
 		t.Fatal(err)
 	}
-	if outcome := component.Ensure(context.Background(), namespace, spec, "image", owner()); outcome.Phase != PhaseProgressing {
+	if outcome := component.Ensure(context.Background(), namespace, spec, "image", "ca-bundle-image", owner()); outcome.Phase != PhaseProgressing {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	after := deploymentAnnotations(t, c, namespace, EDOTGatewayDeploymentName)
@@ -226,6 +226,29 @@ func TestCABundleCommandIsSafe(t *testing.T) {
 	}
 	if strings.Contains(caBundleCommand, "cat /input/neteye/*") || strings.Contains(caBundleCommand, "echo $") {
 		t.Fatal("CA script can emit certificate contents")
+	}
+}
+
+func TestTelemetryDeploymentsUseResolvedCABundleImage(t *testing.T) {
+	const caBundleImage = "registry.example/ca-bundle@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	collector := collectorDeployment("telemetry", &neteye.NetEyeOtelCollectorSpec{}, "collector-image", caBundleImage, nil)
+	gateway := edotGatewayDeployment("telemetry", &neteye.NetEyeEDOTGatewaySpec{}, "gateway-image", caBundleImage, nil)
+	collectorInit := collector.Spec.Template.Spec.InitContainers[0].Image
+	gatewayInit := gateway.Spec.Template.Spec.InitContainers[0].Image
+	if collectorInit != caBundleImage {
+		t.Errorf("collector CA-bundle init image = %q, want %q", collectorInit, caBundleImage)
+	}
+	if gatewayInit != caBundleImage {
+		t.Errorf("edot CA-bundle init image = %q, want %q", gatewayInit, caBundleImage)
+	}
+	if collectorInit != gatewayInit {
+		t.Errorf("collector and edot use different CA-bundle images: %q vs %q", collectorInit, gatewayInit)
+	}
+	if got := collector.Spec.Template.Spec.Containers[0].Image; got != "collector-image" {
+		t.Errorf("collector main image = %q, want collector-image", got)
+	}
+	if got := gateway.Spec.Template.Spec.Containers[0].Image; got != "gateway-image" {
+		t.Errorf("edot main image = %q, want gateway-image", got)
 	}
 }
 
@@ -313,20 +336,20 @@ func TestCollectorWaitsForRouteReadiness(t *testing.T) {
 	namespace := "telemetry"
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
 	component := NewOTelCollectorComponent(c)
-	outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner())
+	outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", "ca-bundle-image", issuerRef(), owner())
 	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonCertificateNotReady {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	markCertificateReady(t, c, namespace, GRPCTLSCertName)
 	markCertificateReady(t, c, namespace, CrossTenantTLSCertName)
-	outcome = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner())
+	outcome = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", "ca-bundle-image", issuerRef(), owner())
 	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonRouteNotReady {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, 0)
 	markRouteParentConditions(t, c, namespace, HTTPRouteName, "HTTPRoute", CrossTenantListenerName, "gateway", true, true, 0)
 	markReadyDeployment(t, c, namespace, DeploymentName)
-	outcome = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner())
+	outcome = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", "ca-bundle-image", issuerRef(), owner())
 	if outcome.Phase != PhaseReady {
 		t.Fatalf("outcome=%+v", outcome)
 	}
@@ -348,7 +371,7 @@ func TestEDOTGatewayRejectsInvalidPrerequisitesAndEndpoints(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(test.objects...).Build()
-			outcome := NewEDOTGatewayComponent(c).Ensure(context.Background(), namespace, test.spec, "gateway-image", owner())
+			outcome := NewEDOTGatewayComponent(c).Ensure(context.Background(), namespace, test.spec, "gateway-image", "ca-bundle-image", owner())
 			if outcome.Phase != PhaseDegraded || outcome.Message == "" {
 				t.Fatalf("outcome=%+v", outcome)
 			}
@@ -375,10 +398,10 @@ func TestComponentsReportReadinessAndDeleteOnlyOwnedResources(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&appsv1.Deployment{}).WithObjects(unique...).Build()
 	collector := NewOTelCollectorComponent(c)
 	gateway := NewEDOTGatewayComponent(c)
-	if outcome := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "collector-image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+	if outcome := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "collector-image", "ca-bundle-image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
 		t.Fatalf("collector outcome=%+v", outcome)
 	}
-	if outcome := gateway.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com"}}, "gateway-image", owner()); outcome.Phase != PhaseProgressing {
+	if outcome := gateway.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com"}}, "gateway-image", "ca-bundle-image", owner()); outcome.Phase != PhaseProgressing {
 		t.Fatalf("gateway outcome=%+v", outcome)
 	}
 	markReadyDeployment(t, c, namespace, DeploymentName)
@@ -387,10 +410,10 @@ func TestComponentsReportReadinessAndDeleteOnlyOwnedResources(t *testing.T) {
 	markCertificateReady(t, c, namespace, CrossTenantTLSCertName)
 	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, 0)
 	markRouteParentConditions(t, c, namespace, HTTPRouteName, "HTTPRoute", CrossTenantListenerName, "gateway", true, true, 0)
-	if outcome := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "collector-image", issuerRef(), owner()); outcome.Phase != PhaseReady {
+	if outcome := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "collector-image", "ca-bundle-image", issuerRef(), owner()); outcome.Phase != PhaseReady {
 		t.Fatalf("collector outcome=%+v", outcome)
 	}
-	if outcome := gateway.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com"}}, "gateway-image", owner()); outcome.Phase != PhaseReady {
+	if outcome := gateway.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com"}}, "gateway-image", "ca-bundle-image", owner()); outcome.Phase != PhaseReady {
 		t.Fatalf("gateway outcome=%+v", outcome)
 	}
 	if err := collector.Delete(context.Background(), namespace, owner()); err != nil {

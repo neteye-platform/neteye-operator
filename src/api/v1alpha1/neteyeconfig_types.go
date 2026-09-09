@@ -19,6 +19,9 @@ type NetEyeComponents struct {
 	OTelCollectorImage string
 	// Full image reference for the EDOT Gateway container.
 	EDOTGatewayImage string
+	// Full image reference for the CA-bundle init container shared by the OTel
+	// Collector and EDOT Gateway deployments.
+	CABundleImage string
 }
 
 // NetEyeSecretKeySelector identifies one key inside a Secret in the NetEye CR
@@ -297,7 +300,7 @@ type NetEyeGatewaySpec struct {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.4", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.156.0", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.3"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.4", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.156.0", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.3", CABundleImage: "docker.io/alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40"},
 }
 
 const (
@@ -307,8 +310,10 @@ const (
 	RelatedImageOTelCollectorEnv = "RELATED_IMAGE_OTEL_COLLECTOR"
 	// RelatedImageEDOTGatewayEnv overrides the EDOT Gateway image packaged with the operator.
 	RelatedImageEDOTGatewayEnv = "RELATED_IMAGE_EDOT_GATEWAY"
-	CurrentNetEyeVersion       = "4.50"
-	PreviousNetEyeVersion      = "4.49"
+	// RelatedImageCABundleEnv overrides the CA-bundle init-container image packaged with the operator.
+	RelatedImageCABundleEnv = "RELATED_IMAGE_CA_BUNDLE"
+	CurrentNetEyeVersion    = "4.50"
+	PreviousNetEyeVersion   = "4.49"
 )
 
 // ComponentsForVersion returns the component image set for the given NetEye
@@ -327,6 +332,9 @@ func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	}
 	if image := strings.TrimSpace(os.Getenv(RelatedImageEDOTGatewayEnv)); image != "" {
 		c.EDOTGatewayImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageCABundleEnv)); image != "" {
+		c.CABundleImage = image
 	}
 	return c, ok
 }

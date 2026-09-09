@@ -6,6 +6,8 @@ package v1alpha1
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -235,6 +237,9 @@ func TestComponentsForVersion(t *testing.T) {
 	if c.EDOTGatewayImage == "" {
 		t.Error("expected a resolved EDOT Gateway image")
 	}
+	if c.CABundleImage == "" || !strings.Contains(c.CABundleImage, "@sha256:") {
+		t.Errorf("expected a digest-pinned CA-bundle image, got %q", c.CABundleImage)
+	}
 	if _, ok := ComponentsForVersion("0.0"); ok {
 		t.Error("ComponentsForVersion(\"0.0\") found, want not found")
 	}
@@ -285,6 +290,77 @@ func TestComponentsForVersionOTelCollectorImageOverride(t *testing.T) {
 	}
 	if got, want := components.OTelCollectorImage, "registry.example/otel-collector:dev"; got != want {
 		t.Errorf("OTelCollectorImage = %q, want %q", got, want)
+	}
+}
+
+func TestComponentsForVersionCABundleImageOverride(t *testing.T) {
+	t.Setenv(RelatedImageCABundleEnv, "registry.example/ca-bundle:dev")
+
+	components, ok := ComponentsForVersion(CurrentNetEyeVersion)
+	if !ok {
+		t.Fatalf("ComponentsForVersion(%q) not found", CurrentNetEyeVersion)
+	}
+	if got, want := components.CABundleImage, "registry.example/ca-bundle:dev"; got != want {
+		t.Errorf("CABundleImage = %q, want %q", got, want)
+	}
+}
+
+func TestBundleReferencesCABundleImage(t *testing.T) {
+	want := netEyeVersionMap[CurrentNetEyeVersion].CABundleImage
+	if want == "" {
+		t.Fatal("CA-bundle image default is empty")
+	}
+	matches, err := filepath.Glob("../../bundle/manifests/*.clusterserviceversion.yaml")
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("locate generated CSV: matches=%v err=%v", matches, err)
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read generated CSV: %v", err)
+	}
+	csv := map[string]any{}
+	if err := yaml.Unmarshal(data, &csv); err != nil {
+		t.Fatalf("decode generated CSV: %v", err)
+	}
+	related, _, err := unstructured.NestedSlice(csv, "spec", "relatedImages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRelated := false
+	for _, entry := range related {
+		if image, ok := entry.(map[string]any); ok && image["image"] == want {
+			foundRelated = true
+		}
+	}
+	if !foundRelated {
+		t.Errorf("generated CSV relatedImages does not include CA-bundle image %q", want)
+	}
+	deployments, _, err := unstructured.NestedSlice(csv, "spec", "install", "spec", "deployments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundEnv := false
+	for _, deployment := range deployments {
+		deploymentMap, ok := deployment.(map[string]any)
+		if !ok {
+			continue
+		}
+		containers, _, _ := unstructured.NestedSlice(deploymentMap, "spec", "template", "spec", "containers")
+		for _, container := range containers {
+			containerMap, ok := container.(map[string]any)
+			if !ok {
+				continue
+			}
+			env, _, _ := unstructured.NestedSlice(containerMap, "env")
+			for _, variable := range env {
+				if m, ok := variable.(map[string]any); ok && m["name"] == RelatedImageCABundleEnv && m["value"] == want {
+					foundEnv = true
+				}
+			}
+		}
+	}
+	if !foundEnv {
+		t.Errorf("generated CSV operator deployment does not expose %s=%q", RelatedImageCABundleEnv, want)
 	}
 }
 
