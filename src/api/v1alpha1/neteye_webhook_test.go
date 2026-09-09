@@ -118,6 +118,53 @@ func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
 	}
 }
 
+func TestNetEyeValidatorValidatesEDOTGatewayConfiguration(t *testing.T) {
+	valid := &NetEyeElasticStackSpec{
+		Enabled:       true,
+		OTelCollector: &NetEyeOtelCollectorSpec{Replicas: 1},
+		EDOTGateway: &NetEyeEDOTGatewaySpec{
+			Replicas:               1,
+			ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"},
+			APIKeySecret:           &NetEyeSecretKeySelector{Name: "elasticsearch-api-key", Key: "api_key"},
+			RootCASecretName:       "neteye-root-ca",
+		},
+	}
+	tests := []struct {
+		name    string
+		config  *NetEyeElasticStackSpec
+		wantErr bool
+	}{
+		{name: "valid EDOT configuration", config: valid},
+		{name: "EDOT endpoints must not be empty", config: withEDOT(valid, func(g *NetEyeEDOTGatewaySpec) { g.ElasticsearchEndpoints = nil }), wantErr: true},
+		{name: "EDOT endpoint must be HTTPS", config: withEDOT(valid, func(g *NetEyeEDOTGatewaySpec) {
+			g.ElasticsearchEndpoints = []string{"http://elasticsearch.example.com:9200"}
+		}), wantErr: true},
+		{name: "EDOT endpoint must be absolute", config: withEDOT(valid, func(g *NetEyeEDOTGatewaySpec) { g.ElasticsearchEndpoints = []string{"/_bulk"} }), wantErr: true},
+		{name: "EDOT API key Secret name is required", config: withEDOT(valid, func(g *NetEyeEDOTGatewaySpec) { g.APIKeySecret = &NetEyeSecretKeySelector{Key: "api_key"} }), wantErr: true},
+		{name: "EDOT API key Secret key is required", config: withEDOT(valid, func(g *NetEyeEDOTGatewaySpec) { g.APIKeySecret = &NetEyeSecretKeySelector{Name: "api-key"} }), wantErr: true},
+		{name: "EDOT API key Secret name must be valid", config: withEDOT(valid, func(g *NetEyeEDOTGatewaySpec) {
+			g.APIKeySecret = &NetEyeSecretKeySelector{Name: "bad_name", Key: "api_key"}
+		}), wantErr: true},
+		{name: "EDOT root CA Secret name must be valid", config: withEDOT(valid, func(g *NetEyeEDOTGatewaySpec) { g.RootCASecretName = "bad_name" }), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := netEyeWithVersion(CurrentNetEyeVersion)
+			obj.Spec.ElasticStack = tt.config
+			_, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func withEDOT(config *NetEyeElasticStackSpec, mutate func(*NetEyeEDOTGatewaySpec)) *NetEyeElasticStackSpec {
+	copy := config.DeepCopy()
+	mutate(copy.EDOTGateway)
+	return copy
+}
+
 func TestNetEyeValidatorRejectsManagedKeycloakOptions(t *testing.T) {
 	tests := []struct {
 		name       string

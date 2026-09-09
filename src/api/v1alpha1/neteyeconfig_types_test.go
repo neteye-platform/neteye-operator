@@ -4,10 +4,64 @@
 package v1alpha1
 
 import (
+	"os"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/yaml"
 )
+
+func TestNetEyeEDOTGatewaySpecDeepCopy(t *testing.T) {
+	original := &NetEyeElasticStackSpec{
+		EDOTGateway: &NetEyeEDOTGatewaySpec{
+			Replicas:               2,
+			ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"},
+			APIKeySecret:           &NetEyeSecretKeySelector{Name: "api-key", Key: "api_key"},
+			RootCASecretName:       "root-ca",
+		},
+	}
+	copy := original.DeepCopy()
+	copy.EDOTGateway.ElasticsearchEndpoints[0] = "https://other.example.com:9200"
+	copy.EDOTGateway.APIKeySecret.Name = "other-api-key"
+	copy.EDOTGateway.RootCASecretName = "other-root-ca"
+
+	if original.EDOTGateway.ElasticsearchEndpoints[0] != "https://elasticsearch.example.com:9200" {
+		t.Error("DeepCopy shared EDOT endpoint slice")
+	}
+	if original.EDOTGateway.APIKeySecret.Name != "api-key" {
+		t.Error("DeepCopy shared EDOT API key selector")
+	}
+	if original.EDOTGateway.RootCASecretName != "root-ca" {
+		t.Error("DeepCopy shared EDOT root CA name")
+	}
+}
+
+func TestGeneratedCRDDefaultsEDOTGatewayReplicas(t *testing.T) {
+	data, err := os.ReadFile("../../config/crd/bases/neteye.cloud_neteyes.yaml")
+	if err != nil {
+		t.Fatalf("read generated NetEye CRD: %v", err)
+	}
+	crd := &unstructured.Unstructured{}
+	if err := yaml.Unmarshal(data, crd); err != nil {
+		t.Fatalf("decode generated NetEye CRD: %v", err)
+	}
+	versions, found, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	if err != nil || !found || len(versions) == 0 {
+		t.Fatalf("find versions in generated CRD: found=%t err=%v", found, err)
+	}
+	version, ok := versions[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("generated CRD version has unexpected type %T", versions[0])
+	}
+	value, found, err := unstructured.NestedFieldCopy(version, "schema", "openAPIV3Schema", "properties", "spec", "properties", "elasticStack", "properties", "edotGateway", "properties", "replicas", "default")
+	if err != nil || !found {
+		t.Fatalf("find EDOT replicas default in generated CRD: found=%t err=%v", found, err)
+	}
+	if value != int64(1) && value != float64(1) {
+		t.Errorf("EDOT replicas default = %v, want 1", value)
+	}
+}
 
 func TestAddToSchemeRegistersNetEyeResourceTypes(t *testing.T) {
 	scheme := runtime.NewScheme()
@@ -63,8 +117,23 @@ func TestComponentsForVersion(t *testing.T) {
 	if c.OTelCollectorImage == "" {
 		t.Error("expected a resolved OpenTelemetry Collector image")
 	}
+	if c.EDOTGatewayImage == "" {
+		t.Error("expected a resolved EDOT Gateway image")
+	}
 	if _, ok := ComponentsForVersion("0.0"); ok {
 		t.Error("ComponentsForVersion(\"0.0\") found, want not found")
+	}
+}
+
+func TestComponentsForVersionEDOTGatewayImageOverride(t *testing.T) {
+	t.Setenv(RelatedImageEDOTGatewayEnv, "registry.example/edot-gateway:dev")
+
+	components, ok := ComponentsForVersion(CurrentNetEyeVersion)
+	if !ok {
+		t.Fatalf("ComponentsForVersion(%q) not found", CurrentNetEyeVersion)
+	}
+	if got, want := components.EDOTGatewayImage, "registry.example/edot-gateway:dev"; got != want {
+		t.Errorf("EDOTGatewayImage = %q, want %q", got, want)
 	}
 }
 

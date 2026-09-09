@@ -17,6 +17,8 @@ type NetEyeComponents struct {
 	KeycloakImage string
 	// Full image reference for the OpenTelemetry Collector container.
 	OTelCollectorImage string
+	// Full image reference for the EDOT Gateway container.
+	EDOTGatewayImage string
 }
 
 // NetEyeSecretKeySelector identifies one key inside a Secret in the NetEye CR
@@ -137,6 +139,39 @@ type NetEyeElasticStackSpec struct {
 	// when Enabled is true.
 	// +kubebuilder:validation:Optional
 	OTelCollector *NetEyeOtelCollectorSpec `json:"otelCollector,omitempty"`
+
+	// EDOTGateway configures the optional EDOT Gateway topology. When present,
+	// the gateway receives telemetry from the collector and exports it to
+	// Elasticsearch.
+	// +kubebuilder:validation:Optional
+	EDOTGateway *NetEyeEDOTGatewaySpec `json:"edotGateway,omitempty"`
+}
+
+// NetEyeEDOTGatewaySpec configures the EDOT Gateway used to export telemetry
+// to Elasticsearch.
+type NetEyeEDOTGatewaySpec struct {
+	// Replicas is the number of EDOT Gateway replicas to deploy.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=1
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// ElasticsearchEndpoints is the explicitly configured list of HTTPS
+	// Elasticsearch endpoints consumed by the EDOT Gateway.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	ElasticsearchEndpoints []string `json:"elasticsearchEndpoints"`
+
+	// APIKeySecret optionally selects the Secret key containing the
+	// Elasticsearch API key.
+	// +kubebuilder:validation:Optional
+	APIKeySecret *NetEyeSecretKeySelector `json:"apiKeySecret,omitempty"`
+
+	// RootCASecretName optionally selects the Secret containing the NetEye root
+	// CA in its tls.crt key.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	RootCASecretName string `json:"rootCASecretName,omitempty"`
 }
 
 // NetEyeOtelCollectorSpec configures the shared Elastic Stack OpenTelemetry Collector.
@@ -194,7 +229,7 @@ type NetEyeGatewaySpec struct {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.4", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.156.0"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.4", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.156.0", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.3"},
 }
 
 const (
@@ -202,8 +237,10 @@ const (
 	RelatedImageKeycloakEnv = "RELATED_IMAGE_KEYCLOAK"
 	// RelatedImageOTelCollectorEnv overrides the OpenTelemetry Collector image packaged with the operator.
 	RelatedImageOTelCollectorEnv = "RELATED_IMAGE_OTEL_COLLECTOR"
-	CurrentNetEyeVersion         = "4.50"
-	PreviousNetEyeVersion        = "4.49"
+	// RelatedImageEDOTGatewayEnv overrides the EDOT Gateway image packaged with the operator.
+	RelatedImageEDOTGatewayEnv = "RELATED_IMAGE_EDOT_GATEWAY"
+	CurrentNetEyeVersion       = "4.50"
+	PreviousNetEyeVersion      = "4.49"
 )
 
 // ComponentsForVersion returns the component image set for the given NetEye
@@ -219,6 +256,9 @@ func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	}
 	if image := strings.TrimSpace(os.Getenv(RelatedImageOTelCollectorEnv)); image != "" {
 		c.OTelCollectorImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageEDOTGatewayEnv)); image != "" {
+		c.EDOTGatewayImage = image
 	}
 	return c, ok
 }

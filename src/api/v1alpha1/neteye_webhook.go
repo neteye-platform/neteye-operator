@@ -111,14 +111,18 @@ func validateElasticStack(neteye *NetEye) error {
 	if config == nil {
 		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("otelCollector"), "must be set when elasticStack.enabled is true")})
 	}
-	if len(config.ElasticsearchEndpoints) == 0 {
-		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("otelCollector", "elasticsearchEndpoints"), "at least one HTTPS endpoint is required")})
-	}
 	var errors field.ErrorList
-	for i, endpoint := range config.ElasticsearchEndpoints {
-		if err := validateHTTPSURL(path.Child("otelCollector", "elasticsearchEndpoints").Index(i), endpoint); err != nil {
-			errors = append(errors, err)
+	if neteye.Spec.ElasticStack.EDOTGateway == nil {
+		if len(config.ElasticsearchEndpoints) == 0 {
+			return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("otelCollector", "elasticsearchEndpoints"), "at least one HTTPS endpoint is required")})
 		}
+		for i, endpoint := range config.ElasticsearchEndpoints {
+			if err := validateHTTPSURL(path.Child("otelCollector", "elasticsearchEndpoints").Index(i), endpoint); err != nil {
+				errors = append(errors, err)
+			}
+		}
+	} else {
+		errors = append(errors, validateEDOTGateway(path.Child("edotGateway"), neteye.Spec.ElasticStack.EDOTGateway)...)
 	}
 	errors = append(errors, validateElasticStackReferenceOverrides(path.Child("otelCollector"), config)...)
 	if config.OIDCIssuerURL != "" {
@@ -130,6 +134,42 @@ func validateElasticStack(neteye *NetEye) error {
 		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, errors)
 	}
 	return nil
+}
+
+func validateEDOTGateway(path *field.Path, config *NetEyeEDOTGatewaySpec) field.ErrorList {
+	var errors field.ErrorList
+	if len(config.ElasticsearchEndpoints) == 0 {
+		errors = append(errors, field.Required(path.Child("elasticsearchEndpoints"), "at least one HTTPS endpoint is required"))
+	} else {
+		for i, endpoint := range config.ElasticsearchEndpoints {
+			if err := validateHTTPSURL(path.Child("elasticsearchEndpoints").Index(i), endpoint); err != nil {
+				errors = append(errors, err)
+			}
+		}
+	}
+	if config.APIKeySecret != nil {
+		apiKeyPath := path.Child("apiKeySecret")
+		name := strings.TrimSpace(config.APIKeySecret.Name)
+		key := strings.TrimSpace(config.APIKeySecret.Key)
+		if name == "" {
+			errors = append(errors, field.Required(apiKeyPath.Child("name"), "must be set when apiKeySecret is supplied"))
+		} else if err := validateDNSHostname(apiKeyPath.Child("name"), config.APIKeySecret.Name); err != nil {
+			errors = append(errors, err)
+		}
+		if key == "" {
+			errors = append(errors, field.Required(apiKeyPath.Child("key"), "must be set when apiKeySecret is supplied"))
+		} else if config.APIKeySecret.Key != key {
+			errors = append(errors, field.Invalid(apiKeyPath.Child("key"), config.APIKeySecret.Key, "must not contain surrounding whitespace"))
+		} else if issues := validation.IsConfigMapKey(key); len(issues) > 0 {
+			errors = append(errors, field.Invalid(apiKeyPath.Child("key"), key, strings.Join(issues, ", ")))
+		}
+	}
+	if config.RootCASecretName != "" {
+		if err := validateDNSHostname(path.Child("rootCASecretName"), config.RootCASecretName); err != nil {
+			errors = append(errors, err)
+		}
+	}
+	return errors
 }
 
 func validateElasticStackReferenceOverrides(path *field.Path, config *NetEyeOtelCollectorSpec) field.ErrorList {

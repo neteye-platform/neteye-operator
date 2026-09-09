@@ -61,6 +61,55 @@ spec:
                 description: ElasticStack configures the optional shared OpenTelemetry
                   Collector.
                 properties:
+                  edotGateway:
+                    description: |-
+                      EDOTGateway configures the optional EDOT Gateway topology. When present,
+                      the gateway receives telemetry from the collector and exports it to
+                      Elasticsearch.
+                    properties:
+                      apiKeySecret:
+                        description: |-
+                          APIKeySecret optionally selects the Secret key containing the
+                          Elasticsearch API key.
+                        properties:
+                          key:
+                            description: Key is the key inside the Secret containing
+                              the database credential value.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the name of the Secret containing
+                              the database credential.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      elasticsearchEndpoints:
+                        description: |-
+                          ElasticsearchEndpoints is the explicitly configured list of HTTPS
+                          Elasticsearch endpoints consumed by the EDOT Gateway.
+                        items:
+                          type: string
+                        minItems: 1
+                        type: array
+                      replicas:
+                        default: 1
+                        description: Replicas is the number of EDOT Gateway replicas
+                          to deploy.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      rootCASecretName:
+                        description: |-
+                          RootCASecretName optionally selects the Secret containing the NetEye root
+                          CA in its tls.crt key.
+                        minLength: 1
+                        type: string
+                    required:
+                    - elasticsearchEndpoints
+                    type: object
                   enabled:
                     default: false
                     description: Enabled enables the Elastic Stack feature module.

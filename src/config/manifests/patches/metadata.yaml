@@ -28,5 +28,7 @@ spec:
       image: ghcr.io/neteye-platform/neteye-keycloak:1.0.4
     - name: neteye-otel-collector
       image: docker.io/otel/opentelemetry-collector-contrib:0.156.0
+    - name: neteye-edot-gateway
+      image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.3
   install:
     strategy: deployment

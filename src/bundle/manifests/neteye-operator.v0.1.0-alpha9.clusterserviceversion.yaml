@@ -380,6 +380,8 @@ spec:
                   value: ghcr.io/neteye-platform/neteye-keycloak:1.0.4
                 - name: RELATED_IMAGE_OTEL_COLLECTOR
                   value: docker.io/otel/opentelemetry-collector-contrib:0.156.0
+                - name: RELATED_IMAGE_EDOT_GATEWAY
+                  value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.3
                 image: ghcr.io/neteye-platform/neteye-operator:0.1.0-alpha9
                 imagePullPolicy: Always
                 name: manager
@@ -466,6 +468,8 @@ spec:
     name: neteye-keycloak
   - image: docker.io/otel/opentelemetry-collector-contrib:0.156.0
     name: neteye-otel-collector
+  - image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.3
+    name: neteye-edot-gateway
   version: 0.1.0-alpha9
   webhookdefinitions:
   - admissionReviewVersions:
