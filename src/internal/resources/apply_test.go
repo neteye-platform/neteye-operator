@@ -185,3 +185,32 @@ func TestApplySetsOwnerReference(t *testing.T) {
 		t.Errorf("owner references = %v", refs)
 	}
 }
+
+func TestApplyRejectsUnownedCollision(t *testing.T) {
+	object := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"foo": "old"}}}
+	object.SetGroupVersionKind(testGVK)
+	object.SetNamespace("ns")
+	object.SetName("w")
+	c := applyClient(t, object)
+	controller := true
+	owner := metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "platform", UID: "uid-1", Controller: &controller}
+	if _, err := Apply(context.Background(), c, ObjectDefinition{GVK: testGVK, Name: "w", Namespace: "ns", Spec: map[string]any{"foo": "new"}, Owner: &owner}); err == nil {
+		t.Fatal("unowned collision was adopted")
+	}
+	if spec, _, _ := unstructured.NestedMap(getObject(t, c, testGVK, "w", "ns").Object, "spec"); spec["foo"] != "old" {
+		t.Fatalf("unowned object was overwritten: %v", spec)
+	}
+}
+
+func TestApplySameOwnerIsIdempotent(t *testing.T) {
+	c := applyClient(t)
+	controller := true
+	owner := metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "platform", UID: "uid-1", Controller: &controller}
+	definition := ObjectDefinition{GVK: testGVK, Name: "w", Namespace: "ns", Spec: map[string]any{"foo": "bar"}, Owner: &owner}
+	if _, err := Apply(context.Background(), c, definition); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := Apply(context.Background(), c, definition); err != nil || outcome != Unchanged {
+		t.Fatalf("outcome=%v err=%v", outcome, err)
+	}
+}

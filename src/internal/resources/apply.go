@@ -77,6 +77,9 @@ func reconcileExisting(ctx context.Context, c client.Client, key types.Namespace
 		currentSpec, _, _ := unstructured.NestedMap(live.Object, "spec")
 		ownerChanged := false
 		if obj.Owner != nil {
+			if err := RequireManagedOwner(live); err != nil {
+				return err
+			}
 			changed, err := SetOwnerReference(live, *obj.Owner)
 			if err != nil {
 				return err

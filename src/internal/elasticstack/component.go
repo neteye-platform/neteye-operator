@@ -50,9 +50,9 @@ func NewComponent(c client.Client, _ logr.Logger) *Component {
 	return &Component{client: c}
 }
 
-// EnsureResources intentionally does not retain the removed direct
-// collector-to-Elasticsearch implementation. The EDOT resource component is
-// introduced in the next branch.
+// EnsureResources remains the controller-facing API-only placeholder. The
+// independently callable resource components are intentionally not integrated
+// into the lifecycle graph in this change.
 func (c *Component) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, resources.CertificateIssuerRef, metav1.OwnerReference) (bool, string, error) {
 	return false, "EDOT telemetry gateway reconciliation is not implemented", nil
 }
@@ -60,10 +60,16 @@ func (c *Component) EnsureResources(context.Context, string, neteye.NetEyeElasti
 // DeleteResources deletes only the legacy collector objects controlled by the
 // supplied owner. External credential and CA resources are not included.
 func (c *Component) DeleteResources(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
-	for _, resource := range []struct {
-		gvk  schema.GroupVersionKind
-		name string
-	}{
+	return deleteOwnedResources(ctx, c.client, namespace, owner, append(collectorResourceInventory(), edotGatewayResourceInventory()...))
+}
+
+type managedResource struct {
+	gvk  schema.GroupVersionKind
+	name string
+}
+
+func collectorResourceInventory() []managedResource {
+	return []managedResource{
 		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, ConfigMapName},
 		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, VariablesConfigMapName},
 		{schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, DeploymentName},
@@ -74,10 +80,25 @@ func (c *Component) DeleteResources(ctx context.Context, namespace string, owner
 		{schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}, CrossTenantTLSCertName},
 		{schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, IngressPolicyName},
 		{schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, EgressPolicyName},
-	} {
+	}
+}
+
+func edotGatewayResourceInventory() []managedResource {
+	return []managedResource{
+		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, EDOTGatewayConfigMapName},
+		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, EDOTGatewayVariablesConfigMapName},
+		{schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, EDOTGatewayDeploymentName},
+		{schema.GroupVersionKind{Version: "v1", Kind: "Service"}, EDOTGatewayServiceName},
+		{schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, EDOTGatewayIngressPolicyName},
+		{schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, EDOTGatewayEgressPolicyName},
+	}
+}
+
+func deleteOwnedResources(ctx context.Context, c client.Client, namespace string, owner metav1.OwnerReference, inventory []managedResource) error {
+	for _, resource := range inventory {
 		object := &unstructured.Unstructured{}
 		object.SetGroupVersionKind(resource.gvk)
-		if err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resource.name}, object); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resource.name}, object); err != nil {
 			if apierrors.IsNotFound(err) {
 				continue
 			}
@@ -86,7 +107,7 @@ func (c *Component) DeleteResources(ctx context.Context, namespace string, owner
 		if !controlledBy(object, owner) {
 			continue
 		}
-		if err := c.client.Delete(ctx, object); err != nil && !apierrors.IsNotFound(err) {
+		if err := c.Delete(ctx, object); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}
