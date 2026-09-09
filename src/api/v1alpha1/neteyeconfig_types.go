@@ -433,6 +433,9 @@ type NetEyeElasticStackStatus struct {
 
 	// OTelCollector reports the observed state of the shared OpenTelemetry Collector.
 	OTelCollector *NetEyeServiceStatus `json:"otelCollector,omitempty"`
+
+	// EDOTGateway reports the observed state of the EDOT Gateway.
+	EDOTGateway *NetEyeServiceStatus `json:"edotGateway,omitempty"`
 }
 
 // NetEyeServicesStatus groups observed state by NetEye service/component.

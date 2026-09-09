@@ -7,16 +7,12 @@ package elasticstack
 import (
 	"context"
 
-	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
-	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
 const (
@@ -41,27 +37,6 @@ const (
 	DefaultBasicAuthSecretName = "otel-collector-basicauth"
 	DefaultRootCASecretName    = "neteye-root-ca"
 )
-
-type Component struct {
-	client client.Client
-}
-
-func NewComponent(c client.Client, _ logr.Logger) *Component {
-	return &Component{client: c}
-}
-
-// EnsureResources remains the controller-facing API-only placeholder. PR #67
-// must not be merged until the independently callable resource components are
-// integrated into the lifecycle graph.
-func (c *Component) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, resources.CertificateIssuerRef, metav1.OwnerReference) (bool, string, error) {
-	return false, "EDOT telemetry gateway reconciliation is not implemented", nil
-}
-
-// DeleteResources deletes only the legacy collector objects controlled by the
-// supplied owner. External credential and CA resources are not included.
-func (c *Component) DeleteResources(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
-	return deleteOwnedResources(ctx, c.client, namespace, owner, append(collectorResourceInventory(), edotGatewayResourceInventory()...))
-}
 
 type managedResource struct {
 	gvk  schema.GroupVersionKind

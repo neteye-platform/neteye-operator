@@ -16,6 +16,7 @@ type componentState string
 const (
 	identityComponentID      componentID = "identity"
 	otelCollectorComponentID componentID = "otel-collector"
+	edotGatewayComponentID   componentID = "edot-gateway"
 
 	componentStateReady       componentState = "Ready"
 	componentStateProgressing componentState = "Progressing"

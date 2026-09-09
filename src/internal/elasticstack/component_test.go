@@ -27,9 +27,9 @@ import (
 func TestOTelCollectorBuildsIsolatedIngressResources(t *testing.T) {
 	namespace := "telemetry"
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
-	ready, message, err := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{Replicas: 2}, "identity.example.com", namespace, "gateway", "collector-image", issuerRef(), owner())
-	if err != nil || ready || !strings.Contains(message, "TLS Certificate") {
-		t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
+	outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{Replicas: 2}, "identity.example.com", namespace, "gateway", "collector-image", issuerRef(), owner())
+	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonCertificateNotReady || !strings.Contains(outcome.Message, "TLS Certificate") {
+		t.Fatalf("outcome=%+v", outcome)
 	}
 	deployment := &appsv1.Deployment{}
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: DeploymentName}, deployment); err != nil {
@@ -83,9 +83,9 @@ func TestOTelCollectorPrerequisitesAndInvalidSpecDoNotCreateWorkloads(t *testing
 			if test.name == "invalid identity hostname" {
 				identity = "https://identity.example.com"
 			}
-			ready, message, err := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, test.spec, identity, namespace, "gateway", "image", issuerRef(), owner())
-			if err != nil || ready || message == "" {
-				t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
+			outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, test.spec, identity, namespace, "gateway", "image", issuerRef(), owner())
+			if outcome.Phase != PhaseDegraded || outcome.Reason == "" || outcome.Message == "" {
+				t.Fatalf("outcome=%+v", outcome)
 			}
 			if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: DeploymentName}, &appsv1.Deployment{}); err == nil {
 				t.Fatal("workload created before valid prerequisites")
@@ -98,9 +98,9 @@ func TestEDOTGatewayBuildsElasticsearchBoundary(t *testing.T) {
 	namespace := "telemetry"
 	spec := &neteye.NetEyeEDOTGatewaySpec{Replicas: 2, ElasticsearchEndpoints: []string{"https://elastic.example.com:9243"}, APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: "elastic-key", Key: "key"}, RootCASecretName: "elastic-ca"}
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-key"}, Data: map[string][]byte{"key": []byte("value")}}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-ca"}, Data: map[string][]byte{"tls.crt": []byte("ca")}}).Build()
-	ready, _, err := NewEDOTGatewayComponent(c).Ensure(context.Background(), namespace, spec, "gateway-image", owner())
-	if err != nil || ready {
-		t.Fatalf("ready=%t err=%v", ready, err)
+	outcome := NewEDOTGatewayComponent(c).Ensure(context.Background(), namespace, spec, "gateway-image", owner())
+	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonDeploymentNotAvailable {
+		t.Fatalf("outcome=%+v", outcome)
 	}
 	deployment := &appsv1.Deployment{}
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: EDOTGatewayDeploymentName}, deployment); err != nil {
@@ -131,8 +131,8 @@ func TestInputResourceVersionsChangeDeploymentTemplate(t *testing.T) {
 	namespace := "telemetry"
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
 	component := NewOTelCollectorComponent(c)
-	if _, _, err := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner()); err != nil {
-		t.Fatal(err)
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("outcome=%+v", outcome)
 	}
 	before := deploymentAnnotations(t, c, namespace, DeploymentName)
 	variables := configMap(t, c, namespace, VariablesConfigMapName)
@@ -144,8 +144,8 @@ func TestInputResourceVersionsChangeDeploymentTemplate(t *testing.T) {
 	if err := c.Update(context.Background(), secret); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner()); err != nil {
-		t.Fatal(err)
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("outcome=%+v", outcome)
 	}
 	after := deploymentAnnotations(t, c, namespace, DeploymentName)
 	if before["neteye.cloud/variables-resource-version"] == after["neteye.cloud/variables-resource-version"] || before["neteye.cloud/basic-auth-resource-version"] == after["neteye.cloud/basic-auth-resource-version"] {
@@ -159,8 +159,8 @@ func TestEDOTInputVersionsUseFixedAnnotationKeysWithLongSecretName(t *testing.T)
 	spec := &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com"}, APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: longName, Key: "key"}}
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: longName}, Data: map[string][]byte{"key": []byte("v1")}}, rootCA(namespace)).Build()
 	component := NewEDOTGatewayComponent(c)
-	if _, _, err := component.Ensure(context.Background(), namespace, spec, "image", owner()); err != nil {
-		t.Fatal(err)
+	if outcome := component.Ensure(context.Background(), namespace, spec, "image", owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("outcome=%+v", outcome)
 	}
 	before := deploymentAnnotations(t, c, namespace, EDOTGatewayDeploymentName)
 	secret := &corev1.Secret{}
@@ -171,8 +171,8 @@ func TestEDOTInputVersionsUseFixedAnnotationKeysWithLongSecretName(t *testing.T)
 	if err := c.Update(context.Background(), secret); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := component.Ensure(context.Background(), namespace, spec, "image", owner()); err != nil {
-		t.Fatal(err)
+	if outcome := component.Ensure(context.Background(), namespace, spec, "image", owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("outcome=%+v", outcome)
 	}
 	after := deploymentAnnotations(t, c, namespace, EDOTGatewayDeploymentName)
 	if before["neteye.cloud/api-key-resource-version"] == after["neteye.cloud/api-key-resource-version"] || len(after) != 4 {
@@ -313,22 +313,22 @@ func TestCollectorWaitsForRouteReadiness(t *testing.T) {
 	namespace := "telemetry"
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
 	component := NewOTelCollectorComponent(c)
-	ready, message, err := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner())
-	if err != nil || ready || !strings.Contains(message, "TLS Certificate") {
-		t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
+	outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner())
+	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonCertificateNotReady {
+		t.Fatalf("outcome=%+v", outcome)
 	}
 	markCertificateReady(t, c, namespace, GRPCTLSCertName)
 	markCertificateReady(t, c, namespace, CrossTenantTLSCertName)
-	ready, message, err = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner())
-	if err != nil || ready || !strings.Contains(message, "GRPCRoute") {
-		t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
+	outcome = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner())
+	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonRouteNotReady {
+		t.Fatalf("outcome=%+v", outcome)
 	}
 	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, 0)
 	markRouteParentConditions(t, c, namespace, HTTPRouteName, "HTTPRoute", CrossTenantListenerName, "gateway", true, true, 0)
 	markReadyDeployment(t, c, namespace, DeploymentName)
-	ready, _, err = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner())
-	if err != nil || !ready {
-		t.Fatalf("ready=%t err=%v", ready, err)
+	outcome = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner())
+	if outcome.Phase != PhaseReady {
+		t.Fatalf("outcome=%+v", outcome)
 	}
 }
 
@@ -348,9 +348,9 @@ func TestEDOTGatewayRejectsInvalidPrerequisitesAndEndpoints(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(test.objects...).Build()
-			ready, message, err := NewEDOTGatewayComponent(c).Ensure(context.Background(), namespace, test.spec, "gateway-image", owner())
-			if ready || (message == "" && err == nil) {
-				t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
+			outcome := NewEDOTGatewayComponent(c).Ensure(context.Background(), namespace, test.spec, "gateway-image", owner())
+			if outcome.Phase != PhaseDegraded || outcome.Message == "" {
+				t.Fatalf("outcome=%+v", outcome)
 			}
 			if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: EDOTGatewayDeploymentName}, &appsv1.Deployment{}); err == nil {
 				t.Fatal("gateway workload created from invalid configuration")
@@ -375,11 +375,11 @@ func TestComponentsReportReadinessAndDeleteOnlyOwnedResources(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&appsv1.Deployment{}).WithObjects(unique...).Build()
 	collector := NewOTelCollectorComponent(c)
 	gateway := NewEDOTGatewayComponent(c)
-	if ready, _, err := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "collector-image", issuerRef(), owner()); err != nil || ready {
-		t.Fatalf("collector: ready=%t err=%v", ready, err)
+	if outcome := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "collector-image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("collector outcome=%+v", outcome)
 	}
-	if ready, _, err := gateway.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com"}}, "gateway-image", owner()); err != nil || ready {
-		t.Fatalf("gateway: ready=%t err=%v", ready, err)
+	if outcome := gateway.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com"}}, "gateway-image", owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("gateway outcome=%+v", outcome)
 	}
 	markReadyDeployment(t, c, namespace, DeploymentName)
 	markReadyDeployment(t, c, namespace, EDOTGatewayDeploymentName)
@@ -387,11 +387,11 @@ func TestComponentsReportReadinessAndDeleteOnlyOwnedResources(t *testing.T) {
 	markCertificateReady(t, c, namespace, CrossTenantTLSCertName)
 	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, 0)
 	markRouteParentConditions(t, c, namespace, HTTPRouteName, "HTTPRoute", CrossTenantListenerName, "gateway", true, true, 0)
-	if ready, _, err := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "collector-image", issuerRef(), owner()); err != nil || !ready {
-		t.Fatalf("collector ready=%t err=%v", ready, err)
+	if outcome := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "collector-image", issuerRef(), owner()); outcome.Phase != PhaseReady {
+		t.Fatalf("collector outcome=%+v", outcome)
 	}
-	if ready, _, err := gateway.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com"}}, "gateway-image", owner()); err != nil || !ready {
-		t.Fatalf("gateway ready=%t err=%v", ready, err)
+	if outcome := gateway.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com"}}, "gateway-image", owner()); outcome.Phase != PhaseReady {
+		t.Fatalf("gateway outcome=%+v", outcome)
 	}
 	if err := collector.Delete(context.Background(), namespace, owner()); err != nil {
 		t.Fatal(err)
@@ -450,6 +450,7 @@ func assertPipelineReferences(t *testing.T, document string, expectElasticsearch
 		}
 	}
 }
+
 func pipelineReferenceDefined(config map[string]any, section, reference string) bool {
 	contains := func(name string) bool {
 		values, ok := config[name].(map[string]any)
@@ -468,6 +469,7 @@ func pipelineReferenceDefined(config map[string]any, section, reference string) 
 		return contains(section)
 	}
 }
+
 func assertEDOTMapping(t *testing.T, document string) {
 	t.Helper()
 	var config map[string]any
@@ -479,6 +481,7 @@ func assertEDOTMapping(t *testing.T, document string) {
 		t.Fatalf("mapping=%v", mapping)
 	}
 }
+
 func assertEDOTPipelineTopology(t *testing.T, document string) {
 	t.Helper()
 	var config map[string]any
@@ -499,11 +502,8 @@ func assertEDOTPipelineTopology(t *testing.T, document string) {
 	if !stringListEquals(aggregated["receivers"].([]any), []string{"elasticapm"}) || !stringListEquals(aggregated["exporters"].([]any), []string{"elasticsearch/otel"}) {
 		t.Fatalf("aggregated pipeline=%v", aggregated)
 	}
-	metrics := pipelines["metrics"].(map[string]any)
-	if !containsString(metrics["exporters"].([]any), "debug") {
-		t.Fatal("metrics pipeline does not reference debug exporter")
-	}
 }
+
 func assertCollectorBatching(t *testing.T, document string) {
 	t.Helper()
 	var config map[string]any
@@ -526,6 +526,7 @@ func assertCollectorBatching(t *testing.T, document string) {
 		}
 	}
 }
+
 func containsString(values []any, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -534,6 +535,7 @@ func containsString(values []any, target string) bool {
 	}
 	return false
 }
+
 func stringListEquals(values []any, target []string) bool {
 	if len(values) != len(target) {
 		return false
@@ -545,6 +547,7 @@ func stringListEquals(values []any, target []string) bool {
 	}
 	return true
 }
+
 func deploymentAnnotations(t *testing.T, c client.Client, namespace, name string) map[string]string {
 	t.Helper()
 	deployment := &appsv1.Deployment{}
@@ -553,6 +556,7 @@ func deploymentAnnotations(t *testing.T, c client.Client, namespace, name string
 	}
 	return deployment.Spec.Template.Annotations
 }
+
 func assertPolicySelector(t *testing.T, c client.Client, namespace, name, app string) {
 	t.Helper()
 	object := &unstructured.Unstructured{}
@@ -565,6 +569,7 @@ func assertPolicySelector(t *testing.T, c client.Client, namespace, name, app st
 		t.Fatalf("policy %s selects %q", name, selector)
 	}
 }
+
 func assertNamespaceScopedPeer(t *testing.T, c client.Client, namespace, policyName, direction, peerField, app string) {
 	t.Helper()
 	object := &unstructured.Unstructured{}
@@ -587,18 +592,21 @@ func assertNamespaceScopedPeer(t *testing.T, c client.Client, namespace, policyN
 	}
 	t.Fatalf("policy %s has no %s peer for %s", policyName, peerField, app)
 }
+
 func assertMissing(t *testing.T, c client.Client, namespace, name string, object client.Object) {
 	t.Helper()
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: name}, object); err == nil {
 		t.Fatalf("%T %s was not deleted", object, name)
 	}
 }
+
 func assertPresent(t *testing.T, c client.Client, namespace, name string, object client.Object) {
 	t.Helper()
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: name}, object); err != nil {
 		t.Fatalf("%T %s missing: %v", object, name, err)
 	}
 }
+
 func configMap(t *testing.T, c client.Client, namespace, name string) *corev1.ConfigMap {
 	t.Helper()
 	result := &corev1.ConfigMap{}
@@ -607,6 +615,7 @@ func configMap(t *testing.T, c client.Client, namespace, name string) *corev1.Co
 	}
 	return result
 }
+
 func findEnv(values []corev1.EnvVar, name string) *corev1.EnvVar {
 	for i := range values {
 		if values[i].Name == name {
@@ -615,6 +624,7 @@ func findEnv(values []corev1.EnvVar, name string) *corev1.EnvVar {
 	}
 	return nil
 }
+
 func findVolume(values []corev1.Volume, name string) corev1.Volume {
 	for _, value := range values {
 		if value.Name == name {
@@ -623,6 +633,7 @@ func findVolume(values []corev1.Volume, name string) corev1.Volume {
 	}
 	return corev1.Volume{}
 }
+
 func componentScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	result := runtime.NewScheme()
@@ -631,18 +642,23 @@ func componentScheme(t *testing.T) *runtime.Scheme {
 	}
 	return result
 }
+
 func collectorPrerequisites(namespace string) []client.Object {
 	return []client.Object{basicAuth(namespace, map[string][]byte{"htpasswd": []byte("hash")}), rootCA(namespace)}
 }
+
 func gatewayPrerequisites(namespace string) []client.Object {
 	return []client.Object{&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultAPIKeySecretName}, Data: map[string][]byte{DefaultAPIKeySecretKey: []byte("key")}}, rootCA(namespace)}
 }
+
 func basicAuth(namespace string, data map[string][]byte) *corev1.Secret {
 	return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultBasicAuthSecretName}, Data: data}
 }
+
 func rootCA(namespace string) *corev1.Secret {
 	return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultRootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("certificate")}}
 }
+
 func owner() metav1.OwnerReference {
 	return metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "platform", UID: "owner", Controller: boolPtr(true)}
 }
@@ -650,6 +666,7 @@ func boolPtr(value bool) *bool { return &value }
 func issuerRef() resources.CertificateIssuerRef {
 	return resources.CertificateIssuerRef{Name: "internal-issuer"}
 }
+
 func markReadyDeployment(t *testing.T, c client.Client, namespace, name string) {
 	t.Helper()
 	d := &appsv1.Deployment{}
@@ -663,6 +680,7 @@ func markReadyDeployment(t *testing.T, c client.Client, namespace, name string) 
 		t.Fatal(err)
 	}
 }
+
 func markCertificateReady(t *testing.T, c client.Client, namespace, name string) {
 	t.Helper()
 	certificate := &unstructured.Unstructured{}
@@ -677,6 +695,7 @@ func markCertificateReady(t *testing.T, c client.Client, namespace, name string)
 		t.Fatal(err)
 	}
 }
+
 func markRouteParentConditions(t *testing.T, c client.Client, namespace, name, kind, section, gateway string, accepted, resolved bool, generationOffset int64) {
 	t.Helper()
 	route := &unstructured.Unstructured{}

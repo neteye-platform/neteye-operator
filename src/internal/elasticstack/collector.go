@@ -38,15 +38,15 @@ func NewOTelCollectorComponent(c client.Client) *OTelCollectorComponent {
 	return &OTelCollectorComponent{client: c}
 }
 
-func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeOtelCollectorSpec, identityHostname, gatewayNamespace, gatewayName, image string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
+func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeOtelCollectorSpec, identityHostname, gatewayNamespace, gatewayName, image string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) Outcome {
 	if spec == nil {
-		return false, "otel collector configuration is required", nil
+		return degradedOutcome(ReasonInvalidConfiguration, "otel collector configuration is required", nil)
 	}
 	if spec.Replicas < 0 {
-		return false, "otel collector replicas must be at least one", nil
+		return degradedOutcome(ReasonInvalidConfiguration, "otel collector replicas must be at least one", nil)
 	}
 	if err := validateDNSName(identityHostname, "identity hostname"); err != nil {
-		return false, err.Error(), nil
+		return degradedOutcome(ReasonInvalidConfiguration, err.Error(), nil)
 	}
 	basicAuthVersion, err := requiredSecretResourceVersion(ctx, c.client, namespace, spec.EffectiveBasicAuthSecretName(), "htpasswd")
 	if err != nil {
@@ -57,56 +57,69 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 		return prerequisiteOutcome(err)
 	}
 	if image == "" {
-		return false, "otel collector resolved image is required", nil
+		return degradedOutcome(ReasonInvalidConfiguration, "otel collector resolved image is required", nil)
 	}
 	issuer := "https://" + identityHostname + "/auth/realms/master"
 	if _, err := url.Parse(issuer); err != nil { // identity hostname was validated; retain defensive failure semantics.
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, ConfigMapName, map[string]string{"otel-collector-config.yaml": collectorConfig}, owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, VariablesConfigMapName, map[string]string{"OIDC_ISSUER": issuer}, owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	versions, err := collectorInputVersions(ctx, c.client, namespace, basicAuthVersion, rootCAVersion)
 	if err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureDeployment(ctx, c.client, collectorDeployment(namespace, spec, image, versions), owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureService(ctx, c.client, collectorService(namespace), owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, GRPCTLSCertName, GRPCTLSSecretName, GRPCRouteHostname, []string{GRPCRouteHostname}, issuerRef, &owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, CrossTenantTLSCertName, CrossTenantTLSSecretName, CrossTenantRouteHostname, []string{CrossTenantRouteHostname}, issuerRef, &owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureGRPCRoute(ctx, c.client, namespace, GRPCRouteName, gatewayNamespace, gatewayName, GRPCListenerName, GRPCRouteHostname, ServiceName, 4317, &owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayName, CrossTenantListenerName, []string{CrossTenantRouteHostname}, ServiceName, 4318, &owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := c.ensurePolicies(ctx, namespace, identityHostname, owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	for _, name := range []string{GRPCTLSCertName, CrossTenantTLSCertName} {
 		ready, message, err := resources.IsCertificateReady(ctx, c.client, namespace, name)
 		if err != nil || !ready {
-			return ready, message, err
+			if err != nil {
+				return degradedOutcome(ReasonReconcileFailed, message, err)
+			}
+			return progressingOutcome(ReasonCertificateNotReady, message)
 		}
 	}
 	for _, route := range []struct{ name, kind, section string }{{GRPCRouteName, "GRPCRoute", GRPCListenerName}, {HTTPRouteName, "HTTPRoute", CrossTenantListenerName}} {
 		ready, message, err := routeReady(ctx, c.client, namespace, route.name, route.kind, expectedParent{group: "gateway.networking.k8s.io", kind: "Gateway", namespace: gatewayNamespace, name: gatewayName, section: route.section})
 		if err != nil || !ready {
-			return ready, message, err
+			if err != nil {
+				return degradedOutcome(ReasonReconcileFailed, message, err)
+			}
+			return progressingOutcome(ReasonRouteNotReady, message)
 		}
 	}
-	return resources.IsDeploymentReady(ctx, c.client, namespace, DeploymentName)
+	ready, message, err := resources.IsDeploymentReady(ctx, c.client, namespace, DeploymentName)
+	if err != nil {
+		return degradedOutcome(ReasonReconcileFailed, message, err)
+	}
+	if !ready {
+		return progressingOutcome(ReasonDeploymentNotAvailable, message)
+	}
+	return readyOutcome("OpenTelemetry Collector is ready")
 }
 
 // Delete removes only collector-owned objects. It never deletes EDOT resources
@@ -188,20 +201,20 @@ func fqdnEgress(host, port string) map[string]any {
 
 func requiredSecretResourceVersion(ctx context.Context, c client.Client, namespace, name, key string) (string, error) {
 	if err := validateDNSName(name, "Secret name"); err != nil {
-		return "", err
+		return "", prerequisiteError{ReasonInvalidConfiguration, err.Error()}
 	}
 	if key == "" || strings.TrimSpace(key) != key || strings.ContainsAny(key, " \t\r\n") {
-		return "", fmt.Errorf("secret key must be a non-empty value without whitespace")
+		return "", prerequisiteError{ReasonInvalidConfiguration, "secret key must be a non-empty value without whitespace"}
 	}
 	secret := &corev1.Secret{}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return "", prerequisiteError{fmt.Sprintf("required user-managed Secret %q is missing in namespace %q", name, namespace)}
+			return "", prerequisiteError{ReasonSecretNotFound, fmt.Sprintf("required user-managed Secret %q is missing in namespace %q", name, namespace)}
 		}
 		return "", err
 	}
 	if len(secret.Data[key]) == 0 {
-		return "", prerequisiteError{fmt.Sprintf("required user-managed Secret %q is missing non-empty key %q in namespace %q", name, key, namespace)}
+		return "", prerequisiteError{ReasonSecretKeyMissing, fmt.Sprintf("required user-managed Secret %q is missing non-empty key %q in namespace %q", name, key, namespace)}
 	}
 	return secret.ResourceVersion, nil
 }
@@ -308,15 +321,15 @@ func routeReady(ctx context.Context, c client.Client, namespace, routeName, kind
 	return false, fmt.Sprintf("waiting for Gateway %s/%s to accept %s %s", expected.namespace, expected.name, kind, routeName), nil
 }
 
-type prerequisiteError struct{ message string }
+type prerequisiteError struct{ reason, message string }
 
 func (e prerequisiteError) Error() string { return e.message }
-func prerequisiteOutcome(err error) (bool, string, error) {
+func prerequisiteOutcome(err error) Outcome {
 	var e prerequisiteError
 	if errors.As(err, &e) {
-		return false, e.message, nil
+		return degradedOutcome(e.reason, e.message, e)
 	}
-	return false, "", err
+	return degradedOutcome(ReasonReconcileFailed, err.Error(), err)
 }
 
 const caBundleCommand = `tmp_bundle=/work/ca-bundle.pem.tmp

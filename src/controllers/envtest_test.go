@@ -5,7 +5,6 @@ package controllers
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -123,15 +122,19 @@ func TestReconcileKeycloakCustomConfiguration(t *testing.T) {
 func TestReconcileTelemetryFailureDoesNotReturnGlobalErrorOrHideIdentityStatus(t *testing.T) {
 	config := &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}}}
 	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
-	telemetryFailure := errors.New("telemetry failure")
-	r.ElasticStackReconciler = elasticstack.NewReconciler(&elasticStackResources{err: telemetryFailure})
+	if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultBasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("hash")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultRootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("ca")}}); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)})
 	if err != nil {
 		t.Fatalf("reconcile returned component failure globally: %v", err)
 	}
-	if result.RequeueAfter != DefaultFailureRequeueAfter {
-		t.Errorf("requeueAfter = %v, want %v", result.RequeueAfter, DefaultFailureRequeueAfter)
+	if result.RequeueAfter != DefaultWaitForProgressingRequeueAfter {
+		t.Errorf("requeueAfter = %v, want %v", result.RequeueAfter, DefaultWaitForProgressingRequeueAfter)
 	}
 	current := &neteye.NetEye{}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
@@ -143,15 +146,12 @@ func TestReconcileTelemetryFailureDoesNotReturnGlobalErrorOrHideIdentityStatus(t
 	if identity := current.Status.ServicesStatus.Identity; identity == nil || identity.Status != neteye.ServiceStateReady {
 		t.Errorf("identity status = %+v, want Ready", identity)
 	}
-	if module := current.Status.ServicesStatus.ElasticStack; module == nil || module.Status != neteye.ServiceStateFailed || module.Message != "Elastic Stack feature module is unavailable" {
-		t.Errorf("ElasticStack status = %+v, want Failed/unavailable", module)
-	} else if module.OTelCollector == nil || module.OTelCollector.Status != neteye.ServiceStateFailed || module.OTelCollector.Message != telemetryFailure.Error() {
-		t.Errorf("OTel collector status = %+v, want Failed/%q", module.OTelCollector, telemetryFailure)
+	if module := current.Status.ServicesStatus.ElasticStack; module == nil || module.EDOTGateway == nil || module.EDOTGateway.Status != neteye.ServiceStateFailed || module.EDOTGateway.Message == "" {
+		t.Errorf("EDOT gateway status = %+v, want Failed/missing Secret", module)
 	}
 }
 
 func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
-	t.Skip("direct collector resource coverage moved to the EDOT resource component")
 	config := &neteye.NetEyeElasticStackSpec{
 		Enabled:   true,
 		Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{Replicas: 3}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}},
@@ -170,18 +170,25 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}); err != nil {
 		t.Fatalf("reconcile elastic stack: %v", err)
 	}
-	for _, resource := range []struct {
-		gvk  schema.GroupVersionKind
-		name string
-	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {certificateGVK, elasticstack.GRPCTLSCertName}, {certificateGVK, elasticstack.CrossTenantTLSCertName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
+	for _, resource := range telemetryResourceInventory() {
 		requireExists(ctx, t, c, resource.gvk, keycloak.WorkloadNamespace, resource.name)
 	}
 	variables := &corev1.ConfigMap{}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.VariablesConfigMapName}, variables); err != nil {
 		t.Fatal(err)
 	}
-	if variables.Data["ELASTICSEARCH_ENDPOINTS"] != `["https://elasticsearch.example.com:9200"]` || variables.Data["OIDC_ISSUER"] != "https://keycloak.example.com/auth/realms/master" {
-		t.Errorf("variables = %#v", variables.Data)
+	if variables.Data["OIDC_ISSUER"] != "https://keycloak.example.com/auth/realms/master" {
+		t.Errorf("collector variables = %#v", variables.Data)
+	}
+	if _, ok := variables.Data["ELASTICSEARCH_ENDPOINTS"]; ok {
+		t.Errorf("collector variables must not include Elasticsearch endpoints: %#v", variables.Data)
+	}
+	edotVariables := &corev1.ConfigMap{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.EDOTGatewayVariablesConfigMapName}, edotVariables); err != nil {
+		t.Fatal(err)
+	}
+	if edotVariables.Data["ELASTICSEARCH_ENDPOINTS"] != `["https://elasticsearch.example.com:9200"]` {
+		t.Errorf("edot variables = %#v", edotVariables.Data)
 	}
 	deployment := &appsv1.Deployment{}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DeploymentName}, deployment); err != nil {
@@ -197,23 +204,26 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	if current.Status.ServicesStatus.ElasticStack.OTelCollector.Status != neteye.ServiceStateNotReady {
 		t.Errorf("Elastic Stack collector status before deployment readiness = %q", current.Status.ServicesStatus.ElasticStack.OTelCollector.Status)
 	}
-	deployment.Status.ObservedGeneration = deployment.Generation
-	deployment.Status.Replicas = *deployment.Spec.Replicas
-	deployment.Status.ReadyReplicas = *deployment.Spec.Replicas
-	deployment.Status.UpdatedReplicas = *deployment.Spec.Replicas
-	if err := c.Status().Update(ctx, deployment); err != nil {
-		t.Fatalf("mark collector deployment ready: %v", err)
-	}
+	markDeploymentReady(ctx, t, c, elasticstack.DeploymentName)
+	markDeploymentReady(ctx, t, c, elasticstack.EDOTGatewayDeploymentName)
 	markReady(ctx, t, c, requireExists(ctx, t, c, certificateGVK, keycloak.WorkloadNamespace, elasticstack.GRPCTLSCertName))
 	markReady(ctx, t, c, requireExists(ctx, t, c, certificateGVK, keycloak.WorkloadNamespace, elasticstack.CrossTenantTLSCertName))
+	markRouteAccepted(ctx, t, c, grpcRouteGVK, keycloak.WorkloadNamespace, elasticstack.GRPCRouteName, elasticstack.GRPCListenerName, ne.Spec.Gateway.Name)
+	markRouteAccepted(ctx, t, c, httpRouteGVK, keycloak.WorkloadNamespace, elasticstack.HTTPRouteName, elasticstack.CrossTenantListenerName, ne.Spec.Gateway.Name)
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}); err != nil {
-		t.Fatalf("reconcile ready collector deployment: %v", err)
+		t.Fatalf("reconcile ready telemetry deployments: %v", err)
 	}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
 		t.Fatal(err)
 	}
 	if current.Status.ServicesStatus.ElasticStack.OTelCollector.Status != neteye.ServiceStateReady {
-		t.Errorf("Elastic Stack collector status after deployment readiness = %q", current.Status.ServicesStatus.ElasticStack.OTelCollector.Status)
+		t.Errorf("collector status after readiness = %q", current.Status.ServicesStatus.ElasticStack.OTelCollector.Status)
+	}
+	if current.Status.ServicesStatus.ElasticStack.EDOTGateway.Status != neteye.ServiceStateReady {
+		t.Errorf("edot gateway status after readiness = %q", current.Status.ServicesStatus.ElasticStack.EDOTGateway.Status)
+	}
+	if current.Status.ServicesStatus.ElasticStack.Status != neteye.ServiceStateReady {
+		t.Errorf("elastic stack aggregate status after readiness = %q", current.Status.ServicesStatus.ElasticStack.Status)
 	}
 	for _, route := range []struct {
 		gvk  schema.GroupVersionKind
@@ -244,13 +254,16 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}); err != nil {
 		t.Fatalf("reconcile disabled elastic stack: %v", err)
 	}
-	for _, resource := range []struct {
-		gvk  schema.GroupVersionKind
-		name string
-	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {certificateGVK, elasticstack.GRPCTLSCertName}, {certificateGVK, elasticstack.CrossTenantTLSCertName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
+	for _, resource := range telemetryResourceInventory() {
 		object := newUnstructured(resource.gvk, keycloak.WorkloadNamespace, resource.name)
 		if err := c.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
 			t.Errorf("%s %s still exists or lookup failed: %v", resource.gvk.Kind, resource.name, err)
+		}
+	}
+	for _, prerequisite := range prerequisites {
+		preserved := prerequisite.DeepCopyObject().(client.Object)
+		if err := c.Get(ctx, client.ObjectKeyFromObject(prerequisite), preserved); err != nil {
+			t.Errorf("external Secret %s was not preserved on disable: %v", prerequisite.GetName(), err)
 		}
 	}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
@@ -273,10 +286,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}); err != nil {
 		t.Fatalf("reconcile removed elastic stack block: %v", err)
 	}
-	for _, resource := range []struct {
-		gvk  schema.GroupVersionKind
-		name string
-	}{{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName}, {schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName}, {schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName}, {schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName}, {grpcRouteGVK, elasticstack.GRPCRouteName}, {httpRouteGVK, elasticstack.HTTPRouteName}, {certificateGVK, elasticstack.GRPCTLSCertName}, {certificateGVK, elasticstack.CrossTenantTLSCertName}, {ciliumPolicyGVK, elasticstack.IngressPolicyName}, {ciliumPolicyGVK, elasticstack.EgressPolicyName}} {
+	for _, resource := range telemetryResourceInventory() {
 		object := newUnstructured(resource.gvk, keycloak.WorkloadNamespace, resource.name)
 		if err := c.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
 			t.Errorf("%s %s still exists after block removal or lookup failed: %v", resource.gvk.Kind, resource.name, err)
@@ -341,7 +351,7 @@ func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeEla
 	if err := c.Create(ctx, ne); err != nil {
 		t.Fatal(err)
 	}
-	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard()), ElasticStackReconciler: elasticstack.NewReconciler(elasticstack.NewComponent(c, logr.Discard()))}
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard()), OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c), EDOTGatewayComponent: elasticstack.NewEDOTGatewayComponent(c)}
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}
 	if _, err := r.Reconcile(ctx, request); err != nil {
 		t.Fatal(err)
@@ -451,10 +461,12 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	}
 
 	r := &NetEyeReconciler{
-		Client:            c,
-		Log:               logr.Discard(),
-		Scheme:            s,
-		KeycloakComponent: keycloak.NewComponent(c, logr.Discard()),
+		Client:                 c,
+		Log:                    logr.Discard(),
+		Scheme:                 s,
+		KeycloakComponent:      keycloak.NewComponent(c, logr.Discard()),
+		OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c),
+		EDOTGatewayComponent:   elasticstack.NewEDOTGatewayComponent(c),
 	}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "platform"}}
 
@@ -572,6 +584,67 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	hostnames, _, _ := unstructured.NestedSlice(route.Object, "spec", "hostnames")
 	if len(hostnames) != 1 || hostnames[0] != keycloak.RouteHostname {
 		t.Errorf("route hostnames = %v, want [%s]", hostnames, keycloak.RouteHostname)
+	}
+}
+
+func telemetryResourceInventory() []struct {
+	gvk  schema.GroupVersionKind
+	name string
+} {
+	return []struct {
+		gvk  schema.GroupVersionKind
+		name string
+	}{
+		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName},
+		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName},
+		{schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName},
+		{schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName},
+		{grpcRouteGVK, elasticstack.GRPCRouteName},
+		{httpRouteGVK, elasticstack.HTTPRouteName},
+		{certificateGVK, elasticstack.GRPCTLSCertName},
+		{certificateGVK, elasticstack.CrossTenantTLSCertName},
+		{ciliumPolicyGVK, elasticstack.IngressPolicyName},
+		{ciliumPolicyGVK, elasticstack.EgressPolicyName},
+		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.EDOTGatewayConfigMapName},
+		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.EDOTGatewayVariablesConfigMapName},
+		{schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.EDOTGatewayDeploymentName},
+		{schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.EDOTGatewayServiceName},
+		{ciliumPolicyGVK, elasticstack.EDOTGatewayIngressPolicyName},
+		{ciliumPolicyGVK, elasticstack.EDOTGatewayEgressPolicyName},
+	}
+}
+
+func markDeploymentReady(ctx context.Context, t *testing.T, c client.Client, name string) {
+	t.Helper()
+	deployment := &appsv1.Deployment{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: name}, deployment); err != nil {
+		t.Fatalf("get deployment %q: %v", name, err)
+	}
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = *deployment.Spec.Replicas
+	deployment.Status.ReadyReplicas = *deployment.Spec.Replicas
+	deployment.Status.UpdatedReplicas = *deployment.Spec.Replicas
+	if err := c.Status().Update(ctx, deployment); err != nil {
+		t.Fatalf("mark deployment %q ready: %v", name, err)
+	}
+}
+
+func markRouteAccepted(ctx context.Context, t *testing.T, c client.Client, gvk schema.GroupVersionKind, namespace, name, section, gatewayName string) {
+	t.Helper()
+	route := requireExists(ctx, t, c, gvk, namespace, name)
+	generation := route.GetGeneration()
+	parent := map[string]any{
+		"parentRef": map[string]any{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": namespace, "name": gatewayName, "sectionName": section},
+		"conditions": []any{
+			map[string]any{"type": "Accepted", "status": "True", "observedGeneration": generation},
+			map[string]any{"type": "ResolvedRefs", "status": "True", "observedGeneration": generation},
+		},
+	}
+	if err := unstructured.SetNestedSlice(route.Object, []any{parent}, "status", "parents"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Status().Update(ctx, route); err != nil {
+		t.Fatalf("mark route %q accepted: %v", name, err)
 	}
 }
 

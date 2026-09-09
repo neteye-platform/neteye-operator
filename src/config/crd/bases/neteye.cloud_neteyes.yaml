@@ -373,6 +373,23 @@ spec:
                     description: NetEyeElasticStackStatus reports observed state for
                       Elastic Stack components.
                     properties:
+                      edotGateway:
+                        description: EDOTGateway reports the observed state of the
+                          EDOT Gateway.
+                        properties:
+                          message:
+                            description: Message is a human-readable status message
+                              for this service.
+                            type: string
+                          resolvedImage:
+                            description: ResolvedImage is the container image resolved
+                              for this service.
+                            type: string
+                          status:
+                            description: ServiceState is the per-service state reported
+                              in NetEyeServiceStatus.Status.
+                            type: string
+                        type: object
                       message:
                         description: Message is a human-readable status message for
                           the Elastic Stack feature module.

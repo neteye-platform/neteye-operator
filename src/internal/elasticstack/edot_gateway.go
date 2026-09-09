@@ -39,19 +39,19 @@ func NewEDOTGatewayComponent(c client.Client) *EDOTGatewayComponent {
 	return &EDOTGatewayComponent{client: c}
 }
 
-func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeEDOTGatewaySpec, image string, owner metav1.OwnerReference) (bool, string, error) {
+func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeEDOTGatewaySpec, image string, owner metav1.OwnerReference) Outcome {
 	if spec == nil {
-		return false, "edot gateway configuration is required", nil
+		return degradedOutcome(ReasonInvalidConfiguration, "edot gateway configuration is required", nil)
 	}
 	if spec.Replicas < 0 {
-		return false, "edot gateway replicas must be at least one", nil
+		return degradedOutcome(ReasonInvalidConfiguration, "edot gateway replicas must be at least one", nil)
 	}
 	if image == "" {
-		return false, "edot gateway resolved image is required", nil
+		return degradedOutcome(ReasonInvalidConfiguration, "edot gateway resolved image is required", nil)
 	}
 	endpoints, targets, err := validatedEndpoints(spec.ElasticsearchEndpoints)
 	if err != nil {
-		return false, err.Error(), nil
+		return degradedOutcome(ReasonInvalidConfiguration, err.Error(), nil)
 	}
 	key := spec.EffectiveAPIKeySecret()
 	apiKeyVersion, err := requiredSecretResourceVersion(ctx, c.client, namespace, key.Name, key.Key)
@@ -64,28 +64,35 @@ func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spe
 	}
 	encodedEndpoints, err := json.Marshal(endpoints)
 	if err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, EDOTGatewayConfigMapName, map[string]string{"edot-gateway-config.yaml": edotGatewayConfig}, owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, EDOTGatewayVariablesConfigMapName, map[string]string{"ELASTICSEARCH_ENDPOINTS": string(encodedEndpoints)}, owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	versions, err := edotGatewayInputVersions(ctx, c.client, namespace, apiKeyVersion, rootCAVersion)
 	if err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureDeployment(ctx, c.client, edotGatewayDeployment(namespace, spec, image, versions), owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := resources.EnsureService(ctx, c.client, telemetryService(namespace, EDOTGatewayServiceName, edotGatewayAppLabel), owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := c.ensurePolicies(ctx, namespace, targets, owner); err != nil {
-		return false, "", err
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	return resources.IsDeploymentReady(ctx, c.client, namespace, EDOTGatewayDeploymentName)
+	ready, message, err := resources.IsDeploymentReady(ctx, c.client, namespace, EDOTGatewayDeploymentName)
+	if err != nil {
+		return degradedOutcome(ReasonReconcileFailed, message, err)
+	}
+	if !ready {
+		return progressingOutcome(ReasonDeploymentNotAvailable, message)
+	}
+	return readyOutcome("EDOT Gateway is ready")
 }
 
 // Delete removes only EDOT gateway-owned objects. It never deletes collector
@@ -158,6 +165,7 @@ func validatedEndpoints(values []string) ([]string, []egressTarget, error) {
 	sort.Slice(targets, func(i, j int) bool { return targets[i].host+targets[i].port < targets[j].host+targets[j].port })
 	return normalized, targets, nil
 }
+
 func validateDNSName(value, field string) error {
 	if strings.TrimSpace(value) == "" || strings.TrimSpace(value) != value || len(value) > 253 {
 		return fmt.Errorf("%s must be a non-empty DNS name", field)
@@ -174,9 +182,11 @@ func validateDNSName(value, field string) error {
 	}
 	return nil
 }
+
 func edotGatewayIngressPolicy(namespace string) map[string]any {
 	return map[string]any{"endpointSelector": labelsFor(edotGatewayAppLabel), "ingress": []any{map[string]any{"fromEndpoints": []any{namespaceScopedEndpoint(collectorAppLabel, namespace)}, "toPorts": []any{tcpPorts("4317", "4318")}}, map[string]any{"fromEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("13133")}}}}
 }
+
 func edotGatewayEgressPolicy(targets []egressTarget) map[string]any {
 	rules := []any{dnsEgress(targetHosts(targets))}
 	for _, target := range targets {
@@ -184,6 +194,7 @@ func edotGatewayEgressPolicy(targets []egressTarget) map[string]any {
 	}
 	return map[string]any{"endpointSelector": labelsFor(edotGatewayAppLabel), "egress": rules}
 }
+
 func targetHosts(targets []egressTarget) []string {
 	result := make([]string, 0, len(targets))
 	for _, target := range targets {
@@ -215,7 +226,6 @@ processors:
 connectors:
   elasticapm: {}
 exporters:
-  debug: {}
   elasticsearch/otel:
     endpoints: ${ELASTICSEARCH_ENDPOINTS}
     api_key: "${ELASTICSEARCH_API_KEY}"
@@ -227,7 +237,7 @@ service:
   extensions: [health_check]
   pipelines:
     logs: {receivers: [otlp], processors: [batch, elasticapm], exporters: [elasticapm, elasticsearch/otel]}
-    metrics: {receivers: [otlp], processors: [batch, elasticapm], exporters: [elasticapm, elasticsearch/otel, debug]}
+    metrics: {receivers: [otlp], processors: [batch, elasticapm], exporters: [elasticapm, elasticsearch/otel]}
     traces: {receivers: [otlp], processors: [batch, elasticapm], exporters: [elasticapm, elasticsearch/otel]}
     metrics/aggregated-otel-metrics: {receivers: [elasticapm], exporters: [elasticsearch/otel]}
 `

@@ -106,8 +106,8 @@ func main() {
 	setupLog.Info("health and readiness checks configured")
 
 	keycloakComponent := keycloak.NewComponent(mgr.GetClient(), ctrl.Log.WithName("keycloak-component"))
-	elasticStackComponent := elasticstack.NewComponent(mgr.GetClient(), ctrl.Log.WithName("elastic-stack-component"))
-	elasticStackReconciler := elasticstack.NewReconciler(elasticStackComponent)
+	otelCollectorComponent := elasticstack.NewOTelCollectorComponent(mgr.GetClient())
+	edotGatewayComponent := elasticstack.NewEDOTGatewayComponent(mgr.GetClient())
 	if err := mgr.Add(keycloakComponent); err != nil {
 		setupLog.Error(err, "unable to add keycloak component")
 		os.Exit(1)
@@ -121,8 +121,9 @@ func main() {
 		Log:                            ctrl.Log.WithName("neteye-reconciler"),
 		Scheme:                         mgr.GetScheme(),
 		KeycloakComponent:              keycloakComponent,
-		ElasticStackReconciler:         elasticStackReconciler,
 		AdminProviders:                 adminProviders,
+		OTelCollectorComponent:         otelCollectorComponent,
+		EDOTGatewayComponent:           edotGatewayComponent,
 		WaitForProgressingRequeueAfter: waitForProgressingRequeue,
 		FailureRequeueAfter:            failureRequeue,
 		ReconciliationRequeueAfter:     reconciliationRequeue,
