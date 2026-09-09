@@ -198,6 +198,21 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := c.EnsureInstance(ctx, namespace, image, identity, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
+
+	// HACK: We must check for keycloak Ready before creating the HTTPRoute, because the Keycloak Operator will not
+	// create the Service right away. If we create the HTTPRoute first, it will fail to find the Service and will not be
+	// created, this is the Cilium's bug https://github.com/cilium/cilium/issues/47819.
+	// This can be removed once updated to Cilium 1.20.0 or later, which fixes the issue.
+
+	ready, message, err := c.IsReady(ctx, namespace)
+	if err != nil {
+		return false, "", fmt.Errorf("check keycloak readiness: %w", err)
+	}
+	if !ready {
+		return false, message, nil
+	}
+	// END HACK
+
 	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayRef, GatewayListenerName, []string{RouteHostname}, ServiceName, HTTPPort, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure http route: %w", err)
 	}

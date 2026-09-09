@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,6 +22,7 @@ import (
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
+	"github.com/neteye-platform/neteye-operator/internal/keycloak"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -29,6 +31,9 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	s := runtime.NewScheme()
 	if err := neteye.AddToScheme(s); err != nil {
 		t.Fatalf("add neteye scheme: %v", err)
+	}
+	if err := coordinationv1.AddToScheme(s); err != nil {
+		t.Fatalf("add coordination scheme: %v", err)
 	}
 	return s
 }
@@ -114,6 +119,100 @@ func TestReconcileNotFound(t *testing.T) {
 	}
 	if !res.IsZero() {
 		t.Errorf("expected an empty result, got %+v", res)
+	}
+}
+
+func TestReconcileClusterAuthorityFailurePreventsManagedResourceMutations(t *testing.T) {
+	s := testScheme(t)
+	ne := newNetEye(neteye.CurrentNetEyeVersion)
+	ne.UID = "platform-uid"
+	authorityFailure := errors.New("authority unavailable")
+	createCalls, updateCalls := 0, 0
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(ne).WithObjects(ne).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, underlying client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+			if _, ok := object.(*coordinationv1.Lease); ok {
+				return authorityFailure
+			}
+			return underlying.Get(ctx, key, object, options...)
+		},
+		Create: func(ctx context.Context, underlying client.WithWatch, object client.Object, options ...client.CreateOption) error {
+			createCalls++
+			return underlying.Create(ctx, object, options...)
+		},
+		Update: func(ctx context.Context, underlying client.WithWatch, object client.Object, options ...client.UpdateOption) error {
+			updateCalls++
+			return underlying.Update(ctx, object, options...)
+		},
+	}).Build()
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard())}
+
+	result, err := reconcileNetEye(t, r, ne)
+	if !errors.Is(err, authorityFailure) {
+		t.Fatalf("error = %v, want authority failure", err)
+	}
+	if result.RequeueAfter != DefaultFailureRequeueAfter {
+		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, DefaultFailureRequeueAfter)
+	}
+	if createCalls != 0 || updateCalls != 0 {
+		t.Errorf("managed resource mutations = creates:%d updates:%d, want none", createCalls, updateCalls)
+	}
+	got := &neteye.NetEye{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(ne), got); err != nil {
+		t.Fatalf("get neteye: %v", err)
+	}
+	if got.Status.Phase != neteye.PhaseFailed {
+		t.Errorf("phase = %q, want %q", got.Status.Phase, neteye.PhaseFailed)
+	}
+	if identity := got.Status.ServicesStatus.Identity; identity == nil || identity.Status != neteye.ServiceStateUnknown {
+		t.Errorf("identity status = %+v, want Unknown", identity)
+	}
+	if elasticStack := got.Status.ServicesStatus.ElasticStack; elasticStack == nil || elasticStack.Status != neteye.ServiceStateUnknown || elasticStack.OTelCollector == nil || elasticStack.OTelCollector.Status != neteye.ServiceStateUnknown {
+		t.Errorf("Elastic Stack status = %+v, want module and collector Unknown", elasticStack)
+	}
+}
+
+func TestReconcileReturnsStatusUpdateFailure(t *testing.T) {
+	s := testScheme(t)
+	ne := newNetEye(neteye.PreviousNetEyeVersion)
+	statusFailure := errors.New("status unavailable")
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(ne).WithObjects(ne).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+			return statusFailure
+		},
+	}).Build()
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s}
+
+	result, err := reconcileNetEye(t, r, ne)
+	if !errors.Is(err, statusFailure) {
+		t.Fatalf("error = %v, want status failure", err)
+	}
+	if result.RequeueAfter != DefaultFailureRequeueAfter {
+		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, DefaultFailureRequeueAfter)
+	}
+}
+
+func TestReconcileJoinsSystemicAndStatusUpdateFailures(t *testing.T) {
+	s := testScheme(t)
+	ne := newNetEye(neteye.CurrentNetEyeVersion)
+	ne.UID = "platform-uid"
+	authorityFailure := errors.New("authority unavailable")
+	statusFailure := errors.New("status unavailable")
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(ne).WithObjects(ne).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, underlying client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+			if _, ok := object.(*coordinationv1.Lease); ok {
+				return authorityFailure
+			}
+			return underlying.Get(ctx, key, object, options...)
+		},
+		SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+			return statusFailure
+		},
+	}).Build()
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard())}
+
+	_, err := reconcileNetEye(t, r, ne)
+	if !errors.Is(err, authorityFailure) || !errors.Is(err, statusFailure) {
+		t.Fatalf("error = %v, want joined authority and status failures", err)
 	}
 }
 
@@ -206,38 +305,41 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 		wantServiceState   neteye.ServiceState
 		wantServiceMessage string
 		wantModuleMessage  string
-		wantPhase          neteye.NetEyePhase
-		wantPhaseMessage   string
 		wantRequeue        time.Duration
 		wantErr            bool
 		wantDeletes        int
+		wantResultState    componentState
+		wantResultReason   string
 	}{
 		{
 			name:             "ready",
 			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{ready: true},
 			wantServiceState: neteye.ServiceStateReady, wantServiceMessage: "OpenTelemetry Collector is ready", wantModuleMessage: "Elastic Stack feature module is ready",
-			wantPhase: neteye.PhaseReady, wantPhaseMessage: "previous phase",
+			wantResultState: componentStateReady, wantResultReason: "Available",
 		},
 		{
 			name:             "not ready uses progressing override",
 			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{message: "required user-managed Secret is missing"},
 			wantServiceState: neteye.ServiceStateNotReady, wantServiceMessage: "required user-managed Secret is missing", wantModuleMessage: "Elastic Stack feature module is not ready",
-			wantPhase: neteye.PhaseNotReady, wantPhaseMessage: "Check services status for details", wantRequeue: 7 * time.Second,
+			wantRequeue:     7 * time.Second,
+			wantResultState: componentStateProgressing, wantResultReason: "Progressing",
 		},
 		{
 			name:             "failed uses failure override",
 			config:           &neteye.NetEyeElasticStackSpec{Enabled: true, OTelCollector: &neteye.NetEyeOtelCollectorSpec{}},
 			component:        &elasticStackResources{err: errors.New("ensure failed")},
 			wantServiceState: neteye.ServiceStateFailed, wantServiceMessage: "ensure failed", wantModuleMessage: "Elastic Stack feature module is unavailable",
-			wantPhase: neteye.PhaseFailed, wantPhaseMessage: "Check services status for details", wantRequeue: 11 * time.Second, wantErr: true,
+			wantRequeue: 11 * time.Second, wantErr: true,
+			wantResultState: componentStateDegraded, wantResultReason: "ReconcileFailed",
 		},
 		{
 			name:             "disabled cleans up",
 			component:        &elasticStackResources{},
 			wantServiceState: neteye.ServiceStateDisabled, wantServiceMessage: "OpenTelemetry Collector is disabled", wantModuleMessage: "Elastic Stack feature module is disabled",
-			wantPhase: neteye.PhaseReady, wantPhaseMessage: "previous phase", wantDeletes: 1,
+			wantDeletes:     1,
+			wantResultState: componentStateReady, wantResultReason: "Disabled",
 		},
 	}
 
@@ -254,11 +356,17 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 			}
 
 			result, err := r.reconcileElasticStack(context.Background(), ne, "collector-image")
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("error = %v, want error=%t", err, tt.wantErr)
+			if err != nil {
+				t.Fatalf("systemic error = %v", err)
+			}
+			if (result.Err != nil) != tt.wantErr {
+				t.Errorf("component error = %v, want error=%t", result.Err, tt.wantErr)
 			}
 			if result.RequeueAfter != tt.wantRequeue {
 				t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, tt.wantRequeue)
+			}
+			if result.State != tt.wantResultState || result.Reason != tt.wantResultReason {
+				t.Errorf("component result = %+v, want state=%q reason=%q", result, tt.wantResultState, tt.wantResultReason)
 			}
 			collector := ne.Status.ServicesStatus.ElasticStack.OTelCollector
 			if module := ne.Status.ServicesStatus.ElasticStack; module.Status != tt.wantServiceState || module.Message != tt.wantModuleMessage {
@@ -267,13 +375,38 @@ func TestReconcileElasticStackOutcomeMapping(t *testing.T) {
 			if collector.Status != tt.wantServiceState || collector.Message != tt.wantServiceMessage || collector.ResolvedImage != "collector-image" {
 				t.Errorf("ElasticStack collector status = %+v, want state=%q message=%q image=collector-image", collector, tt.wantServiceState, tt.wantServiceMessage)
 			}
-			if ne.Status.Phase != tt.wantPhase || ne.Status.Message != tt.wantPhaseMessage {
-				t.Errorf("phase = %q/%q, want %q/%q", ne.Status.Phase, ne.Status.Message, tt.wantPhase, tt.wantPhaseMessage)
-			}
 			if tt.component.deletes != tt.wantDeletes {
 				t.Errorf("delete calls = %d, want %d", tt.component.deletes, tt.wantDeletes)
 			}
 		})
+	}
+}
+
+func TestEarliestComponentRequeue(t *testing.T) {
+	results := map[componentID]componentResult{
+		"none": {ID: "none"}, "late": {ID: "late", RequeueAfter: 2 * time.Minute},
+		"early": {ID: "early", RequeueAfter: 30 * time.Second}, "negative": {ID: "negative", RequeueAfter: -time.Second},
+	}
+	if got := earliestComponentRequeue(results); got != 30*time.Second {
+		t.Errorf("earliest = %v, want 30s", got)
+	}
+	if got := earliestComponentRequeue(map[componentID]componentResult{"none": {ID: "none"}}); got != 0 {
+		t.Errorf("empty earliest = %v, want 0", got)
+	}
+}
+
+func TestAggregateComponentPhasePreservesReadyIdentityWithDegradedTelemetry(t *testing.T) {
+	identity, err := readyResult(identityComponentID, "Available", "Identity service is ready")
+	if err != nil {
+		t.Fatalf("identity result: %v", err)
+	}
+	telemetry, err := degradedResult(otelCollectorComponentID, "ReconcileFailed", "failed", time.Minute, errors.New("failed"))
+	if err != nil {
+		t.Fatalf("telemetry result: %v", err)
+	}
+	phase, _ := aggregateComponentPhase(map[componentID]componentResult{identityComponentID: identity, otelCollectorComponentID: telemetry})
+	if identity.State != componentStateReady || phase != neteye.PhaseFailed {
+		t.Errorf("identity=%+v phase=%q", identity, phase)
 	}
 }
 
