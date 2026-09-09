@@ -52,6 +52,7 @@ func TestOTelCollectorBuildsIsolatedIngressResources(t *testing.T) {
 		t.Fatal("collector variables include Elasticsearch endpoints")
 	}
 	assertPipelineReferences(t, configMap(t, c, namespace, ConfigMapName).Data["otel-collector-config.yaml"], false)
+	assertCollectorBatching(t, configMap(t, c, namespace, ConfigMapName).Data["otel-collector-config.yaml"])
 	service := &corev1.Service{}
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: ServiceName}, service); err != nil {
 		t.Fatal(err)
@@ -120,6 +121,7 @@ func TestEDOTGatewayBuildsElasticsearchBoundary(t *testing.T) {
 	}
 	assertPipelineReferences(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"], true)
 	assertEDOTMapping(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"])
+	assertEDOTPipelineTopology(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"])
 	assertPolicySelector(t, c, namespace, EDOTGatewayIngressPolicyName, edotGatewayAppLabel)
 	assertPolicySelector(t, c, namespace, EDOTGatewayEgressPolicyName, edotGatewayAppLabel)
 	assertNamespaceScopedPeer(t, c, namespace, EDOTGatewayIngressPolicyName, "ingress", "fromEndpoints", collectorAppLabel)
@@ -146,9 +148,165 @@ func TestInputResourceVersionsChangeDeploymentTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := deploymentAnnotations(t, c, namespace, DeploymentName)
-	if before["neteye.cloud/configmap-"+VariablesConfigMapName+"-resource-version"] == after["neteye.cloud/configmap-"+VariablesConfigMapName+"-resource-version"] || before["neteye.cloud/secret-"+DefaultBasicAuthSecretName+"-resource-version"] == after["neteye.cloud/secret-"+DefaultBasicAuthSecretName+"-resource-version"] {
+	if before["neteye.cloud/variables-resource-version"] == after["neteye.cloud/variables-resource-version"] || before["neteye.cloud/basic-auth-resource-version"] == after["neteye.cloud/basic-auth-resource-version"] {
 		t.Fatalf("template annotations did not track input versions: before=%v after=%v", before, after)
 	}
+}
+
+func TestEDOTInputVersionsUseFixedAnnotationKeysWithLongSecretName(t *testing.T) {
+	namespace := "telemetry"
+	longName := strings.Repeat("a", 61) + ".example"
+	spec := &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elastic.example.com"}, APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: longName, Key: "key"}}
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: longName}, Data: map[string][]byte{"key": []byte("v1")}}, rootCA(namespace)).Build()
+	component := NewEDOTGatewayComponent(c)
+	if _, _, err := component.Ensure(context.Background(), namespace, spec, "image", owner()); err != nil {
+		t.Fatal(err)
+	}
+	before := deploymentAnnotations(t, c, namespace, EDOTGatewayDeploymentName)
+	secret := &corev1.Secret{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: longName}, secret); err != nil {
+		t.Fatal(err)
+	}
+	secret.Data["key"] = []byte("v2")
+	if err := c.Update(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := component.Ensure(context.Background(), namespace, spec, "image", owner()); err != nil {
+		t.Fatal(err)
+	}
+	after := deploymentAnnotations(t, c, namespace, EDOTGatewayDeploymentName)
+	if before["neteye.cloud/api-key-resource-version"] == after["neteye.cloud/api-key-resource-version"] || len(after) != 4 {
+		t.Fatalf("annotations=%v", after)
+	}
+	for key := range after {
+		if len(key) > 253 {
+			t.Fatalf("invalid annotation key %q", key)
+		}
+	}
+}
+
+func TestRouteReadyUsesMatchingParentStatus(t *testing.T) {
+	namespace := "telemetry"
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).Build()
+	owner := owner()
+	if err := resources.EnsureGRPCRoute(context.Background(), c, namespace, GRPCRouteName, namespace, "gateway", GRPCListenerName, GRPCRouteHostname, ServiceName, 4317, &owner); err != nil {
+		t.Fatal(err)
+	}
+	expected := expectedParent{group: "gateway.networking.k8s.io", kind: "Gateway", namespace: namespace, name: "gateway", section: GRPCListenerName}
+	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
+		t.Fatalf("no parents ready=%t err=%v", ready, err)
+	}
+	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "other", true, true, 0)
+	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
+		t.Fatalf("unrelated parent ready=%t err=%v", ready, err)
+	}
+	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", false, true, 0)
+	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
+		t.Fatalf("rejected parent ready=%t err=%v", ready, err)
+	}
+	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, false, 0)
+	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
+		t.Fatalf("unresolved parent ready=%t err=%v", ready, err)
+	}
+	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, -1)
+	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
+		t.Fatalf("stale parent ready=%t err=%v", ready, err)
+	}
+	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, 0)
+	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || !ready {
+		t.Fatalf("accepted parent ready=%t err=%v", ready, err)
+	}
+}
+
+func TestCABundleCommandIsSafe(t *testing.T) {
+	for _, fragment := range []string{"tmp_bundle=/work/ca-bundle.pem.tmp", "final_bundle=/work/ca-bundle.pem", "/input/system/tls-ca-bundle.pem", "for cert in /input/neteye/*", "[ -f \"$cert\" ]", "'/^#/d'", "'/^[[:space:]]*$/d'", "'s/TRUSTED //g'", "chmod 755 /work", "chmod 644 \"$final_bundle\""} {
+		if !strings.Contains(caBundleCommand, fragment) {
+			t.Fatalf("missing %q", fragment)
+		}
+	}
+	if strings.Contains(caBundleCommand, "cat /input/neteye/*") || strings.Contains(caBundleCommand, "echo $") {
+		t.Fatal("CA script can emit certificate contents")
+	}
+}
+
+func TestCollectorEgressPermitsDNSAndRestrictsNonDNS(t *testing.T) {
+	if !strings.Contains(collectorConfig, "endpoint: otel-edot-gateway:4317") {
+		t.Fatal("collector must export to the short EDOT service endpoint otel-edot-gateway:4317")
+	}
+	if strings.Contains(collectorConfig, ".svc") || strings.Contains(collectorConfig, "cluster.local") {
+		t.Fatal("collector must not hardcode a cluster domain")
+	}
+	egress, _, err := unstructured.NestedSlice(map[string]any{"spec": collectorEgressPolicy("telemetry", "identity.example.com")}, "spec", "egress")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dnsOK, edotOK, oidcOK bool
+	for _, raw := range egress {
+		rule := raw.(map[string]any)
+		if _, ok := rule["toEntities"]; ok {
+			t.Fatalf("collector egress grants entity-based egress: %v", rule)
+		}
+		if _, ok := rule["toCIDR"]; ok {
+			t.Fatalf("collector egress grants CIDR egress: %v", rule)
+		}
+		if _, ok := rule["toCIDRSet"]; ok {
+			t.Fatalf("collector egress grants CIDR-set egress: %v", rule)
+		}
+		if toPorts, ok := rule["toPorts"].([]any); ok {
+			for _, tp := range toPorts {
+				dnsRules, _, _ := unstructured.NestedSlice(tp.(map[string]any), "rules", "dns")
+				for _, d := range dnsRules {
+					if d.(map[string]any)["matchPattern"] == "*" {
+						dnsOK = true
+					}
+				}
+			}
+		}
+		if endpoints, ok := rule["toEndpoints"].([]any); ok {
+			for _, ep := range endpoints {
+				labels, _, _ := unstructured.NestedStringMap(ep.(map[string]any), "matchLabels")
+				if labels["k8s:app"] == edotGatewayAppLabel && labels["k8s:io.kubernetes.pod.namespace"] == "telemetry" && egressHasTCPPort(rule, "4317") {
+					edotOK = true
+				}
+			}
+		}
+		if fqdns, ok := rule["toFQDNs"].([]any); ok {
+			for _, f := range fqdns {
+				if f.(map[string]any)["matchName"] == "identity.example.com" && egressHasTCPPort(rule, "443") {
+					oidcOK = true
+				}
+			}
+		}
+	}
+	if !dnsOK {
+		t.Fatal("collector egress does not permit portable DNS resolution (matchPattern \"*\")")
+	}
+	if !edotOK {
+		t.Fatal("collector egress does not permit EDOT pods on 4317")
+	}
+	if !oidcOK {
+		t.Fatal("collector egress does not permit the OIDC issuer FQDN on 443")
+	}
+}
+
+func egressHasTCPPort(rule map[string]any, port string) bool {
+	toPorts, ok := rule["toPorts"].([]any)
+	if !ok {
+		return false
+	}
+	for _, tp := range toPorts {
+		ports, ok := tp.(map[string]any)["ports"].([]any)
+		if !ok {
+			continue
+		}
+		for _, p := range ports {
+			portMap := p.(map[string]any)
+			if portMap["port"] == port && portMap["protocol"] == "TCP" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestCollectorWaitsForRouteReadiness(t *testing.T) {
@@ -165,8 +323,8 @@ func TestCollectorWaitsForRouteReadiness(t *testing.T) {
 	if err != nil || ready || !strings.Contains(message, "GRPCRoute") {
 		t.Fatalf("ready=%t message=%q err=%v", ready, message, err)
 	}
-	markRouteReady(t, c, namespace, GRPCRouteName, "GRPCRoute")
-	markRouteReady(t, c, namespace, HTTPRouteName, "HTTPRoute")
+	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, 0)
+	markRouteParentConditions(t, c, namespace, HTTPRouteName, "HTTPRoute", CrossTenantListenerName, "gateway", true, true, 0)
 	markReadyDeployment(t, c, namespace, DeploymentName)
 	ready, _, err = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", issuerRef(), owner())
 	if err != nil || !ready {
@@ -227,8 +385,8 @@ func TestComponentsReportReadinessAndDeleteOnlyOwnedResources(t *testing.T) {
 	markReadyDeployment(t, c, namespace, EDOTGatewayDeploymentName)
 	markCertificateReady(t, c, namespace, GRPCTLSCertName)
 	markCertificateReady(t, c, namespace, CrossTenantTLSCertName)
-	markRouteReady(t, c, namespace, GRPCRouteName, "GRPCRoute")
-	markRouteReady(t, c, namespace, HTTPRouteName, "HTTPRoute")
+	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, 0)
+	markRouteParentConditions(t, c, namespace, HTTPRouteName, "HTTPRoute", CrossTenantListenerName, "gateway", true, true, 0)
 	if ready, _, err := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "collector-image", issuerRef(), owner()); err != nil || !ready {
 		t.Fatalf("collector ready=%t err=%v", ready, err)
 	}
@@ -279,7 +437,7 @@ func assertPipelineReferences(t *testing.T, document string, expectElasticsearch
 				continue
 			}
 			for _, ref := range refs.([]any) {
-				if _, ok := config[field].(map[string]any)[ref.(string)]; !ok {
+				if !pipelineReferenceDefined(config, field, ref.(string)) {
 					t.Fatalf("pipeline %s references undefined %s %q", name, field, ref)
 				}
 			}
@@ -292,6 +450,24 @@ func assertPipelineReferences(t *testing.T, document string, expectElasticsearch
 		}
 	}
 }
+func pipelineReferenceDefined(config map[string]any, section, reference string) bool {
+	contains := func(name string) bool {
+		values, ok := config[name].(map[string]any)
+		if !ok {
+			return false
+		}
+		_, ok = values[reference]
+		return ok
+	}
+	switch section {
+	case "receivers":
+		return contains("receivers") || contains("connectors")
+	case "exporters":
+		return contains("exporters") || contains("connectors")
+	default:
+		return contains(section)
+	}
+}
 func assertEDOTMapping(t *testing.T, document string) {
 	t.Helper()
 	var config map[string]any
@@ -302,6 +478,72 @@ func assertEDOTMapping(t *testing.T, document string) {
 	if mapping["mode"] != "otel" {
 		t.Fatalf("mapping=%v", mapping)
 	}
+}
+func assertEDOTPipelineTopology(t *testing.T, document string) {
+	t.Helper()
+	var config map[string]any
+	if err := yaml.Unmarshal([]byte(document), &config); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := config["processors"].(map[string]any)["elasticapm"]; !ok {
+		t.Fatal("elasticapm processor missing")
+	}
+	if _, ok := config["connectors"].(map[string]any)["elasticapm"]; !ok {
+		t.Fatal("elasticapm connector missing")
+	}
+	if _, ok := config["processors"].(map[string]any)["attributes/tenant"]; ok {
+		t.Fatal("EDOT must not define attributes/tenant")
+	}
+	pipelines := config["service"].(map[string]any)["pipelines"].(map[string]any)
+	aggregated := pipelines["metrics/aggregated-otel-metrics"].(map[string]any)
+	if !stringListEquals(aggregated["receivers"].([]any), []string{"elasticapm"}) || !stringListEquals(aggregated["exporters"].([]any), []string{"elasticsearch/otel"}) {
+		t.Fatalf("aggregated pipeline=%v", aggregated)
+	}
+	metrics := pipelines["metrics"].(map[string]any)
+	if !containsString(metrics["exporters"].([]any), "debug") {
+		t.Fatal("metrics pipeline does not reference debug exporter")
+	}
+}
+func assertCollectorBatching(t *testing.T, document string) {
+	t.Helper()
+	var config map[string]any
+	if err := yaml.Unmarshal([]byte(document), &config); err != nil {
+		t.Fatal(err)
+	}
+	processors := config["processors"].(map[string]any)
+	if processors["batch"].(map[string]any)["send_batch_max_size"] != float64(1500) || processors["batch/metrics"].(map[string]any)["send_batch_max_size"] != float64(0) {
+		t.Fatalf("processors=%v", processors)
+	}
+	pipelines := config["service"].(map[string]any)["pipelines"].(map[string]any)
+	for _, name := range []string{"metrics", "metrics/crosstenant"} {
+		if !containsString(pipelines[name].(map[string]any)["processors"].([]any), "batch/metrics") {
+			t.Fatalf("%s does not use batch/metrics", name)
+		}
+	}
+	for _, name := range []string{"logs", "traces"} {
+		if !containsString(pipelines[name].(map[string]any)["processors"].([]any), "batch") {
+			t.Fatalf("%s does not use batch", name)
+		}
+	}
+}
+func containsString(values []any, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+func stringListEquals(values []any, target []string) bool {
+	if len(values) != len(target) {
+		return false
+	}
+	for i := range values {
+		if values[i] != target[i] {
+			return false
+		}
+	}
+	return true
 }
 func deploymentAnnotations(t *testing.T, c client.Client, namespace, name string) map[string]string {
 	t.Helper()
@@ -435,14 +677,15 @@ func markCertificateReady(t *testing.T, c client.Client, namespace, name string)
 		t.Fatal(err)
 	}
 }
-func markRouteReady(t *testing.T, c client.Client, namespace, name, kind string) {
+func markRouteParentConditions(t *testing.T, c client.Client, namespace, name, kind, section, gateway string, accepted, resolved bool, generationOffset int64) {
 	t.Helper()
 	route := &unstructured.Unstructured{}
 	route.SetGroupVersionKind(schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: kind})
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: name}, route); err != nil {
 		t.Fatal(err)
 	}
-	if err := unstructured.SetNestedSlice(route.Object, []any{map[string]any{"type": "Accepted", "status": "True"}, map[string]any{"type": "ResolvedRefs", "status": "True"}}, "status", "conditions"); err != nil {
+	generation := route.GetGeneration() + generationOffset
+	if err := unstructured.SetNestedSlice(route.Object, []any{map[string]any{"parentRef": map[string]any{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": namespace, "name": gateway, "sectionName": section}, "conditions": []any{map[string]any{"type": "Accepted", "status": map[bool]string{true: "True", false: "False"}[accepted], "observedGeneration": generation}, map[string]any{"type": "ResolvedRefs", "status": map[bool]string{true: "True", false: "False"}[resolved], "observedGeneration": generation}}}}, "status", "parents"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Update(context.Background(), route); err != nil {

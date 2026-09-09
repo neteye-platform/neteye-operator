@@ -46,12 +46,17 @@ func SetOwnerReference(object *unstructured.Unstructured, owner metav1.OwnerRefe
 	return true, nil
 }
 
-// RequireManagedOwner rejects an existing unowned object before reconciliation.
+// RequireManagedOwner accepts only an existing object controlled by owner.
 // Create paths intentionally do not call it because a new object has no owner
 // references until the desired controller owner is attached.
-func RequireManagedOwner(object *unstructured.Unstructured) error {
-	if len(object.GetOwnerReferences()) == 0 {
-		return fmt.Errorf("%s %s/%s exists without a controller owner and cannot be adopted", object.GetKind(), object.GetNamespace(), object.GetName())
+func RequireManagedOwner(object *unstructured.Unstructured, owner metav1.OwnerReference) error {
+	for _, existing := range object.GetOwnerReferences() {
+		if existing.UID == owner.UID && existing.Controller != nil && *existing.Controller {
+			return nil
+		}
+		if existing.Controller != nil && *existing.Controller {
+			return fmt.Errorf("%s %s/%s is already controlled by %s %s/%s", object.GetKind(), object.GetNamespace(), object.GetName(), existing.Kind, existing.APIVersion, existing.Name)
+		}
 	}
-	return nil
+	return fmt.Errorf("%s %s/%s is not controlled by the expected owner and cannot be adopted", object.GetKind(), object.GetNamespace(), object.GetName())
 }

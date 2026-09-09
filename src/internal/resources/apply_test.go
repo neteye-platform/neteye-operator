@@ -214,3 +214,32 @@ func TestApplySameOwnerIsIdempotent(t *testing.T) {
 		t.Fatalf("outcome=%v err=%v", outcome, err)
 	}
 }
+
+func TestApplyUpdatesExistingMatchingOwner(t *testing.T) {
+	c := applyClient(t)
+	controller := true
+	owner := metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "platform", UID: "uid-1", Controller: &controller}
+	if _, err := Apply(context.Background(), c, ObjectDefinition{GVK: testGVK, Name: "w", Namespace: "ns", Spec: map[string]any{"foo": "old"}, Owner: &owner}); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := Apply(context.Background(), c, ObjectDefinition{GVK: testGVK, Name: "w", Namespace: "ns", Spec: map[string]any{"foo": "new"}, Owner: &owner}); err != nil || outcome != Updated {
+		t.Fatalf("outcome=%v err=%v", outcome, err)
+	}
+}
+
+func TestApplyRejectsForeignControllerWithoutOverwrite(t *testing.T) {
+	controller := true
+	object := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"foo": "old"}}}
+	object.SetGroupVersionKind(testGVK)
+	object.SetNamespace("ns")
+	object.SetName("w")
+	object.SetOwnerReferences([]metav1.OwnerReference{{Kind: "Other", APIVersion: "other/v1", Name: "foreign", UID: "other", Controller: &controller}})
+	c := applyClient(t, object)
+	owner := metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "platform", UID: "uid-1", Controller: &controller}
+	if _, err := Apply(context.Background(), c, ObjectDefinition{GVK: testGVK, Name: "w", Namespace: "ns", Spec: map[string]any{"foo": "new"}, Owner: &owner}); err == nil {
+		t.Fatal("foreign owner was overwritten")
+	}
+	if spec, _, _ := unstructured.NestedMap(getObject(t, c, testGVK, "w", "ns").Object, "spec"); spec["foo"] != "old" {
+		t.Fatalf("spec=%v", spec)
+	}
+}

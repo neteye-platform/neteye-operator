@@ -50,9 +50,9 @@ func NewComponent(c client.Client, _ logr.Logger) *Component {
 	return &Component{client: c}
 }
 
-// EnsureResources remains the controller-facing API-only placeholder. The
-// independently callable resource components are intentionally not integrated
-// into the lifecycle graph in this change.
+// EnsureResources remains the controller-facing API-only placeholder. PR #67
+// must not be merged until the independently callable resource components are
+// integrated into the lifecycle graph.
 func (c *Component) EnsureResources(context.Context, string, neteye.NetEyeElasticStackSpec, string, string, string, string, resources.CertificateIssuerRef, metav1.OwnerReference) (bool, string, error) {
 	return false, "EDOT telemetry gateway reconciliation is not implemented", nil
 }

@@ -72,7 +72,7 @@ func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spe
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, EDOTGatewayVariablesConfigMapName, map[string]string{"ELASTICSEARCH_ENDPOINTS": string(encodedEndpoints)}, owner); err != nil {
 		return false, "", err
 	}
-	versions, err := inputResourceVersions(ctx, c.client, namespace, []string{EDOTGatewayConfigMapName, EDOTGatewayVariablesConfigMapName}, []secretInput{{key.Name, apiKeyVersion}, {spec.EffectiveRootCASecretName(), rootCAVersion}})
+	versions, err := edotGatewayInputVersions(ctx, c.client, namespace, apiKeyVersion, rootCAVersion)
 	if err != nil {
 		return false, "", err
 	}
@@ -192,22 +192,42 @@ func targetHosts(targets []egressTarget) []string {
 	return result
 }
 
+func edotGatewayInputVersions(ctx context.Context, c client.Client, namespace, apiKeyVersion, rootCAVersion string) (map[string]string, error) {
+	configVersion, err := configMapResourceVersion(ctx, c, namespace, EDOTGatewayConfigMapName)
+	if err != nil {
+		return nil, err
+	}
+	variablesVersion, err := configMapResourceVersion(ctx, c, namespace, EDOTGatewayVariablesConfigMapName)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"neteye.cloud/config-resource-version": configVersion, "neteye.cloud/variables-resource-version": variablesVersion, "neteye.cloud/api-key-resource-version": apiKeyVersion, "neteye.cloud/root-ca-resource-version": rootCAVersion}, nil
+}
+
 const edotGatewayConfig = `receivers:
   otlp:
-    protocols: {grpc: {endpoint: 0.0.0.0:4317}, http: {endpoint: 0.0.0.0:4318}}
-extensions:
-  health_check: {endpoint: 0.0.0.0:13133}
-processors: {batch: {}}
+    protocols:
+      grpc: {endpoint: 0.0.0.0:4317}
+      http: {endpoint: 0.0.0.0:4318}
+processors:
+  batch: {}
+  elasticapm: {}
+connectors:
+  elasticapm: {}
 exporters:
+  debug: {}
   elasticsearch/otel:
     endpoints: ${ELASTICSEARCH_ENDPOINTS}
     api_key: "${ELASTICSEARCH_API_KEY}"
-    mapping: {mode: otel}
     tls: {ca_file: /etc/pki/tls/certs/ca-bundle.crt}
+    mapping: {mode: otel}
+extensions:
+  health_check: {endpoint: 0.0.0.0:13133}
 service:
   extensions: [health_check]
   pipelines:
-    metrics: {receivers: [otlp], processors: [batch], exporters: [elasticsearch/otel]}
-    logs: {receivers: [otlp], processors: [batch], exporters: [elasticsearch/otel]}
-    traces: {receivers: [otlp], processors: [batch], exporters: [elasticsearch/otel]}
+    logs: {receivers: [otlp], processors: [batch, elasticapm], exporters: [elasticapm, elasticsearch/otel]}
+    metrics: {receivers: [otlp], processors: [batch, elasticapm], exporters: [elasticapm, elasticsearch/otel, debug]}
+    traces: {receivers: [otlp], processors: [batch, elasticapm], exporters: [elasticapm, elasticsearch/otel]}
+    metrics/aggregated-otel-metrics: {receivers: [elasticapm], exporters: [elasticsearch/otel]}
 `

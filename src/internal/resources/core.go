@@ -86,7 +86,7 @@ func setControllerOwnerReference(object client.Object, owner metav1.OwnerReferen
 	unstructuredObject.SetGroupVersionKind(object.GetObjectKind().GroupVersionKind())
 	unstructuredObject.SetNamespace(object.GetNamespace())
 	unstructuredObject.SetName(object.GetName())
-	if err := RequireManagedOwner(unstructuredObject); err != nil {
+	if err := RequireManagedOwner(unstructuredObject, owner); err != nil {
 		return false, err
 	}
 	changed, err := SetOwnerReference(unstructuredObject, owner)

@@ -69,7 +69,7 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, VariablesConfigMapName, map[string]string{"OIDC_ISSUER": issuer}, owner); err != nil {
 		return false, "", err
 	}
-	versions, err := inputResourceVersions(ctx, c.client, namespace, []string{ConfigMapName, VariablesConfigMapName}, []secretInput{{spec.EffectiveBasicAuthSecretName(), basicAuthVersion}, {spec.EffectiveRootCASecretName(), rootCAVersion}})
+	versions, err := collectorInputVersions(ctx, c.client, namespace, basicAuthVersion, rootCAVersion)
 	if err != nil {
 		return false, "", err
 	}
@@ -100,8 +100,8 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 			return ready, message, err
 		}
 	}
-	for _, route := range []struct{ name, kind string }{{GRPCRouteName, "GRPCRoute"}, {HTTPRouteName, "HTTPRoute"}} {
-		ready, message, err := routeReady(ctx, c.client, namespace, route.name, route.kind)
+	for _, route := range []struct{ name, kind, section string }{{GRPCRouteName, "GRPCRoute", GRPCListenerName}, {HTTPRouteName, "HTTPRoute", CrossTenantListenerName}} {
+		ready, message, err := routeReady(ctx, c.client, namespace, route.name, route.kind, expectedParent{group: "gateway.networking.k8s.io", kind: "Gateway", namespace: gatewayNamespace, name: gatewayName, section: route.section})
 		if err != nil || !ready {
 			return ready, message, err
 		}
@@ -154,7 +154,7 @@ func collectorIngressPolicy() map[string]any {
 	return map[string]any{"endpointSelector": labelsFor(collectorAppLabel), "ingress": []any{map[string]any{"fromEntities": []any{"ingress"}, "toPorts": []any{tcpPorts("4317", "4318")}}, map[string]any{"fromEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("13133")}}}}
 }
 func collectorEgressPolicy(namespace, identityHostname string) map[string]any {
-	return map[string]any{"endpointSelector": labelsFor(collectorAppLabel), "egress": []any{dnsEgress([]string{identityHostname}), map[string]any{"toEndpoints": []any{namespaceScopedEndpoint(edotGatewayAppLabel, namespace)}, "toPorts": []any{tcpPorts("4317")}}, fqdnEgress(identityHostname, "443")}}
+	return map[string]any{"endpointSelector": labelsFor(collectorAppLabel), "egress": []any{collectorDNSEgress(), map[string]any{"toEndpoints": []any{namespaceScopedEndpoint(edotGatewayAppLabel, namespace)}, "toPorts": []any{tcpPorts("4317")}}, fqdnEgress(identityHostname, "443")}}
 }
 func labelsFor(app string) map[string]any {
 	return map[string]any{"matchLabels": map[string]any{"k8s:app": app}}
@@ -175,6 +175,12 @@ func dnsEgress(names []string) map[string]any {
 		dns = append(dns, map[string]any{"matchName": name})
 	}
 	return map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}}, "toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "53", "protocol": "TCP"}, map[string]any{"port": "53", "protocol": "UDP"}}, "rules": map[string]any{"dns": dns}}}}
+}
+func collectorDNSEgress() map[string]any {
+	return map[string]any{
+		"toEndpoints": []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}},
+		"toPorts":     []any{map[string]any{"ports": []any{map[string]any{"port": "53", "protocol": "TCP"}, map[string]any{"port": "53", "protocol": "UDP"}}, "rules": map[string]any{"dns": []any{map[string]any{"matchPattern": "*"}}}}},
+	}
 }
 func fqdnEgress(host, port string) map[string]any {
 	return map[string]any{"toFQDNs": []any{map[string]any{"matchName": host}}, "toPorts": []any{tcpPorts(port)}}
@@ -200,62 +206,106 @@ func requiredSecretResourceVersion(ctx context.Context, c client.Client, namespa
 	return secret.ResourceVersion, nil
 }
 
-type secretInput struct{ name, resourceVersion string }
-
-func inputResourceVersions(ctx context.Context, c client.Client, namespace string, configMaps []string, secrets []secretInput) (map[string]string, error) {
-	annotations := make(map[string]string, len(configMaps)+len(secrets))
-	for _, name := range configMaps {
-		object := &corev1.ConfigMap{}
-		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, object); err != nil {
-			return nil, err
-		}
-		annotations["neteye.cloud/configmap-"+name+"-resource-version"] = object.ResourceVersion
+func configMapResourceVersion(ctx context.Context, c client.Client, namespace, name string) (string, error) {
+	object := &corev1.ConfigMap{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, object); err != nil {
+		return "", err
 	}
-	for _, secret := range secrets {
-		annotations["neteye.cloud/secret-"+secret.name+"-resource-version"] = secret.resourceVersion
-	}
-	return annotations, nil
+	return object.ResourceVersion, nil
 }
 
-func routeReady(ctx context.Context, c client.Client, namespace, name, kind string) (bool, string, error) {
+func collectorInputVersions(ctx context.Context, c client.Client, namespace, basicAuthVersion, rootCAVersion string) (map[string]string, error) {
+	configVersion, err := configMapResourceVersion(ctx, c, namespace, ConfigMapName)
+	if err != nil {
+		return nil, err
+	}
+	variablesVersion, err := configMapResourceVersion(ctx, c, namespace, VariablesConfigMapName)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"neteye.cloud/config-resource-version": configVersion, "neteye.cloud/variables-resource-version": variablesVersion, "neteye.cloud/basic-auth-resource-version": basicAuthVersion, "neteye.cloud/root-ca-resource-version": rootCAVersion}, nil
+}
+
+type expectedParent struct{ group, kind, namespace, name, section string }
+
+func routeReady(ctx context.Context, c client.Client, namespace, routeName, kind string, expected expectedParent) (bool, string, error) {
 	route := &unstructured.Unstructured{}
 	route.SetGroupVersionKind(schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: kind})
-	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, route); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: routeName}, route); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, fmt.Sprintf("%s %q is not created", kind, name), nil
+			return false, fmt.Sprintf("%s %s is not created", kind, routeName), nil
 		}
 		return false, "", err
 	}
-	conditions, found, err := unstructured.NestedSlice(route.Object, "status", "conditions")
+	parents, found, err := unstructured.NestedSlice(route.Object, "status", "parents")
 	if err != nil {
 		return false, "", err
 	}
-	if !found {
-		return false, fmt.Sprintf("waiting for %s %q status conditions", kind, name), nil
+	if !found || len(parents) == 0 {
+		return false, fmt.Sprintf("waiting for Gateway %s/%s to report %s %s status", expected.namespace, expected.name, kind, routeName), nil
 	}
-	states := map[string]string{}
-	messages := map[string]string{}
-	for _, raw := range conditions {
-		condition, ok := raw.(map[string]any)
+	expectedGroup := expected.group
+	if expectedGroup == "" {
+		expectedGroup = "gateway.networking.k8s.io"
+	}
+	for _, rawParent := range parents {
+		parent, ok := rawParent.(map[string]any)
 		if !ok {
 			continue
 		}
-		conditionType, _, _ := unstructured.NestedString(condition, "type")
-		status, _, _ := unstructured.NestedString(condition, "status")
-		message, _, _ := unstructured.NestedString(condition, "message")
-		states[conditionType] = status
-		messages[conditionType] = message
-	}
-	for _, conditionType := range []string{"Accepted", "ResolvedRefs"} {
-		if states[conditionType] != "True" {
-			message := messages[conditionType]
-			if message == "" {
-				message = fmt.Sprintf("waiting for %s %q %s condition", kind, name, conditionType)
-			}
-			return false, message, nil
+		ref, ok := parent["parentRef"].(map[string]any)
+		if !ok {
+			continue
 		}
+		group, _, _ := unstructured.NestedString(ref, "group")
+		if group == "" {
+			group = "gateway.networking.k8s.io"
+		}
+		parentKind, _, _ := unstructured.NestedString(ref, "kind")
+		if parentKind == "" {
+			parentKind = "Gateway"
+		}
+		parentNamespace, _, _ := unstructured.NestedString(ref, "namespace")
+		parentName, _, _ := unstructured.NestedString(ref, "name")
+		section, _, _ := unstructured.NestedString(ref, "sectionName")
+		if group != expectedGroup || parentKind != expected.kind || parentNamespace != expected.namespace || parentName != expected.name || section != expected.section {
+			continue
+		}
+		conditions, _, err := unstructured.NestedSlice(parent, "conditions")
+		if err != nil {
+			return false, "", err
+		}
+		for _, conditionType := range []string{"Accepted", "ResolvedRefs"} {
+			var condition map[string]any
+			for _, rawCondition := range conditions {
+				candidate, ok := rawCondition.(map[string]any)
+				if ok && candidate["type"] == conditionType {
+					condition = candidate
+					break
+				}
+			}
+			if condition == nil {
+				return false, fmt.Sprintf("waiting for %s %s %s condition from Gateway %s/%s", kind, routeName, conditionType, expected.namespace, expected.name), nil
+			}
+			observed, found, err := unstructured.NestedInt64(condition, "observedGeneration")
+			if err != nil {
+				return false, "", err
+			}
+			if found && observed < route.GetGeneration() {
+				return false, fmt.Sprintf("%s %s %s status is stale", kind, routeName, conditionType), nil
+			}
+			status, _, _ := unstructured.NestedString(condition, "status")
+			if status != "True" {
+				message, _, _ := unstructured.NestedString(condition, "message")
+				if message == "" {
+					message = fmt.Sprintf("waiting for %s %s %s condition from Gateway %s/%s", kind, routeName, conditionType, expected.namespace, expected.name)
+				}
+				return false, message, nil
+			}
+		}
+		return true, "", nil
 	}
-	return true, "", nil
+	return false, fmt.Sprintf("waiting for Gateway %s/%s to accept %s %s", expected.namespace, expected.name, kind, routeName), nil
 }
 
 type prerequisiteError struct{ message string }
@@ -269,7 +319,16 @@ func prerequisiteOutcome(err error) (bool, string, error) {
 	return false, "", err
 }
 
-const caBundleCommand = `cat /input/system/tls-ca-bundle.pem /input/neteye/* > /work/ca-bundle.pem`
+const caBundleCommand = `tmp_bundle=/work/ca-bundle.pem.tmp
+final_bundle=/work/ca-bundle.pem
+cat /input/system/tls-ca-bundle.pem > "$tmp_bundle"
+for cert in /input/neteye/*; do
+  if [ -f "$cert" ]; then cat "$cert" >> "$tmp_bundle"; printf '\n' >> "$tmp_bundle"; fi
+done
+sed -e '/^#/d' -e '/^[[:space:]]*$/d' -e 's/TRUSTED //g' "$tmp_bundle" > "$final_bundle"
+rm -f "$tmp_bundle"
+chmod 755 /work
+chmod 644 "$final_bundle"`
 
 const collectorConfig = `receivers:
   otlp:
@@ -295,14 +354,20 @@ processors:
         statements:
           - set(attributes["data_stream.namespace"], attributes["icinga2.custom.tenant"]) where attributes["icinga2.custom.tenant"] != nil
           - set(attributes["data_stream.namespace"], "master") where attributes["data_stream.namespace"] == nil
-  batch: {}
+  batch:
+    send_batch_size: 1000
+    timeout: 1s
+    send_batch_max_size: 1500
+  batch/metrics:
+    send_batch_max_size: 0
+    timeout: 1s
 exporters:
   otlp/edot: {endpoint: otel-edot-gateway:4317, tls: {insecure: true}}
 service:
   extensions: [oidc, basicauth/crosstenant, health_check]
   pipelines:
-    metrics: {receivers: [otlp], processors: [attributes/tenant, batch], exporters: [otlp/edot]}
+    metrics: {receivers: [otlp], processors: [attributes/tenant, batch/metrics], exporters: [otlp/edot]}
     logs: {receivers: [otlp], processors: [attributes/tenant, batch], exporters: [otlp/edot]}
     traces: {receivers: [otlp], processors: [attributes/tenant, batch], exporters: [otlp/edot]}
-    metrics/crosstenant: {receivers: [otlp/crosstenant], processors: [transform/crosstenant, batch], exporters: [otlp/edot]}
+    metrics/crosstenant: {receivers: [otlp/crosstenant], processors: [transform/crosstenant, batch/metrics], exporters: [otlp/edot]}
 `
