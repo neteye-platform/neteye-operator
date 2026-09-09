@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strconv"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 )
@@ -67,5 +68,49 @@ func desiredRealmRepresentation(spec neteye.KeycloakRealmSpec) representation {
 	if spec.DisplayName != "" {
 		desired["displayName"] = spec.DisplayName
 	}
+
+	events := spec.Events
+	desired["eventsEnabled"] = boolValue(events.EventsEnabled, true)
+	desired["adminEventsEnabled"] = boolValue(events.AdminEventsEnabled, true)
+	desired["adminEventsDetailsEnabled"] = boolValue(events.AdminEventsDetailsEnabled, true)
+	desired["eventsExpiration"] = float64Value(events.EventsExpiration, 15552000)
+	// adminEventsExpiration has no dedicated realm field in the Keycloak
+	// Admin API; the admin console itself stores it as a realm attribute.
+	// Realm attributes are Map<String,String> in Keycloak, so the value must
+	// be sent as a string or it never compares equal to what GetRealm reads
+	// back, causing every reconcile to report drift.
+	desired["attributes"] = map[string]any{
+		"adminEventsExpiration": strconv.FormatInt(int64Value(events.AdminEventsExpiration, 15552000), 10),
+	}
+
+	bfp := spec.BruteForceProtection
+	desired["bruteForceProtected"] = boolValue(bfp.BruteForceProtected, true)
+	desired["maxDeltaTimeSeconds"] = float64Value(bfp.MaxDeltaTimeSeconds, 43200)
+	desired["maxFailureWaitSeconds"] = float64Value(bfp.MaxFailureWaitSeconds, 900)
+	desired["minimumQuickLoginWaitSeconds"] = float64Value(bfp.MinimumQuickLoginWaitSeconds, 60)
+	desired["quickLoginCheckMilliSeconds"] = float64Value(bfp.QuickLoginCheckMilliSeconds, 1000)
+	desired["failureFactor"] = float64Value(bfp.FailureFactor, 30)
+	desired["waitIncrementSeconds"] = float64Value(bfp.WaitIncrementSeconds, 60)
+	// permanentLockout is never exposed as a spec field: see ADR-0004.
+	desired["permanentLockout"] = false
+
 	return desired
+}
+
+// int64Value returns value's contents, or fallback when value is nil.
+func int64Value(value *int64, fallback int64) int64 {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+// float64Value returns value's contents as a float64, or fallback when value
+// is nil. Top-level realm numbers are stored as float64 throughout realm
+// representations so they compare equal to the values the Keycloak Admin API
+// returns, which encoding/json always decodes as float64. Realm attributes
+// are the exception: Keycloak types them Map<String,String>, so those go
+// through strconv.FormatInt instead (see desiredRealmRepresentation).
+func float64Value(value *int64, fallback int64) float64 {
+	return float64(int64Value(value, fallback))
 }

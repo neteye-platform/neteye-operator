@@ -5,6 +5,80 @@ package v1alpha1
 
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+// KeycloakRealmEvents configures the realm's login and admin action event
+// logging. It is always enforced by the operator: see ADR-0004.
+type KeycloakRealmEvents struct {
+	// EventsEnabled enables login event logging.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=true
+	EventsEnabled *bool `json:"eventsEnabled,omitempty"`
+
+	// AdminEventsEnabled enables admin action event logging.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=true
+	AdminEventsEnabled *bool `json:"adminEventsEnabled,omitempty"`
+
+	// AdminEventsDetailsEnabled includes the representation of the affected
+	// resource in admin events.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=true
+	AdminEventsDetailsEnabled *bool `json:"adminEventsDetailsEnabled,omitempty"`
+
+	// EventsExpiration is how long login events are retained, in seconds.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=15552000
+	EventsExpiration *int64 `json:"eventsExpiration,omitempty"`
+
+	// AdminEventsExpiration is how long admin events are retained, in seconds.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=15552000
+	AdminEventsExpiration *int64 `json:"adminEventsExpiration,omitempty"`
+}
+
+// KeycloakRealmBruteForceProtection configures the realm's account-lockout
+// defense against repeated failed logins. It is always enforced by the
+// operator: see ADR-0004. Permanent lockout is never enabled and is not
+// exposed as a field.
+type KeycloakRealmBruteForceProtection struct {
+	// BruteForceProtected enables brute force detection.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=true
+	BruteForceProtected *bool `json:"bruteForceProtected,omitempty"`
+
+	// MaxDeltaTimeSeconds is the failure reset time.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=43200
+	MaxDeltaTimeSeconds *int64 `json:"maxDeltaTimeSeconds,omitempty"`
+
+	// MaxFailureWaitSeconds is the maximum wait time after repeated failures.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=900
+	MaxFailureWaitSeconds *int64 `json:"maxFailureWaitSeconds,omitempty"`
+
+	// MinimumQuickLoginWaitSeconds is the wait time after a quick login
+	// failure.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=60
+	MinimumQuickLoginWaitSeconds *int64 `json:"minimumQuickLoginWaitSeconds,omitempty"`
+
+	// QuickLoginCheckMilliSeconds is the threshold below which two login
+	// attempts count as a quick login.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=1000
+	QuickLoginCheckMilliSeconds *int64 `json:"quickLoginCheckMilliSeconds,omitempty"`
+
+	// FailureFactor is the number of failures before a lockout is triggered.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=30
+	FailureFactor *int64 `json:"failureFactor,omitempty"`
+
+	// WaitIncrementSeconds is how much the wait time grows after each
+	// lockout.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=60
+	WaitIncrementSeconds *int64 `json:"waitIncrementSeconds,omitempty"`
+}
+
 // KeycloakRealmSpec declares the desired state of one Keycloak realm.
 type KeycloakRealmSpec struct {
 	// Realm is the Keycloak realm name, which is immutable after creation.
@@ -20,6 +94,18 @@ type KeycloakRealmSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=true
 	Enabled *bool `json:"enabled,omitempty"`
+
+	// Events configures login and admin action event logging. Always
+	// enforced by the operator; see ADR-0004.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={}
+	Events KeycloakRealmEvents `json:"events,omitempty"`
+
+	// BruteForceProtection configures account-lockout defense against
+	// repeated failed logins. Always enforced by the operator; see ADR-0004.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={}
+	BruteForceProtection KeycloakRealmBruteForceProtection `json:"bruteForceProtection,omitempty"`
 
 	// DeletionPolicy decides whether deleting this resource removes the remote realm.
 	// +kubebuilder:validation:Optional

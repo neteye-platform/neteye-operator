@@ -51,6 +51,55 @@ spec:
             description: KeycloakRealmSpec declares the desired state of one Keycloak
               realm.
             properties:
+              bruteForceProtection:
+                default: {}
+                description: |-
+                  BruteForceProtection configures account-lockout defense against
+                  repeated failed logins. Always enforced by the operator; see ADR-0004.
+                properties:
+                  bruteForceProtected:
+                    default: true
+                    description: BruteForceProtected enables brute force detection.
+                    type: boolean
+                  failureFactor:
+                    default: 30
+                    description: FailureFactor is the number of failures before a
+                      lockout is triggered.
+                    format: int64
+                    type: integer
+                  maxDeltaTimeSeconds:
+                    default: 43200
+                    description: MaxDeltaTimeSeconds is the failure reset time.
+                    format: int64
+                    type: integer
+                  maxFailureWaitSeconds:
+                    default: 900
+                    description: MaxFailureWaitSeconds is the maximum wait time after
+                      repeated failures.
+                    format: int64
+                    type: integer
+                  minimumQuickLoginWaitSeconds:
+                    default: 60
+                    description: |-
+                      MinimumQuickLoginWaitSeconds is the wait time after a quick login
+                      failure.
+                    format: int64
+                    type: integer
+                  quickLoginCheckMilliSeconds:
+                    default: 1000
+                    description: |-
+                      QuickLoginCheckMilliSeconds is the threshold below which two login
+                      attempts count as a quick login.
+                    format: int64
+                    type: integer
+                  waitIncrementSeconds:
+                    default: 60
+                    description: |-
+                      WaitIncrementSeconds is how much the wait time grows after each
+                      lockout.
+                    format: int64
+                    type: integer
+                type: object
               deletionPolicy:
                 description: DeletionPolicy decides whether deleting this resource
                   removes the remote realm.
@@ -66,6 +115,39 @@ spec:
                 default: true
                 description: Enabled enables the realm in Keycloak.
                 type: boolean
+              events:
+                default: {}
+                description: |-
+                  Events configures login and admin action event logging. Always
+                  enforced by the operator; see ADR-0004.
+                properties:
+                  adminEventsDetailsEnabled:
+                    default: true
+                    description: |-
+                      AdminEventsDetailsEnabled includes the representation of the affected
+                      resource in admin events.
+                    type: boolean
+                  adminEventsEnabled:
+                    default: true
+                    description: AdminEventsEnabled enables admin action event logging.
+                    type: boolean
+                  adminEventsExpiration:
+                    default: 15552000
+                    description: AdminEventsExpiration is how long admin events are
+                      retained, in seconds.
+                    format: int64
+                    type: integer
+                  eventsEnabled:
+                    default: true
+                    description: EventsEnabled enables login event logging.
+                    type: boolean
+                  eventsExpiration:
+                    default: 15552000
+                    description: EventsExpiration is how long login events are retained,
+                      in seconds.
+                    format: int64
+                    type: integer
+                type: object
               realm:
                 description: Realm is the Keycloak realm name, which is immutable
                   after creation.

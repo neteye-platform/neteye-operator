@@ -71,3 +71,4 @@ The following statuses are used:
 | [ADR-0001](0001-neteye-resource-scope-and-ownership.md) | NetEye Resource Scope and Ownership | Singleton `NetEye`, tenants, resource ownership, and deletion policy | Proposed |
 | [ADR-0002](0002-reconciliation-and-resource-application.md) | Reconciliation and Resource Application | Server-Side Apply, field ownership, delegated resources, readiness, and component status | Proposed |
 | [ADR-0003](0003-neteye-and-operator-version-model.md) | NetEye and Operator Version Model | Product and operator versions, OLM channels, upgrade authorization, and resolved images | Proposed |
+| [ADR-0004](0004-keycloak-realm-events-and-brute-force-protection.md) | KeycloakRealm Events and Brute Force Protection Are Always Enforced | `KeycloakRealmSpec.Events` and `BruteForceProtection`, ansible-parity defaults, always-enforced (non-optional) | Accepted |
