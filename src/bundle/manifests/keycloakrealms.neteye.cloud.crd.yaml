@@ -55,7 +55,8 @@ spec:
                 default: {}
                 description: |-
                   BruteForceProtection configures account-lockout defense against
-                  repeated failed logins. Always enforced by the operator; see ADR-0004.
+                  repeated failed logins. Always enforced by the operator; see
+                  KeycloakRealmBruteForceProtection.
                 properties:
                   bruteForceProtected:
                     default: true
@@ -123,7 +124,7 @@ spec:
                 default: {}
                 description: |-
                   Events configures login and admin action event logging. Always
-                  enforced by the operator; see ADR-0004.
+                  enforced by the operator; see KeycloakRealmEvents.
                 properties:
                   adminEventsDetailsEnabled:
                     default: true
