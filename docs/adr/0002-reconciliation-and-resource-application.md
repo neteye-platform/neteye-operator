@@ -33,15 +33,31 @@ The operator uses a stable, documented field-manager name. It declares only
 the fields for which it owns the desired value. It must not copy the complete
 live object into an apply request.
 
-The operator forces ownership of the fields that it intentionally manages.
-If another actor changes one of these fields, the next reconciliation restores
-the value derived from the NetEye custom resource.
+Two distinct forms of ownership apply:
 
-Fields not declared by the operator are preserved. This allows API defaulting,
-admission webhooks, and other controllers to manage their own fields. A direct
-user change to an unmanaged field may therefore remain, but it is not a
-supported NetEye configuration interface and is not guaranteed by the NetEye
-API.
+- **Resource ownership** defines which controller manages the object's
+  lifecycle and whether it may update or delete the object. A resource generated
+  by NetEye remains owned by NetEye as defined in ADR-0001.
+- **Field ownership** is tracked by Server-Side Apply and defines which actor
+  manages each field inside that object. Resource ownership does not require
+  the NetEye Operator to claim fields legitimately managed by the API server,
+  an admission webhook, or a cooperating controller.
+
+The operator forces ownership of the fields that it intentionally manages. If
+another actor changes one of these fields, the next reconciliation restores the
+value derived from the NetEye custom resource.
+
+Fields not declared by the operator are preserved only so Kubernetes and
+cooperating controllers can manage their fields without conflict. Preservation
+is an apply behavior, not a supported customization mechanism. As defined in
+ADR-0001, users must not configure NetEye by editing generated resources,
+regardless of whether a particular edit happens to survive reconciliation.
+
+An unsupported user edit to a field outside the operator's current field set
+may remain because the operator has no declared value for that field. The
+operator is not required to adopt, preserve, reject, or remove such an edit, and
+it provides no compatibility or lifecycle guarantee for it. A future release
+or another legitimate controller may claim or remove the field.
 
 The status subresource is updated separately from the desired resource. Status
 updates must not rewrite `spec` or metadata owned by another actor.
@@ -121,6 +137,13 @@ dynamic because components will be added as NetEye moves to Kubernetes. Each
 entry reports at least its readiness state, observed generation, reason, and a
 human-readable message.
 
+A reconciliation failure in one component must not prevent the operator from
+refreshing status for other desired components. Components that cannot progress
+because of a dependency are reported separately from the component that
+actually failed. The orchestrator computes top-level conditions only after it
+has collected the component outcomes for the complete reconciliation pass, as
+defined in ADR-0005.
+
 Each managed component also reports `resolvedImages`. This is the complete set
 of container images selected by the operator for that component. Every entry
 has a stable logical name and an exact, digest-pinned image reference. A
@@ -173,6 +196,8 @@ versioning. The following rules remain stable:
 - resolved images use complete OCI references pinned by digest;
 - adding a new component key is backward compatible;
 - callers must tolerate component keys they do not recognize;
+- partial convergence remains visible: a ready component stays ready in status
+  when an independent component is degraded;
 - status reports observed state and never becomes an alternative desired-state
   interface.
 
@@ -201,9 +226,10 @@ NetEye custom resource is the authoritative desired state.
 
 ### Own complete resources instead of selected fields
 
-This would provide a simpler mental model for generated resources. It was not
-chosen because even an operator-created resource can contain fields owned by
-the API server, admission webhooks, or another controller.
+This would conflate NetEye's lifecycle ownership of a generated object with
+Server-Side Apply ownership of every field inside it. It was not chosen because
+even a NetEye-owned resource can contain fields legitimately managed by the API
+server, admission webhooks, or another controller.
 
 ### Report only one global status
 
@@ -223,6 +249,10 @@ operator. Drift in those fields is corrected automatically.
 
 Fields added by Kubernetes or cooperating controllers are preserved when they
 do not overlap with fields declared by NetEye.
+
+This preservation does not make generated resources a user customization
+interface. Unsupported direct edits may persist mechanically, but they carry no
+NetEye API or compatibility guarantee.
 
 Resource builders must be deliberate about every field they send in a
 Server-Side Apply request. Adding a field is an ownership decision and must be
@@ -252,3 +282,6 @@ generic reconciler from making unsafe lifecycle decisions.
 ## References
 
 - [ADR-0001: NetEye Resource Scope and Ownership](0001-neteye-resource-scope-and-ownership.md)
+- [ADR-0005: Component Lifecycle and Dependency Orchestration](0005-component-lifecycle-and-dependency-orchestration.md)
+- [Kubernetes Server-Side Apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/)
+- [Kubernetes API conventions: Conditions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties)
