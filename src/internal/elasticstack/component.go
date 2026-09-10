@@ -46,7 +46,6 @@ type managedResource struct {
 func collectorResourceInventory() []managedResource {
 	return []managedResource{
 		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, ConfigMapName},
-		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, VariablesConfigMapName},
 		{schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, DeploymentName},
 		{schema.GroupVersionKind{Version: "v1", Kind: "Service"}, ServiceName},
 		{schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "GRPCRoute"}, GRPCRouteName},
@@ -61,11 +60,26 @@ func collectorResourceInventory() []managedResource {
 func edotGatewayResourceInventory() []managedResource {
 	return []managedResource{
 		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, EDOTGatewayConfigMapName},
-		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, EDOTGatewayVariablesConfigMapName},
 		{schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, EDOTGatewayDeploymentName},
 		{schema.GroupVersionKind{Version: "v1", Kind: "Service"}, EDOTGatewayServiceName},
 		{schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, EDOTGatewayIngressPolicyName},
 		{schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, EDOTGatewayEgressPolicyName},
+	}
+}
+
+// collectorLegacyInventory lists owned collector resources that must be pruned
+// from existing installations but are intentionally excluded from the active
+// desired set.
+func collectorLegacyInventory() []managedResource {
+	return []managedResource{
+		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, VariablesConfigMapName},
+	}
+}
+
+// edotGatewayLegacyInventory mirrors collectorLegacyInventory for the EDOT Gateway.
+func edotGatewayLegacyInventory() []managedResource {
+	return []managedResource{
+		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, EDOTGatewayVariablesConfigMapName},
 	}
 }
 

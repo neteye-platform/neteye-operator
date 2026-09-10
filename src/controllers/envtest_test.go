@@ -173,29 +173,42 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	for _, resource := range telemetryResourceInventory() {
 		requireExists(ctx, t, c, resource.gvk, keycloak.WorkloadNamespace, resource.name)
 	}
-	variables := &corev1.ConfigMap{}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.VariablesConfigMapName}, variables); err != nil {
-		t.Fatal(err)
-	}
-	if variables.Data["OIDC_ISSUER"] != "https://keycloak.example.com/auth/realms/master" {
-		t.Errorf("collector variables = %#v", variables.Data)
-	}
-	if _, ok := variables.Data["ELASTICSEARCH_ENDPOINTS"]; ok {
-		t.Errorf("collector variables must not include Elasticsearch endpoints: %#v", variables.Data)
-	}
-	edotVariables := &corev1.ConfigMap{}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.EDOTGatewayVariablesConfigMapName}, edotVariables); err != nil {
-		t.Fatal(err)
-	}
-	if edotVariables.Data["ELASTICSEARCH_ENDPOINTS"] != `["https://elasticsearch.example.com:9200"]` {
-		t.Errorf("edot variables = %#v", edotVariables.Data)
-	}
 	deployment := &appsv1.Deployment{}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DeploymentName}, deployment); err != nil {
 		t.Fatal(err)
 	}
 	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 3 {
 		t.Errorf("replicas = %v, want 3", deployment.Spec.Replicas)
+	}
+	collectorContainer := deployment.Spec.Template.Spec.Containers[0]
+	if len(collectorContainer.EnvFrom) != 0 {
+		t.Errorf("collector must not use envFrom: %#v", collectorContainer.EnvFrom)
+	}
+	if got := deploymentEnvValueFor(collectorContainer.Env, "OIDC_ISSUER"); got != "https://keycloak.example.com/auth/realms/master" {
+		t.Errorf("collector OIDC_ISSUER env = %q", got)
+	}
+	if deploymentEnvVar(collectorContainer.Env, "ELASTICSEARCH_ENDPOINTS") != nil {
+		t.Error("collector must not receive Elasticsearch endpoints")
+	}
+	edotDeployment := &appsv1.Deployment{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.EDOTGatewayDeploymentName}, edotDeployment); err != nil {
+		t.Fatal(err)
+	}
+	edotContainer := edotDeployment.Spec.Template.Spec.Containers[0]
+	if len(edotContainer.EnvFrom) != 0 {
+		t.Errorf("edot must not use envFrom: %#v", edotContainer.EnvFrom)
+	}
+	if got := deploymentEnvValueFor(edotContainer.Env, "ELASTICSEARCH_ENDPOINTS"); got != `["https://elasticsearch.example.com:9200"]` {
+		t.Errorf("edot ELASTICSEARCH_ENDPOINTS env = %q", got)
+	}
+	if apiKey := deploymentEnvVar(edotContainer.Env, "ELASTICSEARCH_API_KEY"); apiKey == nil || apiKey.ValueFrom == nil || apiKey.ValueFrom.SecretKeyRef == nil {
+		t.Errorf("edot API key must be a SecretKeyRef: %+v", apiKey)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.VariablesConfigMapName}, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+		t.Errorf("collector variables ConfigMap must not exist: %v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.EDOTGatewayVariablesConfigMapName}, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+		t.Errorf("edot variables ConfigMap must not exist: %v", err)
 	}
 	current := &neteye.NetEye{}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
@@ -596,7 +609,6 @@ func telemetryResourceInventory() []struct {
 		name string
 	}{
 		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.ConfigMapName},
-		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.VariablesConfigMapName},
 		{schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.DeploymentName},
 		{schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.ServiceName},
 		{grpcRouteGVK, elasticstack.GRPCRouteName},
@@ -606,12 +618,27 @@ func telemetryResourceInventory() []struct {
 		{ciliumPolicyGVK, elasticstack.IngressPolicyName},
 		{ciliumPolicyGVK, elasticstack.EgressPolicyName},
 		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.EDOTGatewayConfigMapName},
-		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.EDOTGatewayVariablesConfigMapName},
 		{schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.EDOTGatewayDeploymentName},
 		{schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.EDOTGatewayServiceName},
 		{ciliumPolicyGVK, elasticstack.EDOTGatewayIngressPolicyName},
 		{ciliumPolicyGVK, elasticstack.EDOTGatewayEgressPolicyName},
 	}
+}
+
+func deploymentEnvVar(env []corev1.EnvVar, name string) *corev1.EnvVar {
+	for i := range env {
+		if env[i].Name == name {
+			return &env[i]
+		}
+	}
+	return nil
+}
+
+func deploymentEnvValueFor(env []corev1.EnvVar, name string) string {
+	if v := deploymentEnvVar(env, name); v != nil {
+		return v.Value
+	}
+	return ""
 }
 
 func markDeploymentReady(ctx context.Context, t *testing.T, c client.Client, name string) {

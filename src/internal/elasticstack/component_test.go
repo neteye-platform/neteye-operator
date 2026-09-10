@@ -44,12 +44,18 @@ func TestOTelCollectorBuildsIsolatedIngressResources(t *testing.T) {
 	if findEnv(deployment.Spec.Template.Spec.Containers[0].Env, "ELASTICSEARCH_API_KEY") != nil {
 		t.Fatal("collector must not mount Elasticsearch API key")
 	}
-	variables := configMap(t, c, namespace, VariablesConfigMapName)
-	if got := variables.Data["OIDC_ISSUER"]; got != "https://identity.example.com/auth/realms/master" {
-		t.Fatalf("OIDC_ISSUER=%q", got)
+	if oidc := findEnv(deployment.Spec.Template.Spec.Containers[0].Env, "OIDC_ISSUER"); oidc == nil || oidc.Value != "https://identity.example.com/auth/realms/master" {
+		t.Fatalf("OIDC_ISSUER env = %+v", oidc)
 	}
-	if _, ok := variables.Data["ELASTICSEARCH_ENDPOINTS"]; ok {
-		t.Fatal("collector variables include Elasticsearch endpoints")
+	if findEnv(deployment.Spec.Template.Spec.Containers[0].Env, "ELASTICSEARCH_ENDPOINTS") != nil {
+		t.Fatal("collector must not receive Elasticsearch endpoints")
+	}
+	if len(deployment.Spec.Template.Spec.Containers[0].EnvFrom) != 0 {
+		t.Fatalf("collector must not use envFrom: %#v", deployment.Spec.Template.Spec.Containers[0].EnvFrom)
+	}
+	assertMissing(t, c, namespace, VariablesConfigMapName, &corev1.ConfigMap{})
+	if findVolume(deployment.Spec.Template.Spec.Volumes, "config").ConfigMap.Name != ConfigMapName {
+		t.Fatal("collector config-file ConfigMap is not mounted")
 	}
 	assertPipelineReferences(t, configMap(t, c, namespace, ConfigMapName).Data["otel-collector-config.yaml"], false)
 	assertCollectorBatching(t, configMap(t, c, namespace, ConfigMapName).Data["otel-collector-config.yaml"])
@@ -116,8 +122,18 @@ func TestEDOTGatewayBuildsElasticsearchBoundary(t *testing.T) {
 	if findVolume(deployment.Spec.Template.Spec.Volumes, "root-ca").Secret.SecretName != "elastic-ca" || findVolume(deployment.Spec.Template.Spec.Volumes, "trusted-ca").EmptyDir == nil {
 		t.Fatal("gateway root CA was not mounted")
 	}
-	if got := configMap(t, c, namespace, EDOTGatewayVariablesConfigMapName).Data["ELASTICSEARCH_ENDPOINTS"]; got != `["https://elastic.example.com:9243"]` {
-		t.Fatalf("endpoints=%q", got)
+	if endpoints := findEnv(container.Env, "ELASTICSEARCH_ENDPOINTS"); endpoints == nil || endpoints.Value != `["https://elastic.example.com:9243"]` {
+		t.Fatalf("ELASTICSEARCH_ENDPOINTS env = %+v", endpoints)
+	}
+	if apiKey := findEnv(container.Env, "ELASTICSEARCH_API_KEY"); apiKey == nil || apiKey.Value != "" || apiKey.ValueFrom == nil || apiKey.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("ELASTICSEARCH_API_KEY must be a SecretKeyRef with no inline value: %+v", apiKey)
+	}
+	if len(container.EnvFrom) != 0 {
+		t.Fatalf("edot must not use envFrom: %#v", container.EnvFrom)
+	}
+	assertMissing(t, c, namespace, EDOTGatewayVariablesConfigMapName, &corev1.ConfigMap{})
+	if findVolume(deployment.Spec.Template.Spec.Volumes, "config").ConfigMap.Name != EDOTGatewayConfigMapName {
+		t.Fatal("edot config-file ConfigMap is not mounted")
 	}
 	assertPipelineReferences(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"], true)
 	assertEDOTMapping(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"])
@@ -135,9 +151,9 @@ func TestInputResourceVersionsChangeDeploymentTemplate(t *testing.T) {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	before := deploymentAnnotations(t, c, namespace, DeploymentName)
-	variables := configMap(t, c, namespace, VariablesConfigMapName)
-	variables.Data["rollout-test"] = "changed"
-	if err := c.Update(context.Background(), variables); err != nil {
+	config := configMap(t, c, namespace, ConfigMapName)
+	config.Data["rollout-test"] = "changed"
+	if err := c.Update(context.Background(), config); err != nil {
 		t.Fatal(err)
 	}
 	secret := basicAuth(namespace, map[string][]byte{"htpasswd": []byte("replacement")})
@@ -148,8 +164,14 @@ func TestInputResourceVersionsChangeDeploymentTemplate(t *testing.T) {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	after := deploymentAnnotations(t, c, namespace, DeploymentName)
-	if before["neteye.cloud/variables-resource-version"] == after["neteye.cloud/variables-resource-version"] || before["neteye.cloud/basic-auth-resource-version"] == after["neteye.cloud/basic-auth-resource-version"] {
+	if before["neteye.cloud/config-resource-version"] == after["neteye.cloud/config-resource-version"] || before["neteye.cloud/basic-auth-resource-version"] == after["neteye.cloud/basic-auth-resource-version"] {
 		t.Fatalf("template annotations did not track input versions: before=%v after=%v", before, after)
+	}
+	if _, ok := after["neteye.cloud/variables-resource-version"]; ok {
+		t.Fatalf("variables-resource-version annotation must not exist: %v", after)
+	}
+	if len(after) != 3 {
+		t.Fatalf("collector rollout annotations = %v, want exactly 3 fixed keys", after)
 	}
 }
 
@@ -175,14 +197,110 @@ func TestEDOTInputVersionsUseFixedAnnotationKeysWithLongSecretName(t *testing.T)
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	after := deploymentAnnotations(t, c, namespace, EDOTGatewayDeploymentName)
-	if before["neteye.cloud/api-key-resource-version"] == after["neteye.cloud/api-key-resource-version"] || len(after) != 4 {
+	if before["neteye.cloud/api-key-resource-version"] == after["neteye.cloud/api-key-resource-version"] || len(after) != 3 {
 		t.Fatalf("annotations=%v", after)
+	}
+	if _, ok := after["neteye.cloud/variables-resource-version"]; ok {
+		t.Fatalf("variables-resource-version annotation must not exist: %v", after)
 	}
 	for key := range after {
 		if len(key) > 253 {
 			t.Fatalf("invalid annotation key %q", key)
 		}
 	}
+}
+
+func TestChangingOIDCHostnameChangesCollectorPodTemplate(t *testing.T) {
+	namespace := "telemetry"
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
+	component := NewOTelCollectorComponent(c)
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", "ca-bundle-image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("outcome=%+v", outcome)
+	}
+	first := deploymentEnvValue(t, c, namespace, DeploymentName, "OIDC_ISSUER")
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.other.example.com", namespace, "gateway", "image", "ca-bundle-image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("outcome=%+v", outcome)
+	}
+	second := deploymentEnvValue(t, c, namespace, DeploymentName, "OIDC_ISSUER")
+	if first == second || second != "https://identity.other.example.com/auth/realms/master" {
+		t.Fatalf("OIDC hostname change did not update the collector pod template: %q -> %q", first, second)
+	}
+}
+
+func TestChangingElasticsearchEndpointsChangesEDOTPodTemplate(t *testing.T) {
+	namespace := "telemetry"
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(gatewayPrerequisites(namespace)...).Build()
+	component := NewEDOTGatewayComponent(c)
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://a.example.com:9200"}}, "image", "ca-bundle-image", owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("outcome=%+v", outcome)
+	}
+	first := deploymentEnvValue(t, c, namespace, EDOTGatewayDeploymentName, "ELASTICSEARCH_ENDPOINTS")
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://b.example.com:9200"}}, "image", "ca-bundle-image", owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("outcome=%+v", outcome)
+	}
+	second := deploymentEnvValue(t, c, namespace, EDOTGatewayDeploymentName, "ELASTICSEARCH_ENDPOINTS")
+	if first == second || second != `["https://b.example.com:9200"]` {
+		t.Fatalf("endpoint change did not update the EDOT pod template: %q -> %q", first, second)
+	}
+}
+
+func TestLegacyVariablesConfigMapsArePrunedOnlyWhenOwned(t *testing.T) {
+	namespace := "telemetry"
+	controller := true
+	for _, test := range []struct {
+		name   string
+		owners []metav1.OwnerReference
+		pruned bool
+	}{
+		{"owned by this NetEye", []metav1.OwnerReference{owner()}, true},
+		{"unowned", nil, false},
+		{"controlled by another owner", []metav1.OwnerReference{{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "other", UID: "other", Controller: &controller}}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			legacy := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: VariablesConfigMapName, OwnerReferences: test.owners}, Data: map[string]string{"OIDC_ISSUER": "stale"}}
+			objects := append(collectorPrerequisites(namespace), legacy)
+			c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(objects...).Build()
+			if outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, "identity.example.com", namespace, "gateway", "image", "ca-bundle-image", issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+				t.Fatalf("outcome=%+v", outcome)
+			}
+			if test.pruned {
+				assertMissing(t, c, namespace, VariablesConfigMapName, &corev1.ConfigMap{})
+			} else {
+				assertPresent(t, c, namespace, VariablesConfigMapName, &corev1.ConfigMap{})
+			}
+		})
+	}
+}
+
+func TestDeleteRemovesLegacyVariablesConfigMapsWhenOwned(t *testing.T) {
+	namespace := "telemetry"
+	controller := true
+	foreign := metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "other", UID: "other", Controller: &controller}
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: VariablesConfigMapName, OwnerReferences: []metav1.OwnerReference{owner()}}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: EDOTGatewayVariablesConfigMapName, OwnerReferences: []metav1.OwnerReference{foreign}}},
+	).Build()
+	if err := NewOTelCollectorComponent(c).Delete(context.Background(), namespace, owner()); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewEDOTGatewayComponent(c).Delete(context.Background(), namespace, owner()); err != nil {
+		t.Fatal(err)
+	}
+	assertMissing(t, c, namespace, VariablesConfigMapName, &corev1.ConfigMap{})
+	assertPresent(t, c, namespace, EDOTGatewayVariablesConfigMapName, &corev1.ConfigMap{})
+}
+
+func deploymentEnvValue(t *testing.T, c client.Client, namespace, name, env string) string {
+	t.Helper()
+	deployment := &appsv1.Deployment{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: name}, deployment); err != nil {
+		t.Fatal(err)
+	}
+	value := findEnv(deployment.Spec.Template.Spec.Containers[0].Env, env)
+	if value == nil {
+		t.Fatalf("env %q not found on deployment %q", env, name)
+	}
+	return value.Value
 }
 
 func TestRouteReadyUsesMatchingParentStatus(t *testing.T) {
@@ -231,8 +349,8 @@ func TestCABundleCommandIsSafe(t *testing.T) {
 
 func TestTelemetryDeploymentsUseResolvedCABundleImage(t *testing.T) {
 	const caBundleImage = "registry.example/ca-bundle@sha256:0000000000000000000000000000000000000000000000000000000000000000"
-	collector := collectorDeployment("telemetry", &neteye.NetEyeOtelCollectorSpec{}, "collector-image", caBundleImage, nil)
-	gateway := edotGatewayDeployment("telemetry", &neteye.NetEyeEDOTGatewaySpec{}, "gateway-image", caBundleImage, nil)
+	collector := collectorDeployment("telemetry", &neteye.NetEyeOtelCollectorSpec{}, "collector-image", caBundleImage, "https://identity.example.com/auth/realms/master", nil)
+	gateway := edotGatewayDeployment("telemetry", &neteye.NetEyeEDOTGatewaySpec{}, "gateway-image", caBundleImage, `["https://elastic.example.com:9200"]`, nil)
 	collectorInit := collector.Spec.Template.Spec.InitContainers[0].Image
 	gatewayInit := gateway.Spec.Template.Spec.InitContainers[0].Image
 	if collectorInit != caBundleImage {
