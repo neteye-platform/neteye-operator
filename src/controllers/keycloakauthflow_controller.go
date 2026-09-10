@@ -38,8 +38,12 @@ func (r *KeycloakAuthFlowReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if !flow.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, flow)
 	}
-	api, err := r.adminAPI(ctx) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
+	api, err := r.adminAPI(ctx, flow.Namespace) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
 	if err != nil {
+		if r.isMissingCredentials(err) {
+			r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateFailed, missingCredentialsMessage(flow.Namespace))
+			return ctrl.Result{}, nil
+		}
 		r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateNotReady, err.Error())
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
@@ -67,8 +71,12 @@ func (r *KeycloakAuthFlowReconciler) reconcileDelete(ctx context.Context, flow *
 		return ctrl.Result{}, nil
 	}
 	if flow.Spec.DeletionPolicy != neteye.KeycloakDeletionPolicyOrphan {
-		api, err := r.adminAPI(ctx)
+		api, err := r.adminAPI(ctx, flow.Namespace)
 		if err != nil {
+			if r.isMissingCredentials(err) {
+				r.Log.Info("leaving Keycloak authentication flow behind because local admin credentials are unavailable", "severity", "warning", "object", client.ObjectKeyFromObject(flow))
+				return r.removeFinalizer(ctx, flow)
+			}
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
 		if err := keycloak.DeleteFlow(ctx, api, flow.Spec); err != nil {
@@ -79,6 +87,10 @@ func (r *KeycloakAuthFlowReconciler) reconcileDelete(ctx context.Context, flow *
 			r.Log.Error(err, "keycloak authentication flow cannot be deleted, releasing finalizer", "alias", flow.Spec.Alias)
 		}
 	}
+	return r.removeFinalizer(ctx, flow)
+}
+
+func (r *KeycloakAuthFlowReconciler) removeFinalizer(ctx context.Context, flow *neteye.KeycloakAuthFlow) (ctrl.Result, error) {
 	controllerutil.RemoveFinalizer(flow, KeycloakAuthFlowFinalizer)
 	if err := r.Update(ctx, flow); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove keycloak authentication flow finalizer: %w", err)

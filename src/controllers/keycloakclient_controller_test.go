@@ -164,22 +164,43 @@ func TestKeycloakClientReconcileCreatesClient(t *testing.T) {
 
 func TestKeycloakClientReconcileWithoutAdminSecret(t *testing.T) {
 	stub := &stubKeycloak{clients: map[string]map[string]any{}}
-	kcc := keycloakClientCR("neteye-tenant-shared")
+	kcc := keycloakClientCR("tenant")
 	r, c := newKeycloakClientReconciler(t, stub, kcc)
 
 	result, err := r.Reconcile(context.Background(), requestFor(kcc))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RequeueAfter != DefaultFailureRequeueAfter {
+	if result.RequeueAfter != 0 {
 		t.Errorf("requeueAfter = %s", result.RequeueAfter)
 	}
 	updated := &neteye.KeycloakClient{}
 	if err := c.Get(context.Background(), requestFor(kcc).NamespacedName, updated); err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status.Status != neteye.ServiceStateNotReady {
+	if updated.Status.Status != neteye.ServiceStateFailed {
 		t.Errorf("status = %q", updated.Status.Status)
+	}
+	if !strings.Contains(updated.Status.Message, "no Keycloak admin credentials found in namespace \"tenant\"") {
+		t.Errorf("message = %q", updated.Status.Message)
+	}
+}
+
+func TestKeycloakClientDeleteWithoutTenantCredentialsReleasesFinalizer(t *testing.T) {
+	stub := &stubKeycloak{clients: map[string]map[string]any{"neteye": {"id": "uuid-neteye", "clientId": "neteye"}}}
+	now := metav1.Now()
+	kcc := keycloakClientCR("tenant")
+	kcc.Finalizers, kcc.DeletionTimestamp = []string{KeycloakClientFinalizer}, &now
+	r, c := newKeycloakClientReconciler(t, stub, kcc)
+	if _, err := r.Reconcile(context.Background(), requestFor(kcc)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stub.clients["neteye"]; !ok {
+		t.Fatal("remote client must be orphaned")
+	}
+	updated := &neteye.KeycloakClient{}
+	if err := c.Get(context.Background(), requestFor(kcc).NamespacedName, updated); err == nil && containsString(updated.Finalizers, KeycloakClientFinalizer) {
+		t.Error("finalizer was not removed")
 	}
 }
 

@@ -5,6 +5,7 @@ package keycloak
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -30,8 +31,13 @@ const internalAdminRetryInterval = time.Minute
 type AdminProvider struct {
 	// Client reads the credential Secrets.
 	Client client.Client
-	// Namespace runs the Keycloak instance.
-	Namespace string
+	// CredentialNamespace contains the admin credential Secret.
+	CredentialNamespace string
+	// EndpointNamespace runs the Keycloak instance and is used only to build
+	// its in-cluster Service URL.
+	EndpointNamespace string
+	// SkipInternalAdmin restricts resolution to the bootstrap-shaped Secret.
+	SkipInternalAdmin bool
 	// Factory builds Admin API clients; defaults to NewAdminAPI.
 	Factory AdminAPIFactory
 	// RetryInterval overrides how long a rejected internal admin is skipped.
@@ -47,7 +53,13 @@ type AdminProvider struct {
 
 // NewAdminProvider builds a provider for the Keycloak instance in namespace.
 func NewAdminProvider(c client.Client, namespace string, factory AdminAPIFactory) *AdminProvider {
-	return &AdminProvider{Client: c, Namespace: namespace, Factory: factory}
+	return NewAdminProviderForNamespaces(c, namespace, namespace, false, factory)
+}
+
+// NewAdminProviderForNamespaces explicitly separates credential lookup from
+// the namespace hosting the Keycloak endpoint.
+func NewAdminProviderForNamespaces(c client.Client, credentialNamespace, endpointNamespace string, skipInternalAdmin bool, factory AdminAPIFactory) *AdminProvider {
+	return &AdminProvider{Client: c, CredentialNamespace: credentialNamespace, EndpointNamespace: endpointNamespace, SkipInternalAdmin: skipInternalAdmin, Factory: factory}
 }
 
 // Get returns the Admin API client to use and the username it authenticates as,
@@ -58,24 +70,39 @@ func (p *AdminProvider) Get(ctx context.Context) (*AdminAPI, string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	internal, err := internalAdminCredentials(ctx, p.Client, p.Namespace)
-	if err != nil {
-		return nil, "", err
-	}
-	if internal != nil {
-		if api, ok := p.cached(InternalAdminUsername, internal.Password); ok {
-			return api, InternalAdminUsername, nil
+	if !p.SkipInternalAdmin {
+		internal, err := internalAdminCredentials(ctx, p.Client, p.CredentialNamespace)
+		if err != nil {
+			return nil, "", err
 		}
-		if api, ok := p.verifyInternal(ctx, *internal); ok {
-			return api, InternalAdminUsername, nil
+		if internal != nil {
+			if api, ok := p.cached(InternalAdminUsername, internal.Password); ok {
+				return api, InternalAdminUsername, nil
+			}
+			if api, ok := p.verifyInternal(ctx, *internal); ok {
+				return api, InternalAdminUsername, nil
+			}
 		}
 	}
 
-	bootstrap, err := bootstrapAdminCredentials(ctx, p.Client, p.Namespace)
+	bootstrap, err := bootstrapAdminCredentials(ctx, p.Client, p.CredentialNamespace)
 	if err != nil {
 		return nil, "", err
 	}
 	if api, ok := p.cached(bootstrap.Username, bootstrap.Password); ok {
+		if p.SkipInternalAdmin {
+			if err := api.Verify(ctx); err != nil {
+				return nil, "", fmt.Errorf("verify Keycloak tenant admin credentials: %w", err)
+			}
+		}
+		return api, bootstrap.Username, nil
+	}
+	if p.SkipInternalAdmin {
+		api := p.build(*bootstrap)
+		if err := api.Verify(ctx); err != nil {
+			return nil, "", fmt.Errorf("verify Keycloak tenant admin credentials: %w", err)
+		}
+		p.api, p.username, p.password = api, bootstrap.Username, bootstrap.Password
 		return api, bootstrap.Username, nil
 	}
 	// The bootstrap client is not verified here: it authenticates lazily on its
@@ -123,7 +150,7 @@ func (p *AdminProvider) build(credentials AdminCredentials) *AdminAPI {
 	if factory == nil {
 		factory = NewAdminAPI
 	}
-	return factory(InClusterBaseURL(p.Namespace), credentials)
+	return factory(InClusterBaseURL(p.EndpointNamespace), credentials)
 }
 
 func (p *AdminProvider) retryInterval() time.Duration {
@@ -131,4 +158,34 @@ func (p *AdminProvider) retryInterval() time.Duration {
 		return p.RetryInterval
 	}
 	return internalAdminRetryInterval
+}
+
+// AdminProviderRegistry lazily gives each credential namespace its own cached
+// provider, preventing a tenant credential or token from being reused by
+// another namespace.
+type AdminProviderRegistry struct {
+	Client            client.Client
+	EndpointNamespace string
+	Factory           AdminAPIFactory
+
+	mu        sync.Mutex
+	providers map[string]*AdminProvider
+}
+
+func NewAdminProviderRegistry(c client.Client, endpointNamespace string, factory AdminAPIFactory) *AdminProviderRegistry {
+	return &AdminProviderRegistry{Client: c, EndpointNamespace: endpointNamespace, Factory: factory}
+}
+
+func (r *AdminProviderRegistry) For(credentialNamespace string) *AdminProvider {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.providers == nil {
+		r.providers = map[string]*AdminProvider{}
+	}
+	if provider := r.providers[credentialNamespace]; provider != nil {
+		return provider
+	}
+	provider := NewAdminProviderForNamespaces(r.Client, credentialNamespace, r.EndpointNamespace, credentialNamespace != r.EndpointNamespace, r.Factory)
+	r.providers[credentialNamespace] = provider
+	return provider
 }

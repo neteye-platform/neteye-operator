@@ -126,13 +126,13 @@ func main() {
 		setupLog.Error(err, "unable to create NetEye controller")
 		os.Exit(1)
 	}
-	// One provider for all Keycloak controllers: they authenticate as the same account,
-	// so they may as well share the client and its token.
-	adminProvider := keycloak.NewAdminProvider(mgr.GetClient(), keycloak.WorkloadNamespace, nil)
+	// Providers are cached per CR namespace: platform resources use the platform
+	// credentials, while tenant resources use credentials from their own namespace.
+	adminProviders := keycloak.NewAdminProviderRegistry(mgr.GetClient(), keycloak.WorkloadNamespace, nil)
 	if err := (&controllers.KeycloakClientReconciler{
 		KeycloakAPIReconciler: controllers.KeycloakAPIReconciler{
 			Client:                     mgr.GetClient(),
-			AdminProvider:              adminProvider,
+			AdminProviders:             adminProviders,
 			Log:                        ctrl.Log.WithName("keycloak-client-reconciler"),
 			Scheme:                     mgr.GetScheme(),
 			FailureRequeueAfter:        failureRequeue,
@@ -145,7 +145,7 @@ func main() {
 	if err := (&controllers.KeycloakUserReconciler{
 		KeycloakAPIReconciler: controllers.KeycloakAPIReconciler{
 			Client:                     mgr.GetClient(),
-			AdminProvider:              adminProvider,
+			AdminProviders:             adminProviders,
 			Log:                        ctrl.Log.WithName("keycloak-user-reconciler"),
 			Scheme:                     mgr.GetScheme(),
 			FailureRequeueAfter:        failureRequeue,
@@ -158,7 +158,7 @@ func main() {
 	if err := (&controllers.KeycloakAuthFlowReconciler{
 		KeycloakAPIReconciler: controllers.KeycloakAPIReconciler{
 			Client:                     mgr.GetClient(),
-			AdminProvider:              adminProvider,
+			AdminProviders:             adminProviders,
 			Log:                        ctrl.Log.WithName("keycloak-auth-flow-reconciler"),
 			Scheme:                     mgr.GetScheme(),
 			FailureRequeueAfter:        failureRequeue,
@@ -171,7 +171,7 @@ func main() {
 	if err := (&controllers.KeycloakRealmReconciler{
 		KeycloakAPIReconciler: controllers.KeycloakAPIReconciler{
 			Client:                     mgr.GetClient(),
-			AdminProvider:              adminProvider,
+			AdminProviders:             adminProviders,
 			Log:                        ctrl.Log.WithName("keycloak-realm-reconciler"),
 			Scheme:                     mgr.GetScheme(),
 			FailureRequeueAfter:        failureRequeue,

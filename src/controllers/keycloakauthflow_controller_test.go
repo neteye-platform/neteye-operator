@@ -126,7 +126,7 @@ func newKeycloakAuthFlowReconciler(t *testing.T, stub *stubKeycloakFlows, object
 func TestKeycloakAuthFlowReconcileCreatesRootFlowWithExecutions(t *testing.T) {
 	stub := newStubKeycloakFlows()
 	flow := &neteye.KeycloakAuthFlow{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "browser"}, Spec: neteye.KeycloakAuthFlowSpec{Alias: "browser", Executions: []neteye.KeycloakAuthFlowExecution{{Authenticator: "auth-cookie", Requirement: "ALTERNATIVE"}}}}
-	r, c := newKeycloakAuthFlowReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), flow)
+	r, c := newKeycloakAuthFlowReconciler(t, stub, adminSecret(flow.Namespace), flow)
 	if _, err := r.Reconcile(context.Background(), requestFor(flow)); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestKeycloakAuthFlowReconcileCreatesRootFlowWithExecutions(t *testing.T) {
 func TestKeycloakAuthFlowReconcileBindsFlowToRealm(t *testing.T) {
 	stub := newStubKeycloakFlows()
 	flow := &neteye.KeycloakAuthFlow{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "browser"}, Spec: neteye.KeycloakAuthFlowSpec{Realm: "master", Alias: "neteye-first-broker-login-flow", Bindings: []neteye.KeycloakAuthFlowBinding{"browser"}}}
-	r, _ := newKeycloakAuthFlowReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), flow)
+	r, _ := newKeycloakAuthFlowReconciler(t, stub, adminSecret(flow.Namespace), flow)
 	if _, err := r.Reconcile(context.Background(), requestFor(flow)); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestKeycloakAuthFlowDeleteHonorsOrphanAndBuiltInRefusal(t *testing.T) {
 			stub.flows["browser"] = map[string]any{"id": "flow-browser", "alias": "browser", "builtIn": test.builtIn}
 			now := metav1.Now()
 			flow := &neteye.KeycloakAuthFlow{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "browser", Finalizers: []string{KeycloakAuthFlowFinalizer}, DeletionTimestamp: &now}, Spec: neteye.KeycloakAuthFlowSpec{Alias: "browser", DeletionPolicy: test.policy}}
-			r, c := newKeycloakAuthFlowReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), flow)
+			r, c := newKeycloakAuthFlowReconciler(t, stub, adminSecret(flow.Namespace), flow)
 			if _, err := r.Reconcile(context.Background(), requestFor(flow)); err != nil {
 				t.Fatal(err)
 			}
@@ -180,5 +180,30 @@ func TestKeycloakAuthFlowDeleteHonorsOrphanAndBuiltInRefusal(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestKeycloakAuthFlowMissingTenantCredentialsFailsAndDeleteReleasesFinalizer(t *testing.T) {
+	stub := newStubKeycloakFlows()
+	flow := &neteye.KeycloakAuthFlow{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "browser"}, Spec: neteye.KeycloakAuthFlowSpec{Alias: "browser"}}
+	r, c := newKeycloakAuthFlowReconciler(t, stub, flow)
+	if _, err := r.Reconcile(context.Background(), requestFor(flow)); err != nil {
+		t.Fatal(err)
+	}
+	updated := &neteye.KeycloakAuthFlow{}
+	if err := c.Get(context.Background(), requestFor(flow).NamespacedName, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Status != neteye.ServiceStateFailed || !strings.Contains(updated.Status.Message, "no Keycloak admin credentials") {
+		t.Errorf("status = %q (%s)", updated.Status.Status, updated.Status.Message)
+	}
+	now := metav1.Now()
+	deleting := &neteye.KeycloakAuthFlow{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant-delete", Name: "browser", Finalizers: []string{KeycloakAuthFlowFinalizer}, DeletionTimestamp: &now}, Spec: neteye.KeycloakAuthFlowSpec{Alias: "browser"}}
+	r, c = newKeycloakAuthFlowReconciler(t, stub, deleting)
+	if _, err := r.Reconcile(context.Background(), requestFor(deleting)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(context.Background(), requestFor(deleting).NamespacedName, &neteye.KeycloakAuthFlow{}); err == nil {
+		t.Error("finalizer was not removed")
 	}
 }

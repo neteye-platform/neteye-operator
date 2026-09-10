@@ -62,7 +62,7 @@ func newKeycloakRealmReconciler(t *testing.T, stub *stubKeycloakRealms, objects 
 func TestKeycloakRealmReconcileCreatesRealm(t *testing.T) {
 	stub := &stubKeycloakRealms{realms: map[string]map[string]any{}}
 	realm := &neteye.KeycloakRealm{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "neteye"}, Spec: neteye.KeycloakRealmSpec{Realm: "neteye", DisplayName: "NetEye"}}
-	r, c := newKeycloakRealmReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), realm)
+	r, c := newKeycloakRealmReconciler(t, stub, adminSecret(realm.Namespace), realm)
 	if _, err := r.Reconcile(context.Background(), requestFor(realm)); err != nil {
 		t.Fatal(err)
 	}
@@ -75,5 +75,30 @@ func TestKeycloakRealmReconcileCreatesRealm(t *testing.T) {
 	}
 	if updated.Status.Status != neteye.ServiceStateReady {
 		t.Errorf("status = %q", updated.Status.Status)
+	}
+}
+
+func TestKeycloakRealmMissingTenantCredentialsFailsAndDeleteReleasesFinalizer(t *testing.T) {
+	stub := &stubKeycloakRealms{realms: map[string]map[string]any{}}
+	realm := &neteye.KeycloakRealm{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "neteye"}, Spec: neteye.KeycloakRealmSpec{Realm: "neteye"}}
+	r, c := newKeycloakRealmReconciler(t, stub, realm)
+	if _, err := r.Reconcile(context.Background(), requestFor(realm)); err != nil {
+		t.Fatal(err)
+	}
+	updated := &neteye.KeycloakRealm{}
+	if err := c.Get(context.Background(), requestFor(realm).NamespacedName, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Status != neteye.ServiceStateFailed || !strings.Contains(updated.Status.Message, "no Keycloak admin credentials") {
+		t.Errorf("status = %q (%s)", updated.Status.Status, updated.Status.Message)
+	}
+	now := metav1.Now()
+	deleting := &neteye.KeycloakRealm{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant-delete", Name: "neteye", Finalizers: []string{KeycloakRealmFinalizer}, DeletionTimestamp: &now}, Spec: neteye.KeycloakRealmSpec{Realm: "neteye"}}
+	r, c = newKeycloakRealmReconciler(t, stub, deleting)
+	if _, err := r.Reconcile(context.Background(), requestFor(deleting)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(context.Background(), requestFor(deleting).NamespacedName, &neteye.KeycloakRealm{}); err == nil {
+		t.Error("finalizer was not removed")
 	}
 }
