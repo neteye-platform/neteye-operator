@@ -313,7 +313,7 @@ func TestKeycloakUserReconcileDeletePolicyDeletesAccount(t *testing.T) {
 
 func TestKeycloakUserReconcileWithoutAdminSecret(t *testing.T) {
 	stub := newStubKeycloakUsers()
-	kcu := keycloakUserCR("neteye-tenant-shared")
+	kcu := keycloakUserCR("tenant")
 	r, c := newKeycloakUserReconciler(t, stub, kcu)
 
 	result, err := r.Reconcile(context.Background(), requestFor(kcu))
@@ -321,13 +321,34 @@ func TestKeycloakUserReconcileWithoutAdminSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.RequeueAfter != DefaultFailureRequeueAfter {
-		t.Errorf("requeueAfter = %s", result.RequeueAfter)
+		t.Errorf("requeueAfter = %s, want %s", result.RequeueAfter, DefaultFailureRequeueAfter)
 	}
 	updated := &neteye.KeycloakUser{}
 	if err := c.Get(context.Background(), requestFor(kcu).NamespacedName, updated); err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status.Status != neteye.ServiceStateNotReady {
+	if updated.Status.Status != neteye.ServiceStateFailed {
 		t.Errorf("status = %q", updated.Status.Status)
+	}
+	if !strings.Contains(updated.Status.Message, "no Keycloak admin credentials found in namespace \"tenant\"") {
+		t.Errorf("message = %q", updated.Status.Message)
+	}
+}
+
+func TestKeycloakUserDeleteWithoutTenantCredentialsReleasesFinalizer(t *testing.T) {
+	stub := newStubKeycloakUsers()
+	stub.users["svc"] = map[string]any{"id": "user-svc", "username": "svc"}
+	now := metav1.Now()
+	kcu := &neteye.KeycloakUser{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "svc", Finalizers: []string{KeycloakUserFinalizer}, DeletionTimestamp: &now}, Spec: neteye.KeycloakUserSpec{Username: "svc"}}
+	r, c := newKeycloakUserReconciler(t, stub, kcu)
+	if _, err := r.Reconcile(context.Background(), requestFor(kcu)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stub.users["svc"]; !ok {
+		t.Fatal("remote user must be orphaned")
+	}
+	updated := &neteye.KeycloakUser{}
+	if err := c.Get(context.Background(), requestFor(kcu).NamespacedName, updated); err == nil && containsString(updated.Finalizers, KeycloakUserFinalizer) {
+		t.Error("finalizer was not removed")
 	}
 }

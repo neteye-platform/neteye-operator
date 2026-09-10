@@ -34,9 +34,17 @@ func (r *KeycloakRealmReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, err
 	}
-	api, err := r.adminAPI(ctx) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
+	api, err := r.adminAPI(ctx, realm.Namespace) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
 	if err != nil {
 		if !realm.DeletionTimestamp.IsZero() {
+			if r.isMissingCredentials(err) {
+				log.Info("leaving Keycloak realm behind because local admin credentials are unavailable", "severity", "warning", "object", req.NamespacedName)
+				return r.removeFinalizer(ctx, realm)
+			}
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
+		if r.isMissingCredentials(err) {
+			r.setStatus(ctx, req.NamespacedName, realm, neteye.ServiceStateFailed, missingCredentialsMessage(realm.Namespace))
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
 		r.setStatus(ctx, req.NamespacedName, realm, neteye.ServiceStateNotReady, err.Error())
@@ -76,6 +84,10 @@ func (r *KeycloakRealmReconciler) reconcileDelete(ctx context.Context, realm *ne
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
 	}
+	return r.removeFinalizer(ctx, realm)
+}
+
+func (r *KeycloakRealmReconciler) removeFinalizer(ctx context.Context, realm *neteye.KeycloakRealm) (ctrl.Result, error) {
 	controllerutil.RemoveFinalizer(realm, KeycloakRealmFinalizer)
 	if err := r.Update(ctx, realm); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove keycloak realm finalizer: %w", err)

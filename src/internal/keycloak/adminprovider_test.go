@@ -5,6 +5,7 @@ package keycloak
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -120,8 +121,117 @@ func TestAdminProviderFallsBackWhenTheInternalCredentialIsRejected(t *testing.T)
 
 func TestAdminProviderFailsWithoutAnyCredential(t *testing.T) {
 	server := &tokenServer{username: "temp-admin", password: "boot"}
-	if _, err := resolve(t, server, nil); err == nil {
+	if _, err := resolve(t, server, nil); !errors.Is(err, ErrNoAdminCredentials) {
 		t.Fatal("expected an error when no admin Secret exists")
+	}
+}
+
+func TestAdminProviderRegistryUsesTenantCredentialsAndVerifiesThem(t *testing.T) {
+	server := &tokenServer{username: "tenant-admin", password: "tenant-password"}
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	tenant := "tenant-a"
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: AdminSecretName}, Data: map[string][]byte{AdminSecretUsernameKey: []byte("tenant-admin"), AdminSecretPasswordKey: []byte("tenant-password")}}
+	c := fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).WithObjects(secret).Build()
+	registry := NewAdminProviderRegistry(c, WorkloadNamespace, func(_ string, credentials AdminCredentials) *AdminAPI {
+		return NewAdminAPI(httpServer.URL, credentials)
+	})
+	_, username, err := registry.For(tenant).Get(context.Background())
+	if err != nil || username != "tenant-admin" {
+		t.Fatalf("Get = %q, %v", username, err)
+	}
+	if len(server.attempts) != 1 || server.attempts[0] != "tenant-admin" {
+		t.Errorf("verification attempts = %v", server.attempts)
+	}
+}
+
+func TestAdminProviderRegistryTenantVerificationIsCached(t *testing.T) {
+	server := &tokenServer{username: "tenant-admin", password: "tenant-password"}
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	tenant := "tenant-a"
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: AdminSecretName}, Data: map[string][]byte{AdminSecretUsernameKey: []byte("tenant-admin"), AdminSecretPasswordKey: []byte("tenant-password")}}
+	c := fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).WithObjects(secret).Build()
+	registry := NewAdminProviderRegistry(c, WorkloadNamespace, func(_ string, credentials AdminCredentials) *AdminAPI {
+		return NewAdminAPI(httpServer.URL, credentials)
+	})
+
+	for range 5 {
+		if _, _, err := registry.For(tenant).Get(context.Background()); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+	}
+	if len(server.attempts) != 1 {
+		t.Errorf("verification requests = %d, want 1 across five reconciliations", len(server.attempts))
+	}
+}
+
+func TestAdminProviderRegistryTenantWithoutSecretReturnsSentinel(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).Build()
+	_, _, err := NewAdminProviderRegistry(c, WorkloadNamespace, nil).For("tenant-a").Get(context.Background())
+	if !errors.Is(err, ErrNoAdminCredentials) {
+		t.Fatalf("error = %v, want ErrNoAdminCredentials", err)
+	}
+}
+
+func TestAdminProviderRegistryPreservesPlatformResolution(t *testing.T) {
+	server := &tokenServer{username: InternalAdminUsername, password: "internal"}
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	builder := fake.NewClientBuilder().WithScheme(internalAdminScheme(t))
+	for _, secret := range adminSecrets("bootstrap", "bootstrap-password", "internal") {
+		builder = builder.WithObjects(secret)
+	}
+	registry := NewAdminProviderRegistry(builder.Build(), WorkloadNamespace, func(_ string, credentials AdminCredentials) *AdminAPI {
+		return NewAdminAPI(httpServer.URL, credentials)
+	})
+	_, username, err := registry.For(WorkloadNamespace).Get(context.Background())
+	if err != nil || username != InternalAdminUsername {
+		t.Fatalf("Get = %q, %v; want the internal platform admin", username, err)
+	}
+}
+
+func TestAdminProviderRegistryKeepsProvidersIsolated(t *testing.T) {
+	registry := NewAdminProviderRegistry(fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).Build(), WorkloadNamespace, nil)
+	first := registry.For("tenant-a")
+	if first != registry.For("tenant-a") {
+		t.Error("same tenant did not reuse its provider")
+	}
+	if first == registry.For("tenant-b") {
+		t.Error("different tenants shared a provider")
+	}
+}
+
+func TestAdminProviderRegistryForgetsANamespace(t *testing.T) {
+	registry := NewAdminProviderRegistry(fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).Build(), WorkloadNamespace, nil)
+	first := registry.For("tenant-a")
+	other := registry.For("tenant-b")
+
+	registry.Forget("tenant-a")
+	registry.Forget("tenant-missing") // forgetting an unknown namespace is a no-op
+
+	if registry.For("tenant-a") == first {
+		t.Error("the forgotten provider was reused")
+	}
+	if registry.For("tenant-b") != other {
+		t.Error("forgetting one namespace dropped another")
+	}
+}
+
+func TestAdminProviderRegistryEvictsIdleProviders(t *testing.T) {
+	registry := NewAdminProviderRegistry(fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).Build(), WorkloadNamespace, nil)
+	first := registry.For("tenant-a")
+
+	registry.mu.Lock()
+	entry := registry.providers["tenant-a"]
+	entry.lastUsed = time.Now().Add(-time.Hour)
+	registry.providers["tenant-a"] = entry
+	registry.mu.Unlock()
+
+	registry.EvictIdle(time.Minute)
+	second := registry.For("tenant-a")
+	if first == second {
+		t.Error("idle provider was reused after eviction")
 	}
 }
 

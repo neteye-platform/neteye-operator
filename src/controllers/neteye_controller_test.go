@@ -122,6 +122,25 @@ func TestReconcileNotFound(t *testing.T) {
 	}
 }
 
+func TestReconcileNotFoundForgetsCachedAdminProvider(t *testing.T) {
+	s := testScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	registry := keycloak.NewAdminProviderRegistry(c, keycloak.WorkloadNamespace, nil)
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, AdminProviders: registry}
+
+	cached := registry.For("tenant-a")
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "tenant-a", Name: "deleted"},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if registry.For("tenant-a") == cached {
+		t.Error("the deleted tenant kept its cached admin provider")
+	}
+}
+
 func TestReconcileClusterAuthorityFailurePreventsManagedResourceMutations(t *testing.T) {
 	s := testScheme(t)
 	ne := newNetEye(neteye.CurrentNetEyeVersion)

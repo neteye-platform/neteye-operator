@@ -52,12 +52,20 @@ func (r *KeycloakClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	api, err := r.adminAPI(ctx) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
+	api, err := r.adminAPI(ctx, kcc.Namespace) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
 	if err != nil {
 		log.Error(err, "unable to build Keycloak Admin API client", "requeueAfter", r.failureRequeue())
 		if !kcc.DeletionTimestamp.IsZero() {
+			if r.isMissingCredentials(err) {
+				log.Info("leaving Keycloak client behind because local admin credentials are unavailable", "severity", "warning", "object", req.NamespacedName)
+				return r.removeFinalizer(ctx, kcc)
+			}
 			// Keycloak is unreachable; keep the finalizer and retry rather than
 			// leaking or force-dropping the remote client.
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
+		if r.isMissingCredentials(err) {
+			r.setStatus(ctx, req.NamespacedName, kcc, neteye.ServiceStateFailed, missingCredentialsMessage(kcc.Namespace))
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
 		r.setStatus(ctx, req.NamespacedName, kcc, neteye.ServiceStateNotReady, err.Error())
@@ -123,6 +131,10 @@ func (r *KeycloakClientReconciler) reconcileDelete(ctx context.Context, kcc *net
 	} else {
 		log.Info("keycloak client orphaned by deletion policy", "clientId", kcc.Spec.ClientID, "realm", kcc.Spec.Realm)
 	}
+	return r.removeFinalizer(ctx, kcc)
+}
+
+func (r *KeycloakClientReconciler) removeFinalizer(ctx context.Context, kcc *neteye.KeycloakClient) (ctrl.Result, error) {
 	controllerutil.RemoveFinalizer(kcc, KeycloakClientFinalizer)
 	if err := r.Update(ctx, kcc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove keycloak client finalizer: %w", err)

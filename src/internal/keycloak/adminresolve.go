@@ -5,6 +5,7 @@ package keycloak
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -12,6 +13,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// ErrNoAdminCredentials identifies a missing or incomplete bootstrap admin
+// Secret. Callers use it to distinguish a configuration error from a
+// transient Kubernetes API failure.
+var ErrNoAdminCredentials = errors.New("no Keycloak admin credentials")
 
 // AdminAPIFactory builds an Admin API client. Tests substitute it to point at a
 // stub server.
@@ -40,12 +46,15 @@ func bootstrapAdminCredentials(ctx context.Context, c client.Client, namespace s
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Namespace: namespace, Name: AdminSecretName}
 	if err := c.Get(ctx, key, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: keycloak admin secret %q not found in namespace %q", ErrNoAdminCredentials, AdminSecretName, namespace)
+		}
 		return nil, fmt.Errorf("get keycloak admin secret %q in namespace %q: %w", AdminSecretName, namespace, err)
 	}
 	username := string(secret.Data[AdminSecretUsernameKey])
 	password := string(secret.Data[AdminSecretPasswordKey])
 	if username == "" || password == "" {
-		return nil, fmt.Errorf("keycloak admin secret %q in namespace %q is missing the %q or %q key", AdminSecretName, namespace, AdminSecretUsernameKey, AdminSecretPasswordKey)
+		return nil, fmt.Errorf("%w: keycloak admin secret %q in namespace %q is missing the %q or %q key", ErrNoAdminCredentials, AdminSecretName, namespace, AdminSecretUsernameKey, AdminSecretPasswordKey)
 	}
 	return &AdminCredentials{Username: username, Password: password}, nil
 }
