@@ -145,6 +145,27 @@ func TestAdminProviderRegistryUsesTenantCredentialsAndVerifiesThem(t *testing.T)
 	}
 }
 
+func TestAdminProviderRegistryTenantVerificationIsCached(t *testing.T) {
+	server := &tokenServer{username: "tenant-admin", password: "tenant-password"}
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	tenant := "tenant-a"
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: AdminSecretName}, Data: map[string][]byte{AdminSecretUsernameKey: []byte("tenant-admin"), AdminSecretPasswordKey: []byte("tenant-password")}}
+	c := fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).WithObjects(secret).Build()
+	registry := NewAdminProviderRegistry(c, WorkloadNamespace, func(_ string, credentials AdminCredentials) *AdminAPI {
+		return NewAdminAPI(httpServer.URL, credentials)
+	})
+
+	for range 5 {
+		if _, _, err := registry.For(tenant).Get(context.Background()); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+	}
+	if len(server.attempts) != 1 {
+		t.Errorf("verification requests = %d, want 1 across five reconciliations", len(server.attempts))
+	}
+}
+
 func TestAdminProviderRegistryTenantWithoutSecretReturnsSentinel(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).Build()
 	_, _, err := NewAdminProviderRegistry(c, WorkloadNamespace, nil).For("tenant-a").Get(context.Background())
@@ -178,6 +199,23 @@ func TestAdminProviderRegistryKeepsProvidersIsolated(t *testing.T) {
 	}
 	if first == registry.For("tenant-b") {
 		t.Error("different tenants shared a provider")
+	}
+}
+
+func TestAdminProviderRegistryEvictsIdleProviders(t *testing.T) {
+	registry := NewAdminProviderRegistry(fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).Build(), WorkloadNamespace, nil)
+	first := registry.For("tenant-a")
+
+	registry.mu.Lock()
+	entry := registry.providers["tenant-a"]
+	entry.lastUsed = time.Now().Add(-time.Hour)
+	registry.providers["tenant-a"] = entry
+	registry.mu.Unlock()
+
+	registry.EvictIdle(time.Minute)
+	second := registry.For("tenant-a")
+	if first == second {
+		t.Error("idle provider was reused after eviction")
 	}
 }
 

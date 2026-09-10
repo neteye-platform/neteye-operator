@@ -42,7 +42,7 @@ func (r *KeycloakAuthFlowReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err != nil {
 		if r.isMissingCredentials(err) {
 			r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateFailed, missingCredentialsMessage(flow.Namespace))
-			return ctrl.Result{}, nil
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
 		r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateNotReady, err.Error())
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil

@@ -171,8 +171,8 @@ func TestKeycloakClientReconcileWithoutAdminSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RequeueAfter != 0 {
-		t.Errorf("requeueAfter = %s", result.RequeueAfter)
+	if result.RequeueAfter != DefaultFailureRequeueAfter {
+		t.Errorf("requeueAfter = %s, want %s", result.RequeueAfter, DefaultFailureRequeueAfter)
 	}
 	updated := &neteye.KeycloakClient{}
 	if err := c.Get(context.Background(), requestFor(kcc).NamespacedName, updated); err != nil {

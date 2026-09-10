@@ -66,7 +66,7 @@ func (r *KeycloakClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		if r.isMissingCredentials(err) {
 			r.setStatus(ctx, req.NamespacedName, kcc, neteye.ServiceStateFailed, missingCredentialsMessage(kcc.Namespace))
-			return ctrl.Result{}, nil
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
 		r.setStatus(ctx, req.NamespacedName, kcc, neteye.ServiceStateNotReady, err.Error())
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil

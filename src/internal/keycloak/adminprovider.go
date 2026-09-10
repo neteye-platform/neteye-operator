@@ -90,11 +90,6 @@ func (p *AdminProvider) Get(ctx context.Context) (*AdminAPI, string, error) {
 		return nil, "", err
 	}
 	if api, ok := p.cached(bootstrap.Username, bootstrap.Password); ok {
-		if p.SkipInternalAdmin {
-			if err := api.Verify(ctx); err != nil {
-				return nil, "", fmt.Errorf("verify Keycloak tenant admin credentials: %w", err)
-			}
-		}
 		return api, bootstrap.Username, nil
 	}
 	if p.SkipInternalAdmin {
@@ -169,8 +164,18 @@ type AdminProviderRegistry struct {
 	Factory           AdminAPIFactory
 
 	mu        sync.Mutex
-	providers map[string]*AdminProvider
+	providers map[string]adminProviderRegistryEntry
 }
+
+type adminProviderRegistryEntry struct {
+	provider *AdminProvider
+	lastUsed time.Time
+}
+
+// adminProviderRegistryIdleMaxAge bounds how long credentials and Admin API
+// clients for inactive tenant namespaces remain in memory. Lazy eviction avoids
+// a background goroutine whose lifecycle would need to be tied to the manager.
+const adminProviderRegistryIdleMaxAge = 30 * time.Minute
 
 func NewAdminProviderRegistry(c client.Client, endpointNamespace string, factory AdminAPIFactory) *AdminProviderRegistry {
 	return &AdminProviderRegistry{Client: c, EndpointNamespace: endpointNamespace, Factory: factory}
@@ -179,13 +184,39 @@ func NewAdminProviderRegistry(c client.Client, endpointNamespace string, factory
 func (r *AdminProviderRegistry) For(credentialNamespace string) *AdminProvider {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := time.Now()
+	r.evictIdleLocked(now, adminProviderRegistryIdleMaxAge)
 	if r.providers == nil {
-		r.providers = map[string]*AdminProvider{}
+		r.providers = map[string]adminProviderRegistryEntry{}
 	}
-	if provider := r.providers[credentialNamespace]; provider != nil {
-		return provider
+	if entry, ok := r.providers[credentialNamespace]; ok {
+		entry.lastUsed = now
+		r.providers[credentialNamespace] = entry
+		return entry.provider
 	}
 	provider := NewAdminProviderForNamespaces(r.Client, credentialNamespace, r.EndpointNamespace, credentialNamespace != r.EndpointNamespace, r.Factory)
-	r.providers[credentialNamespace] = provider
+	r.providers[credentialNamespace] = adminProviderRegistryEntry{provider: provider, lastUsed: now}
 	return provider
+}
+
+// Forget immediately removes a credential namespace's cached provider.
+func (r *AdminProviderRegistry) Forget(credentialNamespace string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.providers, credentialNamespace)
+}
+
+// EvictIdle removes providers that have not been requested within maxAge.
+func (r *AdminProviderRegistry) EvictIdle(maxAge time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.evictIdleLocked(time.Now(), maxAge)
+}
+
+func (r *AdminProviderRegistry) evictIdleLocked(now time.Time, maxAge time.Duration) {
+	for namespace, entry := range r.providers {
+		if now.Sub(entry.lastUsed) > maxAge {
+			delete(r.providers, namespace)
+		}
+	}
 }
