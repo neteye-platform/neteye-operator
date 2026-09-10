@@ -1,4 +1,4 @@
-{{- range $namespace := list .Values.keycloak.namespace .Values.operator.namespace }}
+{{- range $namespace := list .Values.keycloak.namespace .Values.operator.namespace .Values.operator.sharedNamespace }}
 {{- if not (lookup "v1" "Namespace" "" $namespace) }}
 ---
 apiVersion: v1

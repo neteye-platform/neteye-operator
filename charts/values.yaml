@@ -4,6 +4,7 @@
 
 operator:
   namespace: neteye-system
+  sharedNamespace: neteye-tenant-shared
   packageName: neteye-operator
   catalogName: neteye-catalog
   catalogImage: ghcr.io/neteye-platform/neteye-operator-catalog:latest
