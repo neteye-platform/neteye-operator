@@ -150,9 +150,11 @@ func collectorDeployment(namespace string, spec *neteye.NetEyeOtelCollectorSpec,
 func collectorPorts() []corev1.ContainerPort {
 	return []corev1.ContainerPort{{Name: "health", ContainerPort: 13133}, {Name: "otlp-grpc", ContainerPort: 4317}, {Name: "otlp-http", ContainerPort: 4318}}
 }
+
 func healthProbe(period, failures int32) *corev1.Probe {
 	return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/", Port: intstr.FromString("health")}}, PeriodSeconds: period, FailureThreshold: failures, TimeoutSeconds: 2}
 }
+
 func collectorService(namespace string) *corev1.Service {
 	return telemetryService(namespace, ServiceName, collectorAppLabel)
 }
@@ -166,15 +168,19 @@ var ciliumPolicyGVK = schema.GroupVersionKind{Group: "cilium.io", Version: "v2",
 func collectorIngressPolicy() map[string]any {
 	return map[string]any{"endpointSelector": labelsFor(collectorAppLabel), "ingress": []any{map[string]any{"fromEntities": []any{"ingress"}, "toPorts": []any{tcpPorts("4317", "4318")}}, map[string]any{"fromEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("13133")}}}}
 }
+
 func collectorEgressPolicy(namespace, identityHostname string) map[string]any {
-	return map[string]any{"endpointSelector": labelsFor(collectorAppLabel), "egress": []any{collectorDNSEgress(), map[string]any{"toEndpoints": []any{namespaceScopedEndpoint(edotGatewayAppLabel, namespace)}, "toPorts": []any{tcpPorts("4317")}}, fqdnEgress(identityHostname, "443")}}
+	return map[string]any{"endpointSelector": labelsFor(collectorAppLabel), "egress": []any{collectorDNSEgress(), map[string]any{"toEndpoints": []any{namespaceScopedEndpoint(edotGatewayAppLabel, namespace)}, "toPorts": []any{tcpPorts("4317")}}, fqdnEgress(identityHostname, "443"), map[string]any{"toEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("443")}}}}
 }
+
 func labelsFor(app string) map[string]any {
 	return map[string]any{"matchLabels": map[string]any{"k8s:app": app}}
 }
+
 func namespaceScopedEndpoint(app, namespace string) map[string]any {
 	return map[string]any{"matchLabels": map[string]any{"k8s:app": app, "k8s:io.kubernetes.pod.namespace": namespace}}
 }
+
 func tcpPorts(ports ...string) map[string]any {
 	values := make([]any, 0, len(ports))
 	for _, p := range ports {
@@ -182,6 +188,7 @@ func tcpPorts(ports ...string) map[string]any {
 	}
 	return map[string]any{"ports": values}
 }
+
 func dnsEgress(names []string) map[string]any {
 	dns := make([]any, 0, len(names))
 	for _, name := range names {
@@ -189,12 +196,14 @@ func dnsEgress(names []string) map[string]any {
 	}
 	return map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}}, "toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "53", "protocol": "TCP"}, map[string]any{"port": "53", "protocol": "UDP"}}, "rules": map[string]any{"dns": dns}}}}
 }
+
 func collectorDNSEgress() map[string]any {
 	return map[string]any{
 		"toEndpoints": []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}},
 		"toPorts":     []any{map[string]any{"ports": []any{map[string]any{"port": "53", "protocol": "TCP"}, map[string]any{"port": "53", "protocol": "UDP"}}, "rules": map[string]any{"dns": []any{map[string]any{"matchPattern": "*"}}}}},
 	}
 }
+
 func fqdnEgress(host, port string) map[string]any {
 	return map[string]any{"toFQDNs": []any{map[string]any{"matchName": host}}, "toPorts": []any{tcpPorts(port)}}
 }
