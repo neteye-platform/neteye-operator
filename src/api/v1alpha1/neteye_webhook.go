@@ -182,8 +182,8 @@ func validateHTTPSURL(path *field.Path, value string) *field.Error {
 	if value != trimmed || err != nil || value == "" || !u.IsAbs() || u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return field.Invalid(path, value, "must be an absolute HTTPS URL")
 	}
-	if net.ParseIP(u.Hostname()) != nil {
-		return field.Invalid(path, value, "host must be a DNS name because Cilium toFQDNs rules do not support IP literals")
+	if net.ParseIP(u.Hostname()) == nil {
+		return field.Invalid(path, value, "host must be an IP address")
 	}
 	return nil
 }

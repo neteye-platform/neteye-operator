@@ -21,7 +21,7 @@ func TestNetEyeEDOTGatewaySpecDeepCopy(t *testing.T) {
 			OTelCollector: &NetEyeOtelCollectorSpec{BasicAuthSecretName: "basic-auth", RootCASecretName: "collector-ca"},
 			EDOTGateway: &NetEyeEDOTGatewaySpec{
 				Replicas:               2,
-				ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"},
+				ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"},
 				APIKeySecret:           &NetEyeSecretKeySelector{Name: "api-key", Key: "api_key"},
 				RootCASecretName:       "root-ca",
 			},
@@ -29,14 +29,14 @@ func TestNetEyeEDOTGatewaySpecDeepCopy(t *testing.T) {
 	}
 	copy := original.DeepCopy()
 	copy.Telemetry.OTelCollector.BasicAuthSecretName = "other-basic-auth"
-	copy.Telemetry.EDOTGateway.ElasticsearchEndpoints[0] = "https://other.example.com:9200"
+	copy.Telemetry.EDOTGateway.ElasticsearchEndpoints[0] = "https://192.0.2.20:9200"
 	copy.Telemetry.EDOTGateway.APIKeySecret.Name = "other-api-key"
 	copy.Telemetry.EDOTGateway.RootCASecretName = "other-root-ca"
 
 	if original.Telemetry.OTelCollector.BasicAuthSecretName != "basic-auth" {
 		t.Error("DeepCopy shared collector configuration")
 	}
-	if original.Telemetry.EDOTGateway.ElasticsearchEndpoints[0] != "https://elasticsearch.example.com:9200" {
+	if original.Telemetry.EDOTGateway.ElasticsearchEndpoints[0] != "https://192.0.2.10:9200" {
 		t.Error("DeepCopy shared EDOT endpoint slice")
 	}
 	if original.Telemetry.EDOTGateway.APIKeySecret.Name != "api-key" {

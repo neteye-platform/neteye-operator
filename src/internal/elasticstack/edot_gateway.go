@@ -140,11 +140,8 @@ func validatedEndpoints(values []string) ([]string, []egressTarget, error) {
 	normalized := make([]string, 0, len(values))
 	for _, value := range values {
 		u, err := url.Parse(value)
-		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || net.ParseIP(u.Hostname()) != nil {
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || net.ParseIP(u.Hostname()) == nil {
 			return nil, nil, fmt.Errorf("invalid unsupported Elasticsearch endpoint %q", value)
-		}
-		if err := validateDNSName(u.Hostname(), "Elasticsearch endpoint hostname"); err != nil {
-			return nil, nil, err
 		}
 		port := u.Port()
 		if port == "" {
@@ -188,19 +185,22 @@ func edotGatewayIngressPolicy(namespace string) map[string]any {
 }
 
 func edotGatewayEgressPolicy(targets []egressTarget) map[string]any {
-	rules := []any{dnsEgress(targetHosts(targets))}
+	rules := make([]any, 0, len(targets))
 	for _, target := range targets {
-		rules = append(rules, fqdnEgress(target.host, target.port))
+		rules = append(rules, cidrEgress(target.host, target.port))
 	}
 	return map[string]any{"endpointSelector": labelsFor(edotGatewayAppLabel), "egress": rules}
 }
 
-func targetHosts(targets []egressTarget) []string {
-	result := make([]string, 0, len(targets))
-	for _, target := range targets {
-		result = append(result, target.host)
+func cidrEgress(ip, port string) map[string]any {
+	return map[string]any{"toCIDR": []any{hostCIDR(ip)}, "toPorts": []any{tcpPorts(port)}}
+}
+
+func hostCIDR(ip string) string {
+	if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil {
+		return ip + "/32"
 	}
-	return result
+	return ip + "/128"
 }
 
 func edotGatewayInputVersions(ctx context.Context, c client.Client, namespace, apiKeyVersion, rootCAVersion string) (map[string]string, error) {

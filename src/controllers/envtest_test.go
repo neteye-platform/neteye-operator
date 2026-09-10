@@ -120,7 +120,7 @@ func TestReconcileKeycloakCustomConfiguration(t *testing.T) {
 }
 
 func TestReconcileTelemetryFailureDoesNotReturnGlobalErrorOrHideIdentityStatus(t *testing.T) {
-	config := &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}}}
+	config := &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"}}}}
 	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
 	if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultBasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("hash")}}); err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func TestReconcileTelemetryFailureDoesNotReturnGlobalErrorOrHideIdentityStatus(t
 func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	config := &neteye.NetEyeElasticStackSpec{
 		Enabled:   true,
-		Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{Replicas: 3}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}},
+		Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{Replicas: 3}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"}}},
 	}
 	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
 	prerequisites := []client.Object{
@@ -198,7 +198,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	if len(edotContainer.EnvFrom) != 0 {
 		t.Errorf("edot must not use envFrom: %#v", edotContainer.EnvFrom)
 	}
-	if got := deploymentEnvValueFor(edotContainer.Env, "ELASTICSEARCH_ENDPOINTS"); got != `["https://elasticsearch.example.com:9200"]` {
+	if got := deploymentEnvValueFor(edotContainer.Env, "ELASTICSEARCH_ENDPOINTS"); got != `["https://192.0.2.10:9200"]` {
 		t.Errorf("edot ELASTICSEARCH_ENDPOINTS env = %q", got)
 	}
 	if apiKey := deploymentEnvVar(edotContainer.Env, "ELASTICSEARCH_API_KEY"); apiKey == nil || apiKey.ValueFrom == nil || apiKey.ValueFrom.SecretKeyRef == nil {
@@ -308,7 +308,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 }
 
 func TestAPIServerAppliesTelemetryDefaults(t *testing.T) {
-	config := &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}}}
+	config := &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"}}}}
 	c, _, ctx, ne, _ := readyElasticStackTestPlatform(t, config)
 	current := &neteye.NetEye{}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {

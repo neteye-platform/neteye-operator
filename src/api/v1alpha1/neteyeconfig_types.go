@@ -180,8 +180,9 @@ type NetEyeEDOTGatewaySpec struct {
 	Replicas int32 `json:"replicas,omitempty"`
 
 	// ElasticsearchEndpoints is the explicitly configured list of HTTPS
-	// Elasticsearch endpoints consumed by the EDOT Gateway. At least one
-	// absolute HTTPS endpoint is required.
+	// Elasticsearch endpoints consumed by the EDOT Gateway. Each endpoint host
+	// must be an IP address literal, and at least one absolute HTTPS endpoint is
+	// required.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
 	ElasticsearchEndpoints []string `json:"elasticsearchEndpoints"`

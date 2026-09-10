@@ -189,14 +189,6 @@ func tcpPorts(ports ...string) map[string]any {
 	return map[string]any{"ports": values}
 }
 
-func dnsEgress(names []string) map[string]any {
-	dns := make([]any, 0, len(names))
-	for _, name := range names {
-		dns = append(dns, map[string]any{"matchName": name})
-	}
-	return map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}}, "toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "53", "protocol": "TCP"}, map[string]any{"port": "53", "protocol": "UDP"}}, "rules": map[string]any{"dns": dns}}}}
-}
-
 func collectorDNSEgress() map[string]any {
 	return map[string]any{
 		"toEndpoints": []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}},
