@@ -266,8 +266,15 @@ func TestCollectorEgressPermitsDNSAndRestrictsNonDNS(t *testing.T) {
 	var dnsOK, edotOK, oidcOK bool
 	for _, raw := range egress {
 		rule := raw.(map[string]any)
-		if _, ok := rule["toEntities"]; ok {
-			t.Fatalf("collector egress grants entity-based egress: %v", rule)
+		if entities, ok := rule["toEntities"].([]any); ok {
+			for _, entity := range entities {
+				if entity != "host" && entity != "remote-node" {
+					t.Fatalf("collector egress grants arbitrary entity egress: %v", rule)
+				}
+			}
+			if !egressHasTCPPort(rule, "443") {
+				t.Fatalf("collector node egress is not restricted to TCP/443: %v", rule)
+			}
 		}
 		if _, ok := rule["toCIDR"]; ok {
 			t.Fatalf("collector egress grants CIDR egress: %v", rule)
