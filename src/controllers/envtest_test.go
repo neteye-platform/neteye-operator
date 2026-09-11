@@ -192,8 +192,8 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	if got := deploymentEnvValueFor(collectorContainer.Env, "OIDC_ISSUER"); got != "https://keycloak.example.com/auth/realms/master" {
 		t.Errorf("collector OIDC_ISSUER env = %q", got)
 	}
-	if deploymentEnvVar(collectorContainer.Env, "ELASTICSEARCH_ENDPOINTS") != nil {
-		t.Error("collector must not receive Elasticsearch endpoints")
+	if got := deploymentEnvValueFor(collectorContainer.Env, "ELASTICSEARCH_ENDPOINTS"); got != `["https://192.0.2.10:9200"]` {
+		t.Errorf("collector ELASTICSEARCH_ENDPOINTS env = %q", got)
 	}
 	if apiKey := deploymentEnvVar(collectorContainer.Env, "ELASTICSEARCH_API_KEY"); apiKey == nil || apiKey.ValueFrom == nil || apiKey.ValueFrom.SecretKeyRef == nil {
 		t.Errorf("collector API key must be a SecretKeyRef: %+v", apiKey)
