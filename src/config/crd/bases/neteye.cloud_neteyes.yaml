@@ -63,6 +63,15 @@ spec:
                   is not independently enabled, and enabling Elastic Stack deploys both the
                   OTel Collector and EDOT Gateway. Images are resolved from release data.
                 properties:
+                  elasticsearchEndpoints:
+                    description: |-
+                      ElasticsearchEndpoints is the explicitly configured list of HTTPS
+                      Elasticsearch endpoints consumed by both telemetry components. Each
+                      endpoint host must be an IP address literal or a DNS name.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
                   enabled:
                     default: false
                     description: |-
@@ -77,16 +86,16 @@ spec:
                       edotGateway:
                         description: |-
                           EDOTGateway configures the EDOT Gateway that exports telemetry to
-                          Elasticsearch. Its endpoints, API-key Secret, and trusted CA belong here;
-                          the image is resolved from release data.
+                          Elasticsearch. Its API-key Secret and trusted CA belong here; the image
+                          is resolved from release data.
                         properties:
                           apiKeySecret:
                             default:
                               key: api_key
-                              name: otel-collector-api-key
+                              name: otel-collector-apm-api-key-secret
                             description: |-
                               APIKeySecret selects the Secret key containing the Elasticsearch API key.
-                              The default is otel-collector-api-key/api_key.
+                              The default is otel-collector-apm-api-key-secret/api_key.
                             properties:
                               key:
                                 description: Key is the key inside the Secret containing
@@ -102,16 +111,6 @@ spec:
                             - key
                             - name
                             type: object
-                          elasticsearchEndpoints:
-                            description: |-
-                              ElasticsearchEndpoints is the explicitly configured list of HTTPS
-                              Elasticsearch endpoints consumed by the EDOT Gateway. Each endpoint host
-                              must be an IP address literal, and at least one absolute HTTPS endpoint is
-                              required.
-                            items:
-                              type: string
-                            minItems: 1
-                            type: array
                           replicas:
                             default: 1
                             description: Replicas is the number of EDOT Gateway replicas
@@ -125,13 +124,34 @@ spec:
                               Elasticsearch.
                             minLength: 1
                             type: string
-                        required:
-                        - elasticsearchEndpoints
                         type: object
                       otelCollector:
                         description: OTelCollector configures the shared OpenTelemetry
                           Collector.
                         properties:
+                          apiKeySecret:
+                            default:
+                              key: api_key
+                              name: otel-collector-icinga-api-key-secret
+                            description: |-
+                              APIKeySecret selects the Secret key exposed to the collector as the
+                              ELASTICSEARCH_API_KEY environment variable. The default is
+                              otel-collector-icinga-api-key-secret/api_key.
+                            properties:
+                              key:
+                                description: Key is the key inside the Secret containing
+                                  the referenced value.
+                                minLength: 1
+                                type: string
+                              name:
+                                description: Name is the name of the Secret containing
+                                  the referenced value.
+                                minLength: 1
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
                           basicAuthSecretName:
                             default: otel-collector-basicauth
                             description: |-
