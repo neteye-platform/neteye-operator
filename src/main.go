@@ -113,12 +113,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Providers are cached per CR namespace: platform resources use the platform
+	// credentials, while tenant resources use credentials from their own namespace.
+	adminProviders := keycloak.NewAdminProviderRegistry(mgr.GetClient(), keycloak.WorkloadNamespace, nil)
 	if err := (&controllers.NetEyeReconciler{
 		Client:                         mgr.GetClient(),
 		Log:                            ctrl.Log.WithName("neteye-reconciler"),
 		Scheme:                         mgr.GetScheme(),
 		KeycloakComponent:              keycloakComponent,
 		ElasticStackReconciler:         elasticStackReconciler,
+		AdminProviders:                 adminProviders,
 		WaitForProgressingRequeueAfter: waitForProgressingRequeue,
 		FailureRequeueAfter:            failureRequeue,
 		ReconciliationRequeueAfter:     reconciliationRequeue,
@@ -126,13 +130,10 @@ func main() {
 		setupLog.Error(err, "unable to create NetEye controller")
 		os.Exit(1)
 	}
-	// One provider for all Keycloak controllers: they authenticate as the same account,
-	// so they may as well share the client and its token.
-	adminProvider := keycloak.NewAdminProvider(mgr.GetClient(), keycloak.WorkloadNamespace, nil)
 	if err := (&controllers.KeycloakClientReconciler{
 		KeycloakAPIReconciler: controllers.KeycloakAPIReconciler{
 			Client:                     mgr.GetClient(),
-			AdminProvider:              adminProvider,
+			AdminProviders:             adminProviders,
 			Log:                        ctrl.Log.WithName("keycloak-client-reconciler"),
 			Scheme:                     mgr.GetScheme(),
 			FailureRequeueAfter:        failureRequeue,
@@ -145,7 +146,7 @@ func main() {
 	if err := (&controllers.KeycloakUserReconciler{
 		KeycloakAPIReconciler: controllers.KeycloakAPIReconciler{
 			Client:                     mgr.GetClient(),
-			AdminProvider:              adminProvider,
+			AdminProviders:             adminProviders,
 			Log:                        ctrl.Log.WithName("keycloak-user-reconciler"),
 			Scheme:                     mgr.GetScheme(),
 			FailureRequeueAfter:        failureRequeue,
@@ -158,7 +159,7 @@ func main() {
 	if err := (&controllers.KeycloakAuthFlowReconciler{
 		KeycloakAPIReconciler: controllers.KeycloakAPIReconciler{
 			Client:                     mgr.GetClient(),
-			AdminProvider:              adminProvider,
+			AdminProviders:             adminProviders,
 			Log:                        ctrl.Log.WithName("keycloak-auth-flow-reconciler"),
 			Scheme:                     mgr.GetScheme(),
 			FailureRequeueAfter:        failureRequeue,
@@ -166,6 +167,19 @@ func main() {
 		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create KeycloakAuthFlow controller")
+		os.Exit(1)
+	}
+	if err := (&controllers.KeycloakRealmReconciler{
+		KeycloakAPIReconciler: controllers.KeycloakAPIReconciler{
+			Client:                     mgr.GetClient(),
+			AdminProviders:             adminProviders,
+			Log:                        ctrl.Log.WithName("keycloak-realm-reconciler"),
+			Scheme:                     mgr.GetScheme(),
+			FailureRequeueAfter:        failureRequeue,
+			ReconciliationRequeueAfter: reconciliationRequeue,
+		},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create KeycloakRealm controller")
 		os.Exit(1)
 	}
 	if err := neteye.SetupNetEyeWebhookWithManager(mgr); err != nil {

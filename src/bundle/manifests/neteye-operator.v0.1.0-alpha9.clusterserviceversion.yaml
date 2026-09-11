@@ -34,6 +34,12 @@ spec:
       kind: KeycloakAuthFlow
       name: keycloakauthflows.neteye.cloud
       version: v1alpha1
+    - description: KeycloakRealm declares a Keycloak realm the operator keeps continuously
+        reconciled in the identity service.
+      displayName: Keycloak Realm
+      kind: KeycloakRealm
+      name: keycloakrealms.neteye.cloud
+      version: v1alpha1
     required:
     - displayName: cert-manager Certificate
       kind: Certificate
@@ -328,6 +334,31 @@ spec:
           - neteye.cloud
           resources:
           - keycloakauthflows/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakrealms
+          verbs:
+          - create
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakrealms/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - keycloakrealms/finalizers
           verbs:
           - update
         serviceAccountName: neteye-operator

@@ -63,6 +63,7 @@ func startEnvtest(t *testing.T) (client.Client, *runtime.Scheme) {
 				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakclients.yaml"),
 				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakusers.yaml"),
 				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakauthflows.yaml"),
+				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakrealms.yaml"),
 			},
 		},
 	}

@@ -84,7 +84,7 @@ type Component struct {
 // AdminAPIFactory can still be set after construction.
 func (c *Component) admin(namespace string) *AdminProvider {
 	c.adminOnce.Do(func() {
-		c.adminProvider = NewAdminProvider(c.client, namespace, c.AdminAPIFactory)
+		c.adminProvider = NewAdminProviderForNamespaces(c.client, namespace, namespace, false, c.AdminAPIFactory)
 	})
 	return c.adminProvider
 }

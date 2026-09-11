@@ -5,6 +5,8 @@ package controllers
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -32,10 +34,9 @@ type KeycloakAPIReconciler struct {
 	// KeycloakNamespace is the namespace running the Keycloak instance. When
 	// empty, the shared workload namespace is used.
 	KeycloakNamespace string
-	// AdminProvider hands out the Admin API client. When nil, one is built on
-	// first use from AdminAPIFactory. Sharing a single provider across the
-	// controllers lets them share the admin token as well.
-	AdminProvider *keycloak.AdminProvider
+	// AdminProviders hands out an isolated Admin API client per credential
+	// namespace. When nil, the registry is built on first use.
+	AdminProviders *keycloak.AdminProviderRegistry
 	// AdminAPIFactory defaults to keycloak.NewAdminAPI.
 	AdminAPIFactory AdminAPIFactory
 
@@ -49,8 +50,8 @@ type KeycloakAPIReconciler struct {
 // adminAPI builds an Admin API client bound to the in-cluster Keycloak Service,
 // authenticating as the internal administrative account when it is usable and
 // as the bootstrap admin otherwise.
-func (r *KeycloakAPIReconciler) adminAPI(ctx context.Context) (*keycloak.AdminAPI, error) {
-	api, username, err := r.adminProvider().Get(ctx)
+func (r *KeycloakAPIReconciler) adminAPI(ctx context.Context, credentialNamespace string) (*keycloak.AdminAPI, error) {
+	api, username, err := r.adminProviders().For(credentialNamespace).Get(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -60,13 +61,21 @@ func (r *KeycloakAPIReconciler) adminAPI(ctx context.Context) (*keycloak.AdminAP
 
 // adminProvider returns the shared provider, building one on first use so that
 // a reconciler configured with only a factory still works.
-func (r *KeycloakAPIReconciler) adminProvider() *keycloak.AdminProvider {
+func (r *KeycloakAPIReconciler) adminProviders() *keycloak.AdminProviderRegistry {
 	r.adminProviderOnce.Do(func() {
-		if r.AdminProvider == nil {
-			r.AdminProvider = keycloak.NewAdminProvider(r.Client, r.keycloakNamespace(), r.AdminAPIFactory)
+		if r.AdminProviders == nil {
+			r.AdminProviders = keycloak.NewAdminProviderRegistry(r.Client, r.keycloakNamespace(), r.AdminAPIFactory)
 		}
 	})
-	return r.AdminProvider
+	return r.AdminProviders
+}
+
+func (r *KeycloakAPIReconciler) isMissingCredentials(err error) bool {
+	return errors.Is(err, keycloak.ErrNoAdminCredentials)
+}
+
+func missingCredentialsMessage(namespace string) string {
+	return fmt.Sprintf("no Keycloak admin credentials found in namespace %q; create a Secret named %q with keys %q and %q", namespace, keycloak.AdminSecretName, keycloak.AdminSecretUsernameKey, keycloak.AdminSecretPasswordKey)
 }
 
 func (r *KeycloakAPIReconciler) keycloakNamespace() string {

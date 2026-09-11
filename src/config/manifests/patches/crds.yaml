@@ -22,6 +22,11 @@
         kind: KeycloakAuthFlow
         name: keycloakauthflows.neteye.cloud
         version: v1alpha1
+      - description: KeycloakRealm declares a Keycloak realm the operator keeps continuously reconciled in the identity service.
+        displayName: Keycloak Realm
+        kind: KeycloakRealm
+        name: keycloakrealms.neteye.cloud
+        version: v1alpha1
     required:
       - {displayName: cert-manager Certificate, kind: Certificate, name: certificates.cert-manager.io, version: v1}
       - {displayName: cert-manager Issuer, kind: Issuer, name: issuers.cert-manager.io, version: v1}

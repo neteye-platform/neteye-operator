@@ -48,6 +48,11 @@ type NetEyeReconciler struct {
 	Scheme                 *runtime.Scheme
 	KeycloakComponent      *keycloak.Component
 	ElasticStackReconciler *elasticstack.Reconciler
+	// AdminProviders holds the cached Keycloak admin credentials per namespace.
+	// It is released here when a NetEye CR goes away, so a deleted tenant does
+	// not keep its admin password and token in memory until the registry's idle
+	// eviction happens to run. Optional: when nil, nothing is forgotten.
+	AdminProviders *keycloak.AdminProviderRegistry
 
 	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
 	WaitForProgressingRequeueAfter time.Duration
@@ -82,6 +87,10 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	if err := r.Get(ctx, req.NamespacedName, ne); err != nil {
 		log.Error(err, "unable to fetch NetEye")
 		if apierrors.IsNotFound(err) {
+			// The tenant is gone: drop its cached admin credentials now.
+			if r.AdminProviders != nil {
+				r.AdminProviders.Forget(req.Namespace)
+			}
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -390,6 +399,12 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		log.V(1).Info("root user is not ready", "reason", rootUserMessage, "requeueAfter", r.waitForProgressingRequeue())
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, rootUserMessage, image)
 		return progressingResult(identityComponentID, "RootUserNotReady", rootUserMessage, r.waitForProgressingRequeue())
+	}
+
+	if err := r.KeycloakComponent.EnsureMasterRealm(ctx, keycloak.WorkloadNamespace); err != nil {
+		log.Error(err, "failed to declare the master Keycloak realm configuration", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the master Keycloak realm configuration: %v", err), image)
+		return degradedResult(identityComponentID, "EnsureMasterRealmFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
 	}
 
 	if err := r.KeycloakComponent.EnsureNetEyeClient(ctx, keycloak.WorkloadNamespace); err != nil {

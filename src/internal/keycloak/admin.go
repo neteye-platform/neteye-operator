@@ -202,6 +202,31 @@ func (e *apiError) Error() string {
 // generic maps so that fields it does not manage survive an update untouched.
 type representation map[string]any
 
+// GetRealm returns the realm representation for name, or nil when absent.
+func (a *AdminAPI) GetRealm(ctx context.Context, name string) (representation, error) {
+	var realm representation
+	err := a.do(ctx, http.MethodGet, fmt.Sprintf("/admin/realms/%s", url.PathEscape(name)), nil, &realm)
+	if isNotFound(err) {
+		return nil, nil
+	}
+	return realm, err
+}
+
+// CreateRealm creates a realm.
+func (a *AdminAPI) CreateRealm(ctx context.Context, realm representation) error {
+	return a.do(ctx, http.MethodPost, "/admin/realms", realm, nil)
+}
+
+// UpdateRealm replaces the realm representation named name.
+func (a *AdminAPI) UpdateRealm(ctx context.Context, name string, realm representation) error {
+	return a.do(ctx, http.MethodPut, fmt.Sprintf("/admin/realms/%s", url.PathEscape(name)), realm, nil)
+}
+
+// DeleteRealm removes the realm named name.
+func (a *AdminAPI) DeleteRealm(ctx context.Context, name string) error {
+	return a.do(ctx, http.MethodDelete, fmt.Sprintf("/admin/realms/%s", url.PathEscape(name)), nil, nil)
+}
+
 // GetClient returns the client representation for clientId, or nil when the
 // realm has no such client.
 func (a *AdminAPI) GetClient(ctx context.Context, realm, clientID string) (representation, error) {
@@ -379,20 +404,6 @@ func (a *AdminAPI) DeleteExecution(ctx context.Context, realm, id string) error 
 }
 func (a *AdminAPI) DeleteAuthFlow(ctx context.Context, realm, id string) error {
 	return a.do(ctx, http.MethodDelete, fmt.Sprintf("/admin/realms/%s/authentication/flows/%s", url.PathEscape(realm), url.PathEscape(id)), nil, nil)
-}
-
-// GetRealm returns the realm representation.
-func (a *AdminAPI) GetRealm(ctx context.Context, realm string) (representation, error) {
-	var rep representation
-	if err := a.do(ctx, http.MethodGet, fmt.Sprintf("/admin/realms/%s", url.PathEscape(realm)), nil, &rep); err != nil {
-		return nil, err
-	}
-	return rep, nil
-}
-
-// UpdateRealm merges fields into the realm representation.
-func (a *AdminAPI) UpdateRealm(ctx context.Context, realm string, fields representation) error {
-	return a.do(ctx, http.MethodPut, fmt.Sprintf("/admin/realms/%s", url.PathEscape(realm)), fields, nil)
 }
 
 func stringValue(rep representation, key string) string {

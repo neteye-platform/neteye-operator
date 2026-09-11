@@ -92,6 +92,15 @@ spec:
             - apiGroups: [neteye.cloud]
               resources: [keycloakauthflows/finalizers]
               verbs: [update]
+            - apiGroups: [neteye.cloud]
+              resources: [keycloakrealms]
+              verbs: [create, get, list, patch, update, watch]
+            - apiGroups: [neteye.cloud]
+              resources: [keycloakrealms/status]
+              verbs: [get, patch, update]
+            - apiGroups: [neteye.cloud]
+              resources: [keycloakrealms/finalizers]
+              verbs: [update]
       deployments:
         - name: neteye-operator
           spec:

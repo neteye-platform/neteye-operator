@@ -1,0 +1,208 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: keycloakrealms.neteye.cloud
+spec:
+  group: neteye.cloud
+  names:
+    kind: KeycloakRealm
+    listKind: KeycloakRealmList
+    plural: keycloakrealms
+    shortNames:
+    - kcr
+    singular: keycloakrealm
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.realm
+      name: Realm
+      type: string
+    - jsonPath: .status.status
+      name: Status
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: KeycloakRealmSpec declares the desired state of one Keycloak
+              realm.
+            properties:
+              bruteForceProtection:
+                default: {}
+                description: |-
+                  BruteForceProtection configures account-lockout defense against
+                  repeated failed logins. Always enforced by the operator; see
+                  KeycloakRealmBruteForceProtection.
+                properties:
+                  bruteForceProtected:
+                    default: true
+                    description: BruteForceProtected enables brute force detection.
+                    type: boolean
+                  failureFactor:
+                    default: 30
+                    description: FailureFactor is the number of failures before a
+                      lockout is triggered.
+                    format: int64
+                    type: integer
+                  maxDeltaTimeSeconds:
+                    default: 43200
+                    description: MaxDeltaTimeSeconds is the failure reset time.
+                    format: int64
+                    type: integer
+                  maxFailureWaitSeconds:
+                    default: 900
+                    description: MaxFailureWaitSeconds is the maximum wait time after
+                      repeated failures.
+                    format: int64
+                    type: integer
+                  minimumQuickLoginWaitSeconds:
+                    default: 60
+                    description: |-
+                      MinimumQuickLoginWaitSeconds is the wait time after a quick login
+                      failure.
+                    format: int64
+                    type: integer
+                  quickLoginCheckMilliSeconds:
+                    default: 1000
+                    description: |-
+                      QuickLoginCheckMilliSeconds is the threshold below which two login
+                      attempts count as a quick login.
+                    format: int64
+                    type: integer
+                  waitIncrementSeconds:
+                    default: 60
+                    description: |-
+                      WaitIncrementSeconds is how much the wait time grows after each
+                      lockout.
+                    format: int64
+                    type: integer
+                type: object
+              deletionPolicy:
+                description: DeletionPolicy decides whether deleting this resource
+                  removes the remote realm.
+                enum:
+                - Orphan
+                - Delete
+                type: string
+              displayName:
+                description: DisplayName is the human-readable realm name shown in
+                  the Keycloak admin console.
+                type: string
+              displayNameHtml:
+                description: DisplayNameHTML is the HTML variant of DisplayName shown
+                  on realm-themed pages.
+                type: string
+              enabled:
+                default: true
+                description: Enabled enables the realm in Keycloak.
+                type: boolean
+              events:
+                default: {}
+                description: |-
+                  Events configures login and admin action event logging. Always
+                  enforced by the operator; see KeycloakRealmEvents.
+                properties:
+                  adminEventsDetailsEnabled:
+                    default: true
+                    description: |-
+                      AdminEventsDetailsEnabled includes the representation of the affected
+                      resource in admin events.
+                    type: boolean
+                  adminEventsEnabled:
+                    default: true
+                    description: AdminEventsEnabled enables admin action event logging.
+                    type: boolean
+                  adminEventsExpiration:
+                    default: 15552000
+                    description: AdminEventsExpiration is how long admin events are
+                      retained, in seconds.
+                    format: int64
+                    type: integer
+                  eventsEnabled:
+                    default: true
+                    description: EventsEnabled enables login event logging.
+                    type: boolean
+                  eventsExpiration:
+                    default: 15552000
+                    description: EventsExpiration is how long login events are retained,
+                      in seconds.
+                    format: int64
+                    type: integer
+                type: object
+              realm:
+                description: Realm is the Keycloak realm name, which is immutable
+                  after creation.
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: realm is immutable
+                  rule: self == oldSelf
+              rememberMe:
+                default: true
+                description: RememberMe enables the "remember me" option on the login
+                  form.
+                type: boolean
+              theme:
+                description: |-
+                  Theme configures the realm's login, admin console, account console, and
+                  email themes. Optional: when omitted, the operator does not manage
+                  themes and leaves whatever is already set in Keycloak.
+                properties:
+                  accountTheme:
+                    description: AccountTheme is the theme applied to the account
+                      console.
+                    type: string
+                  adminTheme:
+                    description: AdminTheme is the theme applied to the admin console.
+                    type: string
+                  emailTheme:
+                    description: EmailTheme is the theme applied to outgoing emails.
+                    type: string
+                  loginTheme:
+                    description: LoginTheme is the theme applied to the login pages.
+                    type: string
+                type: object
+            required:
+            - realm
+            type: object
+          status:
+            description: KeycloakRealmStatus defines the observed state of a KeycloakRealm.
+            properties:
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              status:
+                description: ServiceState is the per-service state reported in NetEyeServiceStatus.Status.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
