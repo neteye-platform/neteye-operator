@@ -5,6 +5,7 @@ package elasticstack
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -26,19 +27,21 @@ import (
 )
 
 const (
-	EDOTGatewayServiceName = "otel-edot-gateway"
-	collectorAppLabel      = "otel-collector"
+	EDOTGatewayServiceName        = "otel-edot-gateway"
+	collectorAppLabel             = "otel-collector"
+	DefaultIcingaApiKeySecretName = "otel-collector-icinga-api-key-secret"
+	DefaultIcingaApiKeySecretKey  = "api_key"
 )
 
-// OTelCollectorComponent reconciles only the authenticated telemetry ingress.
-// It deliberately does not own Elasticsearch credentials or endpoint egress.
+// OTelCollectorComponent reconciles the authenticated telemetry ingress and
+// its Elasticsearch egress boundary.
 type OTelCollectorComponent struct{ client client.Client }
 
 func NewOTelCollectorComponent(c client.Client) *OTelCollectorComponent {
 	return &OTelCollectorComponent{client: c}
 }
 
-func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeOtelCollectorSpec, identityHostname, gatewayNamespace, gatewayName, image, caBundleImage string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) Outcome {
+func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeOtelCollectorSpec, elasticsearchEndpoints []string, identityHostname, gatewayNamespace, gatewayName, image, caBundleImage string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) Outcome {
 	if spec == nil {
 		return degradedOutcome(ReasonInvalidConfiguration, "otel collector configuration is required", nil)
 	}
@@ -48,11 +51,24 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 	if err := validateDNSName(identityHostname, "identity hostname"); err != nil {
 		return degradedOutcome(ReasonInvalidConfiguration, err.Error(), nil)
 	}
+	endpoints, targets, err := validatedEndpoints(elasticsearchEndpoints)
+	if err != nil {
+		return degradedOutcome(ReasonInvalidConfiguration, err.Error(), nil)
+	}
+	encodedEndpoints, err := json.Marshal(endpoints)
+	if err != nil {
+		return degradedOutcome(ReasonReconcileFailed, "", err)
+	}
 	basicAuthVersion, err := requiredSecretResourceVersion(ctx, c.client, namespace, spec.EffectiveBasicAuthSecretName(), "htpasswd")
 	if err != nil {
 		return prerequisiteOutcome(err)
 	}
 	rootCAVersion, err := requiredSecretResourceVersion(ctx, c.client, namespace, spec.EffectiveRootCASecretName(), "tls.crt")
+	if err != nil {
+		return prerequisiteOutcome(err)
+	}
+	apiKey := spec.EffectiveAPIKeySecret()
+	apiKeyVersion, err := requiredSecretResourceVersion(ctx, c.client, namespace, apiKey.Name, apiKey.Key)
 	if err != nil {
 		return prerequisiteOutcome(err)
 	}
@@ -66,11 +82,11 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, ConfigMapName, map[string]string{"otel-collector-config.yaml": collectorConfig}, owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	versions, err := collectorInputVersions(ctx, c.client, namespace, basicAuthVersion, rootCAVersion)
+	versions, err := collectorInputVersions(ctx, c.client, namespace, basicAuthVersion, apiKeyVersion, rootCAVersion)
 	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := resources.EnsureDeployment(ctx, c.client, collectorDeployment(namespace, spec, image, caBundleImage, issuer, versions), owner); err != nil {
+	if err := resources.EnsureDeployment(ctx, c.client, collectorDeployment(namespace, spec, image, caBundleImage, issuer, apiKey, string(encodedEndpoints), versions), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := deleteOwnedResources(ctx, c.client, namespace, owner, collectorLegacyInventory()); err != nil {
@@ -91,7 +107,7 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayName, CrossTenantListenerName, []string{CrossTenantRouteHostname}, ServiceName, 4318, &owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := c.ensurePolicies(ctx, namespace, identityHostname, owner); err != nil {
+	if err := c.ensurePolicies(ctx, namespace, identityHostname, targets, owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	for _, name := range []string{GRPCTLSCertName, CrossTenantTLSCertName} {
@@ -128,21 +144,21 @@ func (c *OTelCollectorComponent) Delete(ctx context.Context, namespace string, o
 	return deleteOwnedResources(ctx, c.client, namespace, owner, append(collectorResourceInventory(), collectorLegacyInventory()...))
 }
 
-func (c *OTelCollectorComponent) ensurePolicies(ctx context.Context, namespace, identityHostname string, owner metav1.OwnerReference) error {
+func (c *OTelCollectorComponent) ensurePolicies(ctx context.Context, namespace, identityHostname string, targets []egressTarget, owner metav1.OwnerReference) error {
 	if _, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: IngressPolicyName, Owner: &owner, Spec: collectorIngressPolicy()}); err != nil {
 		return err
 	}
-	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: EgressPolicyName, Owner: &owner, Spec: collectorEgressPolicy(namespace, identityHostname)})
+	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: EgressPolicyName, Owner: &owner, Spec: collectorEgressPolicy(namespace, identityHostname, targets)})
 	return err
 }
 
-func collectorDeployment(namespace string, spec *neteye.NetEyeOtelCollectorSpec, image, caBundleImage, oidcIssuer string, annotations map[string]string) *appsv1.Deployment {
+func collectorDeployment(namespace string, spec *neteye.NetEyeOtelCollectorSpec, image, caBundleImage, oidcIssuer string, apiKeySecret neteye.NetEyeSecretKeySelector, elasticsearchEndpoints string, annotations map[string]string) *appsv1.Deployment {
 	labels := map[string]string{"app": collectorAppLabel}
-	mode := int32(0440)
+	mode := int32(0o440)
 	replicas := spec.EffectiveReplicas()
 	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: DeploymentName, Namespace: namespace}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To(replicas), Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations}, Spec: corev1.PodSpec{
 		InitContainers: []corev1.Container{{Name: "otel-collector-ca-bundle", Image: caBundleImage, Command: []string{"/bin/sh", "-ec", caBundleCommand}, VolumeMounts: []corev1.VolumeMount{{Name: "trusted-ca", MountPath: "/work"}, {Name: "host-ca", MountPath: "/input/system/tls-ca-bundle.pem", ReadOnly: true}, {Name: "root-ca", MountPath: "/input/neteye", ReadOnly: true}}}},
-		Containers:     []corev1.Container{{Name: "otel-collector", Image: image, Args: []string{"--config", "/etc/otel/config.yaml"}, Ports: collectorPorts(), Env: []corev1.EnvVar{{Name: "OIDC_ISSUER", Value: oidcIssuer}}, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/etc/otel", ReadOnly: true}, {Name: "trusted-ca", MountPath: "/etc/pki/tls/certs/ca-bundle.crt", SubPath: "ca-bundle.pem", ReadOnly: true}, {Name: "basic-auth", MountPath: "/etc/otel/basicauth", ReadOnly: true}}, StartupProbe: healthProbe(5, 30), ReadinessProbe: healthProbe(10, 3), LivenessProbe: healthProbe(10, 3)}},
+		Containers:     []corev1.Container{{Name: "otel-collector", Image: image, Args: []string{"--config", "/etc/otel/config.yaml"}, Ports: collectorPorts(), Env: []corev1.EnvVar{{Name: "OIDC_ISSUER", Value: oidcIssuer}, {Name: "ELASTICSEARCH_ENDPOINTS", Value: elasticsearchEndpoints}, {Name: "ELASTICSEARCH_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: apiKeySecret.Name}, Key: apiKeySecret.Key}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/etc/otel", ReadOnly: true}, {Name: "trusted-ca", MountPath: "/etc/pki/tls/certs/ca-bundle.crt", SubPath: "ca-bundle.pem", ReadOnly: true}, {Name: "basic-auth", MountPath: "/etc/otel/basicauth", ReadOnly: true}}, StartupProbe: healthProbe(5, 30), ReadinessProbe: healthProbe(10, 3), LivenessProbe: healthProbe(10, 3)}},
 		Volumes:        []corev1.Volume{{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName}, Items: []corev1.KeyToPath{{Key: "otel-collector-config.yaml", Path: "config.yaml"}}}}}, {Name: "trusted-ca", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, {Name: "host-ca", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", Type: ptr.To(corev1.HostPathFile)}}}, {Name: "root-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: spec.EffectiveRootCASecretName(), Items: []corev1.KeyToPath{{Key: "tls.crt", Path: "ca.crt"}}}}}, {Name: "basic-auth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: spec.EffectiveBasicAuthSecretName(), DefaultMode: &mode}}}},
 	}}}}
 }
@@ -169,8 +185,12 @@ func collectorIngressPolicy() map[string]any {
 	return map[string]any{"endpointSelector": labelsFor(collectorAppLabel), "ingress": []any{map[string]any{"fromEntities": []any{"ingress"}, "toPorts": []any{tcpPorts("4317", "4318")}}, map[string]any{"fromEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("13133")}}}}
 }
 
-func collectorEgressPolicy(namespace, identityHostname string) map[string]any {
-	return map[string]any{"endpointSelector": labelsFor(collectorAppLabel), "egress": []any{collectorDNSEgress(), map[string]any{"toEndpoints": []any{namespaceScopedEndpoint(edotGatewayAppLabel, namespace)}, "toPorts": []any{tcpPorts("4317")}}, fqdnEgress(identityHostname, "443"), map[string]any{"toEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("443")}}}}
+func collectorEgressPolicy(namespace, identityHostname string, targets []egressTarget) map[string]any {
+	rules := []any{dnsEgress(), map[string]any{"toEndpoints": []any{namespaceScopedEndpoint(edotGatewayAppLabel, namespace)}, "toPorts": []any{tcpPorts("4317")}}, fqdnEgress(identityHostname, "443"), map[string]any{"toEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("443")}}, map[string]any{"toEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("9200")}}}
+	for _, target := range targets {
+		rules = append(rules, targetEgress(target))
+	}
+	return map[string]any{"endpointSelector": labelsFor(collectorAppLabel), "egress": rules}
 }
 
 func labelsFor(app string) map[string]any {
@@ -189,7 +209,7 @@ func tcpPorts(ports ...string) map[string]any {
 	return map[string]any{"ports": values}
 }
 
-func collectorDNSEgress() map[string]any {
+func dnsEgress() map[string]any {
 	return map[string]any{
 		"toEndpoints": []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}},
 		"toPorts":     []any{map[string]any{"ports": []any{map[string]any{"port": "53", "protocol": "TCP"}, map[string]any{"port": "53", "protocol": "UDP"}}, "rules": map[string]any{"dns": []any{map[string]any{"matchPattern": "*"}}}}},
@@ -228,12 +248,12 @@ func configMapResourceVersion(ctx context.Context, c client.Client, namespace, n
 	return object.ResourceVersion, nil
 }
 
-func collectorInputVersions(ctx context.Context, c client.Client, namespace, basicAuthVersion, rootCAVersion string) (map[string]string, error) {
+func collectorInputVersions(ctx context.Context, c client.Client, namespace, basicAuthVersion, apiKeyVersion, rootCAVersion string) (map[string]string, error) {
 	configVersion, err := configMapResourceVersion(ctx, c, namespace, ConfigMapName)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"neteye.cloud/config-resource-version": configVersion, "neteye.cloud/basic-auth-resource-version": basicAuthVersion, "neteye.cloud/root-ca-resource-version": rootCAVersion}, nil
+	return map[string]string{"neteye.cloud/config-resource-version": configVersion, "neteye.cloud/basic-auth-resource-version": basicAuthVersion, "neteye.cloud/api-key-resource-version": apiKeyVersion, "neteye.cloud/root-ca-resource-version": rootCAVersion}, nil
 }
 
 type expectedParent struct{ group, kind, namespace, name, section string }
@@ -373,11 +393,19 @@ processors:
     timeout: 1s
 exporters:
   otlp/edot: {endpoint: otel-edot-gateway:4317, tls: {insecure: true}}
+  elasticsearch/otel:
+    endpoints: ${ELASTICSEARCH_ENDPOINTS}
+    api_key: "${ELASTICSEARCH_API_KEY}"
+    tls: {ca_file: /etc/pki/tls/certs/ca-bundle.crt}
+    mapping: {mode: otel}
 service:
   extensions: [oidc, basicauth/crosstenant, health_check]
   pipelines:
+    # grpc traffiic is used for metrics, logs and traces using the oauth integration and is sent to the EDOT gateway for
+    # ElasticAPM enrichment and forwarded to the ES Cluster
     metrics: {receivers: [otlp], processors: [attributes/tenant, batch/metrics], exporters: [otlp/edot]}
     logs: {receivers: [otlp], processors: [attributes/tenant, batch], exporters: [otlp/edot]}
     traces: {receivers: [otlp], processors: [attributes/tenant, batch], exporters: [otlp/edot]}
-    metrics/crosstenant: {receivers: [otlp/crosstenant], processors: [transform/crosstenant, batch/metrics], exporters: [otlp/edot]}
+    # Icinga2 elasticsearch writer is directly connected to the ES cluster since it does not need APM enrichment
+    metrics/crosstenant: {receivers: [otlp/crosstenant], processors: [transform/crosstenant, batch/metrics], exporters: [elasticsearch/otel]}
 `

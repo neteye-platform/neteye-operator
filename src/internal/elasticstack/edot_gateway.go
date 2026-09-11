@@ -30,6 +30,8 @@ const (
 	EDOTGatewayIngressPolicyName      = "neteye-otel-edot-gateway-ingress"
 	EDOTGatewayEgressPolicyName       = "neteye-otel-edot-gateway-egress"
 	edotGatewayAppLabel               = "otel-edot-gateway"
+	DefaultAPMApkiKeySecretName       = "otel-collector-apm-api-key-secret"
+	DefaultAPMApkiKeySecretKey        = "api_key"
 )
 
 // EDOTGatewayComponent reconciles the isolated Elasticsearch-export boundary.
@@ -39,7 +41,7 @@ func NewEDOTGatewayComponent(c client.Client) *EDOTGatewayComponent {
 	return &EDOTGatewayComponent{client: c}
 }
 
-func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeEDOTGatewaySpec, image, caBundleImage string, owner metav1.OwnerReference) Outcome {
+func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeEDOTGatewaySpec, elasticsearchEndpoints []string, image, caBundleImage string, owner metav1.OwnerReference) Outcome {
 	if spec == nil {
 		return degradedOutcome(ReasonInvalidConfiguration, "edot gateway configuration is required", nil)
 	}
@@ -49,7 +51,7 @@ func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spe
 	if image == "" {
 		return degradedOutcome(ReasonInvalidConfiguration, "edot gateway resolved image is required", nil)
 	}
-	endpoints, targets, err := validatedEndpoints(spec.ElasticsearchEndpoints)
+	endpoints, targets, err := validatedEndpoints(elasticsearchEndpoints)
 	if err != nil {
 		return degradedOutcome(ReasonInvalidConfiguration, err.Error(), nil)
 	}
@@ -140,7 +142,7 @@ func validatedEndpoints(values []string) ([]string, []egressTarget, error) {
 	normalized := make([]string, 0, len(values))
 	for _, value := range values {
 		u, err := url.Parse(value)
-		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || net.ParseIP(u.Hostname()) == nil {
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !isSupportedEndpointHost(u.Hostname()) {
 			return nil, nil, fmt.Errorf("invalid unsupported Elasticsearch endpoint %q", value)
 		}
 		port := u.Port()
@@ -161,6 +163,10 @@ func validatedEndpoints(values []string) ([]string, []egressTarget, error) {
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].host+targets[i].port < targets[j].host+targets[j].port })
 	return normalized, targets, nil
+}
+
+func isSupportedEndpointHost(host string) bool {
+	return net.ParseIP(host) != nil || validateDNSName(host, "host") == nil
 }
 
 func validateDNSName(value, field string) error {
@@ -185,11 +191,26 @@ func edotGatewayIngressPolicy(namespace string) map[string]any {
 }
 
 func edotGatewayEgressPolicy(targets []egressTarget) map[string]any {
-	rules := make([]any, 0, len(targets))
+	rules := make([]any, 0, len(targets)+2)
+	needsDNS := false
 	for _, target := range targets {
-		rules = append(rules, cidrEgress(target.host, target.port))
+		rules = append(rules, targetEgress(target))
+		if net.ParseIP(target.host) == nil {
+			needsDNS = true
+		}
 	}
+	if needsDNS {
+		rules = append(rules, dnsEgress())
+	}
+	rules = append(rules, map[string]any{"toEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("9200")}})
 	return map[string]any{"endpointSelector": labelsFor(edotGatewayAppLabel), "egress": rules}
+}
+
+func targetEgress(target egressTarget) map[string]any {
+	if net.ParseIP(target.host) != nil {
+		return cidrEgress(target.host, target.port)
+	}
+	return fqdnEgress(target.host, target.port)
 }
 
 func cidrEgress(ip, port string) map[string]any {

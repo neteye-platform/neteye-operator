@@ -32,8 +32,6 @@ const (
 	GRPCTLSSecretName          = "otel-collector-tls-secret"
 	CrossTenantTLSCertName     = "otel-collector-crosstenant-tls"
 	CrossTenantTLSSecretName   = "otel-collector-crosstenant-tls-secret"
-	DefaultAPIKeySecretName    = "otel-collector-api-key"
-	DefaultAPIKeySecretKey     = "api_key"
 	DefaultBasicAuthSecretName = "otel-collector-basicauth"
 	DefaultRootCASecretName    = "neteye-root-ca"
 )

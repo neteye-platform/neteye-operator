@@ -120,12 +120,15 @@ func TestReconcileKeycloakCustomConfiguration(t *testing.T) {
 }
 
 func TestReconcileTelemetryFailureDoesNotReturnGlobalErrorOrHideIdentityStatus(t *testing.T) {
-	config := &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"}}}}
+	config := &neteye.NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"}, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{}}}
 	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
 	if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultBasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("hash")}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultRootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("ca")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultIcingaApiKeySecretName}, Data: map[string][]byte{elasticstack.DefaultIcingaApiKeySecretKey: []byte("key")}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,12 +156,14 @@ func TestReconcileTelemetryFailureDoesNotReturnGlobalErrorOrHideIdentityStatus(t
 
 func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	config := &neteye.NetEyeElasticStackSpec{
-		Enabled:   true,
-		Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{Replicas: 3}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"}}},
+		Enabled:                true,
+		ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"},
+		Telemetry:              &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{Replicas: 3}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{}},
 	}
 	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
 	prerequisites := []client.Object{
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultAPIKeySecretName}, Data: map[string][]byte{elasticstack.DefaultAPIKeySecretKey: []byte("key")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultIcingaApiKeySecretName}, Data: map[string][]byte{elasticstack.DefaultIcingaApiKeySecretKey: []byte("key")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultAPMApkiKeySecretName}, Data: map[string][]byte{elasticstack.DefaultAPMApkiKeySecretKey: []byte("key")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultBasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("user:hash")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultRootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("certificate")}},
 	}
@@ -189,6 +194,9 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	}
 	if deploymentEnvVar(collectorContainer.Env, "ELASTICSEARCH_ENDPOINTS") != nil {
 		t.Error("collector must not receive Elasticsearch endpoints")
+	}
+	if apiKey := deploymentEnvVar(collectorContainer.Env, "ELASTICSEARCH_API_KEY"); apiKey == nil || apiKey.ValueFrom == nil || apiKey.ValueFrom.SecretKeyRef == nil {
+		t.Errorf("collector API key must be a SecretKeyRef: %+v", apiKey)
 	}
 	edotDeployment := &appsv1.Deployment{}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.EDOTGatewayDeploymentName}, edotDeployment); err != nil {
@@ -308,18 +316,18 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 }
 
 func TestAPIServerAppliesTelemetryDefaults(t *testing.T) {
-	config := &neteye.NetEyeElasticStackSpec{Enabled: true, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"}}}}
+	config := &neteye.NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"}, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{}}}
 	c, _, ctx, ne, _ := readyElasticStackTestPlatform(t, config)
 	current := &neteye.NetEye{}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
 		t.Fatal(err)
 	}
 	collector := current.Spec.ElasticStack.Telemetry.OTelCollector
-	if collector.Replicas != 1 || collector.BasicAuthSecretName != "otel-collector-basicauth" || collector.RootCASecretName != "neteye-root-ca" {
+	if collector.Replicas != 1 || collector.BasicAuthSecretName != "otel-collector-basicauth" || collector.RootCASecretName != "neteye-root-ca" || collector.APIKeySecret == nil || *collector.APIKeySecret != (neteye.NetEyeSecretKeySelector{Name: "otel-collector-icinga-api-key-secret", Key: "api_key"}) {
 		t.Errorf("collector defaults = %+v", collector)
 	}
 	gateway := current.Spec.ElasticStack.Telemetry.EDOTGateway
-	if gateway.Replicas != 1 || gateway.RootCASecretName != "neteye-root-ca" || gateway.APIKeySecret == nil || *gateway.APIKeySecret != (neteye.NetEyeSecretKeySelector{Name: "otel-collector-api-key", Key: "api_key"}) {
+	if gateway.Replicas != 1 || gateway.RootCASecretName != "neteye-root-ca" || gateway.APIKeySecret == nil || *gateway.APIKeySecret != (neteye.NetEyeSecretKeySelector{Name: "otel-collector-apm-api-key-secret", Key: "api_key"}) {
 		t.Errorf("gateway defaults = %+v", gateway)
 	}
 }

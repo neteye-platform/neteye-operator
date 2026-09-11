@@ -210,7 +210,7 @@ func (r *NetEyeReconciler) reconcileOTelCollector(ctx context.Context, ne *netey
 	if ne.Spec.ElasticStack.Telemetry != nil {
 		spec = ne.Spec.ElasticStack.Telemetry.OTelCollector
 	}
-	outcome := r.OTelCollectorComponent.Ensure(ctx, ns, spec, ne.Spec.Identity.Hostname, ns, ne.Spec.Gateway.Name, image, caBundleImage, issuerRefFor(ne), owner)
+	outcome := r.OTelCollectorComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, ne.Spec.Identity.Hostname, ns, ne.Spec.Gateway.Name, image, caBundleImage, issuerRefFor(ne), owner)
 	ne.Status.ServicesStatus.ElasticStack.OTelCollector = elasticStackServiceStatus(phaseToServiceState(outcome.Phase), outcome.Message, image)
 	return mapTelemetryOutcome(otelCollectorComponentID, outcome, r.waitForProgressingRequeue(), r.failureRequeue())
 }
@@ -229,7 +229,7 @@ func (r *NetEyeReconciler) reconcileEDOTGateway(ctx context.Context, ne *neteye.
 	if ne.Spec.ElasticStack.Telemetry != nil {
 		spec = ne.Spec.ElasticStack.Telemetry.EDOTGateway
 	}
-	outcome := r.EDOTGatewayComponent.Ensure(ctx, ns, spec, image, caBundleImage, owner)
+	outcome := r.EDOTGatewayComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, image, caBundleImage, owner)
 	ne.Status.ServicesStatus.ElasticStack.EDOTGateway = elasticStackServiceStatus(phaseToServiceState(outcome.Phase), outcome.Message, image)
 	return mapTelemetryOutcome(edotGatewayComponentID, outcome, r.waitForProgressingRequeue(), r.failureRequeue())
 }

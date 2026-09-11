@@ -17,27 +17,27 @@ import (
 
 func TestNetEyeEDOTGatewaySpecDeepCopy(t *testing.T) {
 	original := &NetEyeElasticStackSpec{
+		ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"},
 		Telemetry: &NetEyeTelemetrySpec{
 			OTelCollector: &NetEyeOtelCollectorSpec{BasicAuthSecretName: "basic-auth", RootCASecretName: "collector-ca"},
 			EDOTGateway: &NetEyeEDOTGatewaySpec{
-				Replicas:               2,
-				ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"},
-				APIKeySecret:           &NetEyeSecretKeySelector{Name: "api-key", Key: "api_key"},
-				RootCASecretName:       "root-ca",
+				Replicas:         2,
+				APIKeySecret:     &NetEyeSecretKeySelector{Name: "api-key", Key: "api_key"},
+				RootCASecretName: "root-ca",
 			},
 		},
 	}
 	copy := original.DeepCopy()
 	copy.Telemetry.OTelCollector.BasicAuthSecretName = "other-basic-auth"
-	copy.Telemetry.EDOTGateway.ElasticsearchEndpoints[0] = "https://192.0.2.20:9200"
+	copy.ElasticsearchEndpoints[0] = "https://192.0.2.20:9200"
 	copy.Telemetry.EDOTGateway.APIKeySecret.Name = "other-api-key"
 	copy.Telemetry.EDOTGateway.RootCASecretName = "other-root-ca"
 
 	if original.Telemetry.OTelCollector.BasicAuthSecretName != "basic-auth" {
 		t.Error("DeepCopy shared collector configuration")
 	}
-	if original.Telemetry.EDOTGateway.ElasticsearchEndpoints[0] != "https://192.0.2.10:9200" {
-		t.Error("DeepCopy shared EDOT endpoint slice")
+	if original.ElasticsearchEndpoints[0] != "https://192.0.2.10:9200" {
+		t.Error("DeepCopy shared Elasticsearch endpoint slice")
 	}
 	if original.Telemetry.EDOTGateway.APIKeySecret.Name != "api-key" {
 		t.Error("DeepCopy shared EDOT API key selector")
@@ -75,11 +75,11 @@ func TestGeneratedCRDDefaultsEDOTGatewayReplicas(t *testing.T) {
 
 func TestTelemetryDefaults(t *testing.T) {
 	collector := &NetEyeOtelCollectorSpec{}
-	if collector.EffectiveReplicas() != 1 || collector.EffectiveBasicAuthSecretName() != "otel-collector-basicauth" || collector.EffectiveRootCASecretName() != "neteye-root-ca" {
-		t.Fatalf("collector defaults are incorrect: replicas=%d basicAuth=%q rootCA=%q", collector.EffectiveReplicas(), collector.EffectiveBasicAuthSecretName(), collector.EffectiveRootCASecretName())
+	if collector.EffectiveReplicas() != 1 || collector.EffectiveBasicAuthSecretName() != "otel-collector-basicauth" || collector.EffectiveRootCASecretName() != "neteye-root-ca" || collector.EffectiveAPIKeySecret() != (NetEyeSecretKeySelector{Name: "otel-collector-icinga-api-key-secret", Key: "api_key"}) {
+		t.Fatalf("collector defaults are incorrect: replicas=%d basicAuth=%q rootCA=%q apiKey=%+v", collector.EffectiveReplicas(), collector.EffectiveBasicAuthSecretName(), collector.EffectiveRootCASecretName(), collector.EffectiveAPIKeySecret())
 	}
 	gateway := &NetEyeEDOTGatewaySpec{}
-	if gateway.EffectiveReplicas() != 1 || gateway.EffectiveAPIKeySecret() != (NetEyeSecretKeySelector{Name: "otel-collector-api-key", Key: "api_key"}) || gateway.EffectiveRootCASecretName() != "neteye-root-ca" {
+	if gateway.EffectiveReplicas() != 1 || gateway.EffectiveAPIKeySecret() != (NetEyeSecretKeySelector{Name: "otel-collector-apm-api-key-secret", Key: "api_key"}) || gateway.EffectiveRootCASecretName() != "neteye-root-ca" {
 		t.Fatalf("gateway defaults are incorrect: replicas=%d apiKey=%+v rootCA=%q", gateway.EffectiveReplicas(), gateway.EffectiveAPIKeySecret(), gateway.EffectiveRootCASecretName())
 	}
 }
@@ -115,7 +115,7 @@ func TestTelemetryEffectiveValuesPreserveExplicitConfiguration(t *testing.T) {
 
 func TestTelemetryEffectiveValuesDefaultOnlyOmittedValues(t *testing.T) {
 	var collector *NetEyeOtelCollectorSpec
-	if collector.EffectiveReplicas() != DefaultOTelCollectorReplicas || collector.EffectiveBasicAuthSecretName() != DefaultOTelCollectorBasicAuthName || collector.EffectiveRootCASecretName() != DefaultOTelCollectorRootCAName {
+	if collector.EffectiveReplicas() != DefaultOTelCollectorReplicas || collector.EffectiveBasicAuthSecretName() != DefaultOTelCollectorBasicAuthName || collector.EffectiveRootCASecretName() != DefaultOTelCollectorRootCAName || collector.EffectiveAPIKeySecret() != (NetEyeSecretKeySelector{Name: DefaultOTelCollectorAPIKeySecretName, Key: DefaultOTelCollectorAPIKeySecretKey}) {
 		t.Fatal("nil collector did not use documented defaults")
 	}
 	if got := (&NetEyeOtelCollectorSpec{}).EffectiveReplicas(); got != DefaultOTelCollectorReplicas {
@@ -148,12 +148,23 @@ func TestGeneratedCRDUsesFinalTelemetrySchema(t *testing.T) {
 		t.Fatalf("find CRD versions: found=%t err=%v", found, err)
 	}
 	version := versions[0].(map[string]interface{})
-	properties, found, err := unstructured.NestedMap(version, "schema", "openAPIV3Schema", "properties", "spec", "properties", "elasticStack", "properties", "telemetry", "properties")
+	elasticStack, found, err := unstructured.NestedMap(version, "schema", "openAPIV3Schema", "properties", "spec", "properties", "elasticStack", "properties")
+	if err != nil || !found {
+		t.Fatalf("find elastic stack schema: found=%t err=%v", found, err)
+	}
+	endpoints, found, err := unstructured.NestedMap(elasticStack, "elasticsearchEndpoints")
+	if err != nil || !found || endpoints["type"] != "array" {
+		t.Fatalf("find elasticsearch endpoints schema: found=%t err=%v schema=%v", found, err, endpoints)
+	}
+	if fmt.Sprint(endpoints["minItems"]) != "1" {
+		t.Errorf("elasticsearchEndpoints minItems = %v, want 1", endpoints["minItems"])
+	}
+	properties, found, err := unstructured.NestedMap(elasticStack, "telemetry", "properties")
 	if err != nil || !found {
 		t.Fatalf("find telemetry schema: found=%t err=%v", found, err)
 	}
 	collector := properties["otelCollector"].(map[string]interface{})["properties"].(map[string]interface{})
-	for _, removed := range []string{"elasticsearchEndpoints", "apiKeySecret", "oidcIssuerURL"} {
+	for _, removed := range []string{"elasticsearchEndpoints", "oidcIssuerURL"} {
 		if _, exists := collector[removed]; exists {
 			t.Errorf("collector schema still contains removed field %q", removed)
 		}
@@ -161,13 +172,21 @@ func TestGeneratedCRDUsesFinalTelemetrySchema(t *testing.T) {
 	if _, exists := properties["edotGateway"]; !exists {
 		t.Error("telemetry schema is missing edotGateway")
 	}
+	edotGateway := properties["edotGateway"].(map[string]interface{})["properties"].(map[string]interface{})
+	if _, exists := edotGateway["elasticsearchEndpoints"]; exists {
+		t.Error("edotGateway schema still contains moved field elasticsearchEndpoints")
+	}
 	for field, want := range map[string]interface{}{"replicas": float64(1), "basicAuthSecretName": "otel-collector-basicauth", "rootCASecretName": "neteye-root-ca"} {
 		got := collector[field].(map[string]interface{})["default"]
 		if fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Errorf("collector %s default = %v, want %v", field, got, want)
 		}
 	}
-	gateway := properties["edotGateway"].(map[string]interface{})["properties"].(map[string]interface{})
+	collectorAPIKeyDefault := collector["apiKeySecret"].(map[string]interface{})["default"].(map[string]interface{})
+	if collectorAPIKeyDefault["name"] != "otel-collector-icinga-api-key-secret" || collectorAPIKeyDefault["key"] != "api_key" {
+		t.Errorf("collector API key default = %#v", collectorAPIKeyDefault)
+	}
+	gateway := edotGateway
 	for field, want := range map[string]interface{}{"replicas": float64(1), "rootCASecretName": "neteye-root-ca"} {
 		got := gateway[field].(map[string]interface{})["default"]
 		if fmt.Sprint(got) != fmt.Sprint(want) {
@@ -175,7 +194,7 @@ func TestGeneratedCRDUsesFinalTelemetrySchema(t *testing.T) {
 		}
 	}
 	apiKeyDefault := gateway["apiKeySecret"].(map[string]interface{})["default"].(map[string]interface{})
-	if apiKeyDefault["name"] != "otel-collector-api-key" || apiKeyDefault["key"] != "api_key" {
+	if apiKeyDefault["name"] != "otel-collector-apm-api-key-secret" || apiKeyDefault["key"] != "api_key" {
 		t.Errorf("gateway API key default = %#v", apiKeyDefault)
 	}
 }

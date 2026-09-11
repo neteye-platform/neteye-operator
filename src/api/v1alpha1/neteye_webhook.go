@@ -117,7 +117,17 @@ func validateElasticStack(neteye *NetEye) error {
 	if telemetry.EDOTGateway == nil {
 		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{field.Required(path.Child("telemetry", "edotGateway"), "must be set when elasticStack.enabled is true")})
 	}
-	errors := validateEDOTGateway(path.Child("telemetry", "edotGateway"), telemetry.EDOTGateway)
+	var errors field.ErrorList
+	if len(neteye.Spec.ElasticStack.ElasticsearchEndpoints) == 0 {
+		errors = append(errors, field.Required(path.Child("elasticsearchEndpoints"), "at least one HTTPS endpoint is required"))
+	} else {
+		for i, endpoint := range neteye.Spec.ElasticStack.ElasticsearchEndpoints {
+			if err := validateHTTPSURL(path.Child("elasticsearchEndpoints").Index(i), endpoint); err != nil {
+				errors = append(errors, err)
+			}
+		}
+	}
+	errors = append(errors, validateEDOTGateway(path.Child("telemetry", "edotGateway"), telemetry.EDOTGateway)...)
 	errors = append(errors, validateCollectorReferenceOverrides(path.Child("telemetry", "otelCollector"), telemetry.OTelCollector)...)
 	if len(errors) > 0 {
 		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, errors)
@@ -127,36 +137,33 @@ func validateElasticStack(neteye *NetEye) error {
 
 func validateEDOTGateway(path *field.Path, config *NetEyeEDOTGatewaySpec) field.ErrorList {
 	var errors field.ErrorList
-	if len(config.ElasticsearchEndpoints) == 0 {
-		errors = append(errors, field.Required(path.Child("elasticsearchEndpoints"), "at least one HTTPS endpoint is required"))
-	} else {
-		for i, endpoint := range config.ElasticsearchEndpoints {
-			if err := validateHTTPSURL(path.Child("elasticsearchEndpoints").Index(i), endpoint); err != nil {
-				errors = append(errors, err)
-			}
-		}
-	}
-	if config.APIKeySecret != nil {
-		apiKeyPath := path.Child("apiKeySecret")
-		name := strings.TrimSpace(config.APIKeySecret.Name)
-		key := strings.TrimSpace(config.APIKeySecret.Key)
-		if name == "" {
-			errors = append(errors, field.Required(apiKeyPath.Child("name"), "must be set when apiKeySecret is supplied"))
-		} else if err := validateDNSHostname(apiKeyPath.Child("name"), config.APIKeySecret.Name); err != nil {
-			errors = append(errors, err)
-		}
-		if key == "" {
-			errors = append(errors, field.Required(apiKeyPath.Child("key"), "must be set when apiKeySecret is supplied"))
-		} else if config.APIKeySecret.Key != key {
-			errors = append(errors, field.Invalid(apiKeyPath.Child("key"), config.APIKeySecret.Key, "must not contain surrounding whitespace"))
-		} else if issues := validation.IsConfigMapKey(key); len(issues) > 0 {
-			errors = append(errors, field.Invalid(apiKeyPath.Child("key"), key, strings.Join(issues, ", ")))
-		}
-	}
+	errors = append(errors, validateAPIKeySecret(path.Child("apiKeySecret"), config.APIKeySecret)...)
 	if config.RootCASecretName != "" {
 		if err := validateDNSHostname(path.Child("rootCASecretName"), config.RootCASecretName); err != nil {
 			errors = append(errors, err)
 		}
+	}
+	return errors
+}
+
+func validateAPIKeySecret(path *field.Path, selector *NetEyeSecretKeySelector) field.ErrorList {
+	if selector == nil {
+		return nil
+	}
+	var errors field.ErrorList
+	name := strings.TrimSpace(selector.Name)
+	key := strings.TrimSpace(selector.Key)
+	if name == "" {
+		errors = append(errors, field.Required(path.Child("name"), "must be set when apiKeySecret is supplied"))
+	} else if err := validateDNSHostname(path.Child("name"), selector.Name); err != nil {
+		errors = append(errors, err)
+	}
+	if key == "" {
+		errors = append(errors, field.Required(path.Child("key"), "must be set when apiKeySecret is supplied"))
+	} else if selector.Key != key {
+		errors = append(errors, field.Invalid(path.Child("key"), selector.Key, "must not contain surrounding whitespace"))
+	} else if issues := validation.IsConfigMapKey(key); len(issues) > 0 {
+		errors = append(errors, field.Invalid(path.Child("key"), key, strings.Join(issues, ", ")))
 	}
 	return errors
 }
@@ -173,6 +180,7 @@ func validateCollectorReferenceOverrides(path *field.Path, config *NetEyeOtelCol
 			}
 		}
 	}
+	errors = append(errors, validateAPIKeySecret(path.Child("apiKeySecret"), config.APIKeySecret)...)
 	return errors
 }
 
@@ -182,8 +190,8 @@ func validateHTTPSURL(path *field.Path, value string) *field.Error {
 	if value != trimmed || err != nil || value == "" || !u.IsAbs() || u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return field.Invalid(path, value, "must be an absolute HTTPS URL")
 	}
-	if net.ParseIP(u.Hostname()) == nil {
-		return field.Invalid(path, value, "host must be an IP address")
+	if net.ParseIP(u.Hostname()) == nil && len(validation.IsDNS1123Subdomain(u.Hostname())) > 0 {
+		return field.Invalid(path, value, "host must be an IP address or DNS name")
 	}
 	return nil
 }

@@ -139,6 +139,13 @@ type NetEyeElasticStackSpec struct {
 	// +kubebuilder:default=false
 	Enabled bool `json:"enabled"`
 
+	// ElasticsearchEndpoints is the explicitly configured list of HTTPS
+	// Elasticsearch endpoints consumed by both telemetry components. Each
+	// endpoint host must be an IP address literal or a DNS name.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	ElasticsearchEndpoints []string `json:"elasticsearchEndpoints,omitempty"`
+
 	// Telemetry groups the OTel Collector and EDOT Gateway configuration; it is
 	// not independently enabled and is required when Enabled is true.
 	// +kubebuilder:validation:Optional
@@ -153,25 +160,26 @@ type NetEyeTelemetrySpec struct {
 	OTelCollector *NetEyeOtelCollectorSpec `json:"otelCollector,omitempty"`
 
 	// EDOTGateway configures the EDOT Gateway that exports telemetry to
-	// Elasticsearch. Its endpoints, API-key Secret, and trusted CA belong here;
-	// the image is resolved from release data.
+	// Elasticsearch. Its API-key Secret and trusted CA belong here; the image
+	// is resolved from release data.
 	// +kubebuilder:validation:Optional
 	EDOTGateway *NetEyeEDOTGatewaySpec `json:"edotGateway,omitempty"`
 }
 
 const (
-	DefaultOTelCollectorReplicas       int32 = 1
-	DefaultOTelCollectorBasicAuthName        = "otel-collector-basicauth"
-	DefaultOTelCollectorRootCAName           = "neteye-root-ca"
-	DefaultEDOTGatewayReplicas         int32 = 1
-	DefaultEDOTGatewayAPIKeySecretName       = "otel-collector-api-key"
-	DefaultEDOTGatewayAPIKeySecretKey        = "api_key"
-	DefaultEDOTGatewayRootCAName             = "neteye-root-ca"
+	DefaultOTelCollectorReplicas         int32 = 1
+	DefaultOTelCollectorBasicAuthName          = "otel-collector-basicauth"
+	DefaultOTelCollectorAPIKeySecretName       = "otel-collector-icinga-api-key-secret"
+	DefaultOTelCollectorAPIKeySecretKey        = "api_key"
+	DefaultOTelCollectorRootCAName             = "neteye-root-ca"
+	DefaultEDOTGatewayReplicas           int32 = 1
+	DefaultEDOTGatewayAPIKeySecretName         = "otel-collector-apm-api-key-secret"
+	DefaultEDOTGatewayAPIKeySecretKey          = "api_key"
+	DefaultEDOTGatewayRootCAName               = "neteye-root-ca"
 )
 
 // NetEyeEDOTGatewaySpec configures the EDOT Gateway used to export telemetry
-// to Elasticsearch. Elasticsearch configuration belongs here rather than on
-// the OTel Collector.
+// to Elasticsearch.
 type NetEyeEDOTGatewaySpec struct {
 	// Replicas is the number of EDOT Gateway replicas to deploy.
 	// +kubebuilder:validation:Optional
@@ -179,18 +187,10 @@ type NetEyeEDOTGatewaySpec struct {
 	// +kubebuilder:default=1
 	Replicas int32 `json:"replicas,omitempty"`
 
-	// ElasticsearchEndpoints is the explicitly configured list of HTTPS
-	// Elasticsearch endpoints consumed by the EDOT Gateway. Each endpoint host
-	// must be an IP address literal, and at least one absolute HTTPS endpoint is
-	// required.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
-	ElasticsearchEndpoints []string `json:"elasticsearchEndpoints"`
-
 	// APIKeySecret selects the Secret key containing the Elasticsearch API key.
 	// +kubebuilder:validation:Optional
-	// The default is otel-collector-api-key/api_key.
-	// +kubebuilder:default={name:otel-collector-api-key,key:api_key}
+	// The default is otel-collector-apm-api-key-secret/api_key.
+	// +kubebuilder:default={name:otel-collector-apm-api-key-secret,key:api_key}
 	APIKeySecret *NetEyeSecretKeySelector `json:"apiKeySecret,omitempty"`
 
 	// RootCASecretName selects the trusted CA for Elasticsearch.
@@ -234,6 +234,14 @@ func (s *NetEyeOtelCollectorSpec) EffectiveRootCASecretName() string {
 	return s.RootCASecretName
 }
 
+// EffectiveAPIKeySecret returns the collector API-key Secret selector.
+func (s *NetEyeOtelCollectorSpec) EffectiveAPIKeySecret() NetEyeSecretKeySelector {
+	if s == nil || s.APIKeySecret == nil {
+		return NetEyeSecretKeySelector{Name: DefaultOTelCollectorAPIKeySecretName, Key: DefaultOTelCollectorAPIKeySecretKey}
+	}
+	return *s.APIKeySecret
+}
+
 // EffectiveAPIKeySecret returns the gateway API-key Secret selector.
 func (s *NetEyeEDOTGatewaySpec) EffectiveAPIKeySecret() NetEyeSecretKeySelector {
 	if s == nil || s.APIKeySecret == nil {
@@ -272,6 +280,13 @@ type NetEyeOtelCollectorSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:default=neteye-root-ca
 	RootCASecretName string `json:"rootCASecretName,omitempty"`
+
+	// APIKeySecret selects the Secret key exposed to the collector as the
+	// ELASTICSEARCH_API_KEY environment variable. The default is
+	// otel-collector-icinga-api-key-secret/api_key.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={name:otel-collector-icinga-api-key-secret,key:api_key}
+	APIKeySecret *NetEyeSecretKeySelector `json:"apiKeySecret,omitempty"`
 }
 
 // NetEyeGatewaySpec defines the Gateway API resources managed by NetEye.
