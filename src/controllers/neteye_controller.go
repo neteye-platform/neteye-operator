@@ -44,15 +44,16 @@ const (
 // NetEyeReconciler reconciles NetEye CRs and drives per-CR component deployment.
 type NetEyeReconciler struct {
 	client.Client
-	Log                    logr.Logger
-	Scheme                 *runtime.Scheme
-	KeycloakComponent      *keycloak.Component
-	ElasticStackReconciler *elasticstack.Reconciler
+	Log               logr.Logger
+	Scheme            *runtime.Scheme
+	KeycloakComponent *keycloak.Component
 	// AdminProviders holds the cached Keycloak admin credentials per namespace.
 	// It is released here when a NetEye CR goes away, so a deleted tenant does
 	// not keep its admin password and token in memory until the registry's idle
 	// eviction happens to run. Optional: when nil, nothing is forgotten.
-	AdminProviders *keycloak.AdminProviderRegistry
+	AdminProviders         *keycloak.AdminProviderRegistry
+	OTelCollectorComponent *elasticstack.OTelCollectorComponent
+	EDOTGatewayComponent   *elasticstack.EDOTGatewayComponent
 
 	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
 	WaitForProgressingRequeueAfter time.Duration
@@ -104,7 +105,7 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	ne.Status.Message = ""
 	ne.Status.ServicesStatus = neteye.NetEyeServicesStatus{
 		Identity:     identityStatus(neteye.ServiceStateUnknown, "", ""),
-		ElasticStack: &neteye.NetEyeElasticStackStatus{Status: neteye.ServiceStateUnknown, OTelCollector: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}},
+		ElasticStack: &neteye.NetEyeElasticStackStatus{Status: neteye.ServiceStateUnknown, OTelCollector: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}, EDOTGateway: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}},
 	}
 	defer func() {
 		if err := r.updateStatus(ctx, req.NamespacedName, ne.Status); err != nil {
@@ -136,6 +137,10 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		setPhase(ne, neteye.PhaseFailed, "keycloak component is not initialized")
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("keycloak component is not initialized")
 	}
+	if r.OTelCollectorComponent == nil || r.EDOTGatewayComponent == nil {
+		setPhase(ne, neteye.PhaseFailed, "telemetry components are not initialized")
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("telemetry components are not initialized")
+	}
 	log.V(1).Info("Components loaded", "version", ne.Spec.Version)
 
 	if err := r.ensureClusterAuthority(ctx, ne); err != nil {
@@ -153,19 +158,26 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared default-deny network policy: %w", err)
 	}
 
-	graph, err := newLifecycleGraph([]lifecycleNode{{ID: identityComponentID}, {ID: otelCollectorComponentID}})
+	graph, err := newLifecycleGraph([]lifecycleNode{{ID: identityComponentID}, {ID: otelCollectorComponentID}, {ID: edotGatewayComponentID}})
 	if err != nil {
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		return ctrl.Result{}, fmt.Errorf("construct component lifecycle graph: %w", err)
 	}
 	results, err := runComponentOperations(graph, map[componentID]componentOperation{
 		identityComponentID: func() (componentResult, error) { return r.reconcileKeycloak(ctx, ne, components.KeycloakImage) },
 		otelCollectorComponentID: func() (componentResult, error) {
-			return r.reconcileElasticStack(ctx, ne, components.OTelCollectorImage)
+			return r.reconcileOTelCollector(ctx, ne, components.OTelCollectorImage, components.CABundleImage)
+		},
+		edotGatewayComponentID: func() (componentResult, error) {
+			return r.reconcileEDOTGateway(ctx, ne, components.EDOTGatewayImage, components.CABundleImage)
 		},
 	})
 	if err != nil {
+		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		return ctrl.Result{}, err
 	}
+	state, message := aggregateElasticStackStatus(ne.Status.ServicesStatus.ElasticStack.OTelCollector, ne.Status.ServicesStatus.ElasticStack.EDOTGateway)
+	ne.Status.ServicesStatus.ElasticStack.Status, ne.Status.ServicesStatus.ElasticStack.Message = state, message
 	phase, message := aggregateComponentPhase(results)
 	setPhase(ne, phase, message)
 	requeueAfter := earliestComponentRequeue(results)
@@ -183,37 +195,97 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-func (r *NetEyeReconciler) reconcileElasticStack(ctx context.Context, ne *neteye.NetEye, collectorImage string) (componentResult, error) {
-	if r.ElasticStackReconciler == nil {
-		r.ElasticStackReconciler = elasticstack.NewReconciler(nil)
+func (r *NetEyeReconciler) reconcileOTelCollector(ctx context.Context, ne *neteye.NetEye, image, caBundleImage string) (componentResult, error) {
+	owner, ns := ownerReferenceFor(ne), keycloak.WorkloadNamespace
+	if ne.Spec.ElasticStack == nil || !ne.Spec.ElasticStack.Enabled {
+		if err := r.OTelCollectorComponent.Delete(ctx, ns, owner); err != nil {
+			message := fmt.Sprintf("failed to clean up OpenTelemetry Collector resources: %v", err)
+			ne.Status.ServicesStatus.ElasticStack.OTelCollector = elasticStackServiceStatus(neteye.ServiceStateFailed, message, image)
+			return degradedResult(otelCollectorComponentID, "CleanupFailed", message, r.failureRequeue(), err)
+		}
+		ne.Status.ServicesStatus.ElasticStack.OTelCollector = elasticStackServiceStatus(neteye.ServiceStateDisabled, "OpenTelemetry Collector is disabled", image)
+		return readyResult(otelCollectorComponentID, "Disabled", "OpenTelemetry Collector is disabled")
 	}
-	outcome := r.ElasticStackReconciler.Reconcile(ctx, elasticstack.Request{
-		Namespace: keycloak.WorkloadNamespace, Config: ne.Spec.ElasticStack, IdentityHostname: ne.Spec.Identity.Hostname, CollectorImage: collectorImage,
-		GatewayNamespace: keycloak.WorkloadNamespace, GatewayName: ne.Spec.Gateway.Name, IssuerRef: issuerRefFor(ne), Owner: ownerReferenceFor(ne),
-	})
-	ne.Status.ServicesStatus.ElasticStack = &neteye.NetEyeElasticStackStatus{Status: outcome.Module.Status, Message: outcome.Module.Message, OTelCollector: outcome.Collector}
-	requeueAfter := r.resultForRequeue(outcome.Requeue).RequeueAfter
-	if outcome.Err != nil {
-		return degradedResult(otelCollectorComponentID, "ReconcileFailed", outcome.Err.Error(), requeueAfter, outcome.Err)
+	var spec *neteye.NetEyeOtelCollectorSpec
+	if ne.Spec.ElasticStack.Telemetry != nil {
+		spec = ne.Spec.ElasticStack.Telemetry.OTelCollector
 	}
-	if outcome.Requeue == elasticstack.RequeueProgressing {
-		return progressingResult(otelCollectorComponentID, "Progressing", outcome.Module.Message, requeueAfter)
-	}
-	if outcome.Module.Status == neteye.ServiceStateDisabled {
-		return readyResult(otelCollectorComponentID, "Disabled", outcome.Module.Message)
-	}
-	return readyResult(otelCollectorComponentID, "Available", outcome.Module.Message)
+	outcome := r.OTelCollectorComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, ne.Spec.Identity.Hostname, ns, ne.Spec.Gateway.Name, image, caBundleImage, issuerRefFor(ne), owner)
+	ne.Status.ServicesStatus.ElasticStack.OTelCollector = elasticStackServiceStatus(phaseToServiceState(outcome.Phase), outcome.Message, image)
+	return mapTelemetryOutcome(otelCollectorComponentID, outcome, r.waitForProgressingRequeue(), r.failureRequeue())
 }
-
-func (r *NetEyeReconciler) resultForRequeue(reason elasticstack.RequeueReason) ctrl.Result {
-	switch reason {
-	case elasticstack.RequeueProgressing:
-		return ctrl.Result{RequeueAfter: r.waitForProgressingRequeue()}
-	case elasticstack.RequeueFailure:
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}
-	default:
-		return ctrl.Result{}
+func (r *NetEyeReconciler) reconcileEDOTGateway(ctx context.Context, ne *neteye.NetEye, image, caBundleImage string) (componentResult, error) {
+	owner, ns := ownerReferenceFor(ne), keycloak.WorkloadNamespace
+	if ne.Spec.ElasticStack == nil || !ne.Spec.ElasticStack.Enabled {
+		if err := r.EDOTGatewayComponent.Delete(ctx, ns, owner); err != nil {
+			message := fmt.Sprintf("failed to clean up EDOT Gateway resources: %v", err)
+			ne.Status.ServicesStatus.ElasticStack.EDOTGateway = elasticStackServiceStatus(neteye.ServiceStateFailed, message, image)
+			return degradedResult(edotGatewayComponentID, "CleanupFailed", message, r.failureRequeue(), err)
+		}
+		ne.Status.ServicesStatus.ElasticStack.EDOTGateway = elasticStackServiceStatus(neteye.ServiceStateDisabled, "EDOT Gateway is disabled", image)
+		return readyResult(edotGatewayComponentID, "Disabled", "EDOT Gateway is disabled")
 	}
+	var spec *neteye.NetEyeEDOTGatewaySpec
+	if ne.Spec.ElasticStack.Telemetry != nil {
+		spec = ne.Spec.ElasticStack.Telemetry.EDOTGateway
+	}
+	outcome := r.EDOTGatewayComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, image, caBundleImage, owner)
+	ne.Status.ServicesStatus.ElasticStack.EDOTGateway = elasticStackServiceStatus(phaseToServiceState(outcome.Phase), outcome.Message, image)
+	return mapTelemetryOutcome(edotGatewayComponentID, outcome, r.waitForProgressingRequeue(), r.failureRequeue())
+}
+func mapTelemetryOutcome(id componentID, outcome elasticstack.Outcome, progressingRequeue, failureRequeue time.Duration) (componentResult, error) {
+	switch outcome.Phase {
+	case elasticstack.PhaseReady:
+		return readyResult(id, outcome.Reason, outcome.Message)
+	case elasticstack.PhaseProgressing:
+		return progressingResult(id, outcome.Reason, outcome.Message, progressingRequeue)
+	case elasticstack.PhaseDegraded:
+		return degradedResult(id, outcome.Reason, outcome.Message, failureRequeue, outcome.Err)
+	default:
+		return componentResult{}, fmt.Errorf("component %q returned invalid telemetry phase %q", id, outcome.Phase)
+	}
+}
+func phaseToServiceState(phase elasticstack.Phase) neteye.ServiceState {
+	switch phase {
+	case elasticstack.PhaseReady:
+		return neteye.ServiceStateReady
+	case elasticstack.PhaseProgressing:
+		return neteye.ServiceStateNotReady
+	default:
+		return neteye.ServiceStateFailed
+	}
+}
+func elasticStackServiceStatus(state neteye.ServiceState, message, image string) *neteye.NetEyeServiceStatus {
+	return &neteye.NetEyeServiceStatus{Status: state, Message: message, ResolvedImage: image}
+}
+func aggregateElasticStackStatus(collector, edot *neteye.NetEyeServiceStatus) (neteye.ServiceState, string) {
+	states := make([]neteye.ServiceState, 0, 2)
+	if collector != nil {
+		states = append(states, collector.Status)
+	}
+	if edot != nil {
+		states = append(states, edot.Status)
+	}
+	allDisabled := len(states) > 0
+	for _, state := range states {
+		if state != neteye.ServiceStateDisabled {
+			allDisabled = false
+		}
+	}
+	if allDisabled {
+		return neteye.ServiceStateDisabled, "Elastic Stack feature module is disabled"
+	}
+	for _, state := range states {
+		if state == neteye.ServiceStateFailed {
+			return neteye.ServiceStateFailed, "Check services status for details"
+		}
+	}
+	for _, state := range states {
+		if state != neteye.ServiceStateReady {
+			return neteye.ServiceStateNotReady, "Check services status for details"
+		}
+	}
+	return neteye.ServiceStateReady, "Elastic Stack feature module is ready"
 }
 
 func (r *NetEyeReconciler) updateStatus(ctx context.Context, key client.ObjectKey, status neteye.NetEyeStatus) error {

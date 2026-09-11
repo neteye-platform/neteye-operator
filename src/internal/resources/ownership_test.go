@@ -8,6 +8,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func TestOwnerReference(t *testing.T) {
@@ -67,5 +68,32 @@ func TestSetOwnerReferenceConflict(t *testing.T) {
 	}
 	if changed {
 		t.Error("expected no change on conflict")
+	}
+}
+
+func TestRequireManagedOwner(t *testing.T) {
+	controller := true
+	owner := metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "platform", UID: "ours", Controller: &controller}
+	for _, test := range []struct {
+		name    string
+		refs    []metav1.OwnerReference
+		wantErr bool
+	}{
+		{"matching controller", []metav1.OwnerReference{owner}, false},
+		{"unowned", nil, true},
+		{"foreign controller", []metav1.OwnerReference{{Kind: "Other", APIVersion: "other/v1", Name: "foreign", UID: "other", Controller: &controller}}, true},
+		{"non-controller foreign", []metav1.OwnerReference{{Kind: "Other", UID: "other"}}, true},
+		{"our non-controller", []metav1.OwnerReference{{Kind: "NetEye", UID: "ours"}}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			object := &unstructured.Unstructured{Object: map[string]any{}}
+			object.SetGroupVersionKind(schema.GroupVersionKind{Kind: "Widget"})
+			object.SetNamespace("ns")
+			object.SetName("name")
+			object.SetOwnerReferences(test.refs)
+			if err := RequireManagedOwner(object, owner); (err != nil) != test.wantErr {
+				t.Fatalf("err=%v", err)
+			}
+		})
 	}
 }

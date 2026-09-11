@@ -26,3 +26,10 @@ spec:
       dbName: keycloak
       usernameSecret: {name: keycloak-db-secret, key: username}
       passwordSecret: {name: keycloak-db-secret, key: password}
+  elasticStack:
+    enabled: true
+    elasticsearchEndpoints:
+      - https://192.0.2.10:9200
+    telemetry:
+      otelCollector: {}
+      edotGateway: {}

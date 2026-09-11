@@ -83,6 +83,12 @@ func EnsureService(ctx context.Context, c client.Client, desired *corev1.Service
 func setControllerOwnerReference(object client.Object, owner metav1.OwnerReference) (bool, error) {
 	unstructuredObject := &unstructured.Unstructured{}
 	unstructuredObject.SetOwnerReferences(object.GetOwnerReferences())
+	unstructuredObject.SetGroupVersionKind(object.GetObjectKind().GroupVersionKind())
+	unstructuredObject.SetNamespace(object.GetNamespace())
+	unstructuredObject.SetName(object.GetName())
+	if err := RequireManagedOwner(unstructuredObject, owner); err != nil {
+		return false, err
+	}
 	changed, err := SetOwnerReference(unstructuredObject, owner)
 	if err != nil {
 		return false, err

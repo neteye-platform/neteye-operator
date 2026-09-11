@@ -129,6 +129,14 @@ spec:
                         name: RELATED_IMAGE_OTEL_COLLECTOR,
                         value: docker.io/otel/opentelemetry-collector-contrib:0.156.0,
                       }
+                      - {
+                        name: RELATED_IMAGE_EDOT_GATEWAY,
+                        value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.3,
+                      }
+                      - {
+                        name: RELATED_IMAGE_CA_BUNDLE,
+                        value: docker.io/alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40,
+                      }
                     securityContext:
                       {
                         allowPrivilegeEscalation: false,

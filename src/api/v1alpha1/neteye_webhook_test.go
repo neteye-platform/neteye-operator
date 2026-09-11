@@ -80,7 +80,7 @@ func TestNetEyeValidatorRejectsWrongNamespace(t *testing.T) {
 }
 
 func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
-	valid := &NetEyeElasticStackSpec{Enabled: true, OTelCollector: &NetEyeOtelCollectorSpec{ElasticsearchEndpoints: []string{"https://elasticsearch.example.com:9200"}}}
+	valid := validTelemetryConfig()
 	tests := []struct {
 		name    string
 		config  *NetEyeElasticStackSpec
@@ -89,22 +89,23 @@ func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
 		{name: "absent is disabled"},
 		{name: "disabled incomplete config", config: &NetEyeElasticStackSpec{}},
 		{name: "enabled valid", config: valid},
-		{name: "enabled requires collector configuration", config: &NetEyeElasticStackSpec{Enabled: true}, wantErr: true},
-		{name: "endpoints must not be empty", config: &NetEyeElasticStackSpec{Enabled: true, OTelCollector: &NetEyeOtelCollectorSpec{}}, wantErr: true},
-		{name: "endpoint must be HTTPS absolute", config: &NetEyeElasticStackSpec{Enabled: true, OTelCollector: &NetEyeOtelCollectorSpec{ElasticsearchEndpoints: []string{"/_bulk"}}}, wantErr: true},
-		{name: "endpoint host must not be an IP literal", config: &NetEyeElasticStackSpec{Enabled: true, OTelCollector: &NetEyeOtelCollectorSpec{ElasticsearchEndpoints: []string{"https://192.0.2.1:9200"}}}, wantErr: true},
-		{name: "default references are valid", config: valid},
-		{name: "empty api key override rejected", config: withAPIKey(valid, NetEyeSecretKeySelector{}), wantErr: true},
-		{name: "partial api key override rejected", config: withAPIKey(valid, NetEyeSecretKeySelector{Name: "api-key"}), wantErr: true},
-		{name: "malformed api key override rejected", config: withAPIKey(valid, NetEyeSecretKeySelector{Name: "bad_name", Key: "api_key"}), wantErr: true},
+		{name: "enabled requires telemetry", config: &NetEyeElasticStackSpec{Enabled: true}, wantErr: true},
+		{name: "enabled requires collector", config: &NetEyeElasticStackSpec{Enabled: true, Telemetry: &NetEyeTelemetrySpec{}}, wantErr: true},
+		{name: "enabled requires gateway", config: &NetEyeElasticStackSpec{Enabled: true, Telemetry: &NetEyeTelemetrySpec{OTelCollector: &NetEyeOtelCollectorSpec{}}}, wantErr: true},
+		{name: "gateway endpoints must not be empty", config: withEndpoints(valid, nil), wantErr: true},
+		{name: "endpoint must be HTTPS absolute", config: withEndpoints(valid, []string{"/_bulk"}), wantErr: true},
+		{name: "endpoint host may be an IP literal", config: withEndpoints(valid, []string{"https://192.0.2.1:9200"})},
+		{name: "endpoint host may be a DNS name", config: withEndpoints(valid, []string{"https://elastic.example.com:9200"})},
+		{name: "endpoint host must be a valid IP or DNS name", config: withEndpoints(valid, []string{"https://bad_host:9200"}), wantErr: true},
+		{name: "empty api key override rejected", config: withGatewayAPIKey(valid, NetEyeSecretKeySelector{}), wantErr: true},
+		{name: "partial api key override rejected", config: withGatewayAPIKey(valid, NetEyeSecretKeySelector{Name: "api-key"}), wantErr: true},
+		{name: "malformed api key override rejected", config: withGatewayAPIKey(valid, NetEyeSecretKeySelector{Name: "bad_name", Key: "api_key"}), wantErr: true},
 		{name: "malformed basic auth override rejected", config: withBasicAuthSecret(valid, " bad_name "), wantErr: true},
 		{name: "whitespace-only basic auth override rejected", config: withBasicAuthSecret(valid, " "), wantErr: true},
-		{name: "malformed root CA override rejected", config: withRootCASecret(valid, "bad_name"), wantErr: true},
-		{name: "whitespace-only root CA override rejected", config: withRootCASecret(valid, " \t"), wantErr: true},
-		{name: "oidc issuer must be HTTPS", config: withOIDC(valid, " http://issuer.example.com "), wantErr: true},
-		{name: "oidc issuer host must not be an IP literal", config: withOIDC(valid, "https://[2001:db8::1]/auth/realms/master"), wantErr: true},
-		{name: "oidc issuer whitespace rejected", config: withOIDC(valid, " "), wantErr: true},
-		{name: "oidc issuer surrounding whitespace rejected", config: withOIDC(valid, " https://issuer.example.com "), wantErr: true},
+		{name: "malformed collector root CA override rejected", config: withCollectorRootCASecret(valid, "bad_name"), wantErr: true},
+		{name: "malformed collector api key override rejected", config: withCollectorAPIKey(valid, NetEyeSecretKeySelector{Name: "bad_name", Key: "api_key"}), wantErr: true},
+		{name: "partial collector api key override rejected", config: withCollectorAPIKey(valid, NetEyeSecretKeySelector{Name: "icinga-api-key"}), wantErr: true},
+		{name: "malformed gateway root CA override rejected", config: withGatewayRootCASecret(valid, "bad_name"), wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -115,6 +116,64 @@ func TestNetEyeValidatorValidatesElasticStackConfiguration(t *testing.T) {
 				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestNetEyeValidatorValidatesEDOTGatewayConfiguration(t *testing.T) {
+	valid := &NetEyeElasticStackSpec{
+		Enabled:                true,
+		ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"},
+		Telemetry: &NetEyeTelemetrySpec{
+			OTelCollector: &NetEyeOtelCollectorSpec{Replicas: 1},
+			EDOTGateway: &NetEyeEDOTGatewaySpec{
+				Replicas:         1,
+				APIKeySecret:     &NetEyeSecretKeySelector{Name: "elasticsearch-api-key", Key: "api_key"},
+				RootCASecretName: "neteye-root-ca",
+			},
+		},
+	}
+	tests := []struct {
+		name    string
+		config  *NetEyeElasticStackSpec
+		wantErr bool
+	}{
+		{name: "valid EDOT configuration", config: valid},
+		{name: "valid explicit Secret overrides", config: withOverrides(valid)},
+		{name: "EDOT endpoints must not be empty", config: withEndpoints(valid, nil), wantErr: true},
+		{name: "EDOT endpoint must be HTTPS", config: withEndpoints(valid, []string{"http://192.0.2.10:9200"}), wantErr: true},
+		{name: "EDOT endpoint must be absolute", config: withEndpoints(valid, []string{"/_bulk"}), wantErr: true},
+		{name: "EDOT endpoint host may be a DNS name", config: withEndpoints(valid, []string{"https://elastic.example.com:9200"})},
+		{name: "EDOT endpoint host must be a valid IP or DNS name", config: withEndpoints(valid, []string{"https://bad_host:9200"}), wantErr: true},
+		{name: "EDOT API key Secret name is required", config: withEDOT(valid, func(g *NetEyeEDOTGatewaySpec) { g.APIKeySecret = &NetEyeSecretKeySelector{Key: "api_key"} }), wantErr: true},
+		{name: "EDOT API key Secret key is required", config: withEDOT(valid, func(g *NetEyeEDOTGatewaySpec) { g.APIKeySecret = &NetEyeSecretKeySelector{Name: "api-key"} }), wantErr: true},
+		{name: "EDOT API key Secret name must be valid", config: withEDOT(valid, func(g *NetEyeEDOTGatewaySpec) {
+			g.APIKeySecret = &NetEyeSecretKeySelector{Name: "bad_name", Key: "api_key"}
+		}), wantErr: true},
+		{name: "EDOT root CA Secret name must be valid", config: withEDOT(valid, func(g *NetEyeEDOTGatewaySpec) { g.RootCASecretName = "bad_name" }), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := netEyeWithVersion(CurrentNetEyeVersion)
+			obj.Spec.ElasticStack = tt.config
+			_, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNetEyeValidatorUpdateUsesTelemetryContract(t *testing.T) {
+	validator := &NetEyeValidator{}
+	oldObj := netEyeWithVersion(CurrentNetEyeVersion)
+	newObj := netEyeWithVersion(CurrentNetEyeVersion)
+	newObj.Spec.ElasticStack = validTelemetryConfig()
+	if _, err := validator.ValidateUpdate(context.Background(), oldObj, newObj); err != nil {
+		t.Fatalf("valid telemetry update rejected: %v", err)
+	}
+	newObj.Spec.ElasticStack.Telemetry.EDOTGateway = nil
+	if _, err := validator.ValidateUpdate(context.Background(), oldObj, newObj); err == nil {
+		t.Fatal("telemetry update without EDOT gateway was accepted")
 	}
 }
 
@@ -141,27 +200,57 @@ func TestNetEyeValidatorRejectsManagedKeycloakOptions(t *testing.T) {
 	}
 }
 
-func withOIDC(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
+func validTelemetryConfig() *NetEyeElasticStackSpec {
+	return &NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"}, Telemetry: &NetEyeTelemetrySpec{OTelCollector: &NetEyeOtelCollectorSpec{}, EDOTGateway: &NetEyeEDOTGatewaySpec{}}}
+}
+
+func withEndpoints(config *NetEyeElasticStackSpec, endpoints []string) *NetEyeElasticStackSpec {
 	copy := config.DeepCopy()
-	copy.OTelCollector.OIDCIssuerURL = value
+	copy.ElasticsearchEndpoints = endpoints
 	return copy
 }
 
-func withAPIKey(config *NetEyeElasticStackSpec, value NetEyeSecretKeySelector) *NetEyeElasticStackSpec {
+func withEDOT(config *NetEyeElasticStackSpec, mutate func(*NetEyeEDOTGatewaySpec)) *NetEyeElasticStackSpec {
 	copy := config.DeepCopy()
-	copy.OTelCollector.APIKeySecret = &value
+	mutate(copy.Telemetry.EDOTGateway)
+	return copy
+}
+
+func withGatewayAPIKey(config *NetEyeElasticStackSpec, value NetEyeSecretKeySelector) *NetEyeElasticStackSpec {
+	return withEDOT(config, func(g *NetEyeEDOTGatewaySpec) { g.APIKeySecret = &value })
+}
+
+func withCollectorAPIKey(config *NetEyeElasticStackSpec, value NetEyeSecretKeySelector) *NetEyeElasticStackSpec {
+	copy := config.DeepCopy()
+	copy.Telemetry.OTelCollector.APIKeySecret = &value
+	return copy
+}
+
+func withOverrides(config *NetEyeElasticStackSpec) *NetEyeElasticStackSpec {
+	copy := config.DeepCopy()
+	copy.Telemetry.OTelCollector.BasicAuthSecretName = "custom-collector-basicauth"
+	copy.Telemetry.OTelCollector.RootCASecretName = "custom-neteye-root-ca"
+	copy.Telemetry.OTelCollector.APIKeySecret = &NetEyeSecretKeySelector{Name: "custom-icinga-api-key", Key: "api_key"}
+	copy.Telemetry.EDOTGateway.APIKeySecret = &NetEyeSecretKeySelector{Name: "custom-elasticsearch-api-key", Key: "api_key"}
+	copy.Telemetry.EDOTGateway.RootCASecretName = "custom-neteye-root-ca"
 	return copy
 }
 
 func withBasicAuthSecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
 	copy := config.DeepCopy()
-	copy.OTelCollector.BasicAuthSecretName = value
+	copy.Telemetry.OTelCollector.BasicAuthSecretName = value
 	return copy
 }
 
-func withRootCASecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
+func withCollectorRootCASecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
 	copy := config.DeepCopy()
-	copy.OTelCollector.RootCASecretName = value
+	copy.Telemetry.OTelCollector.RootCASecretName = value
+	return copy
+}
+
+func withGatewayRootCASecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
+	copy := config.DeepCopy()
+	copy.Telemetry.EDOTGateway.RootCASecretName = value
 	return copy
 }
 
