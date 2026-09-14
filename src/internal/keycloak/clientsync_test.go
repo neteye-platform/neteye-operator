@@ -19,6 +19,7 @@ func sampleSpec() neteye.KeycloakClientSpec {
 		ClientID:                    "neteye",
 		RootURL:                     "https://neteye.example.com",
 		RedirectUris:                []string{"/neteye/*"},
+		Attributes:                  map[string]string{"pkce.code.challenge.method": "S256"},
 		DirectAccess:                true,
 		AllowClientCredentialsGrant: true,
 		ProtocolMappers: []neteye.KeycloakProtocolMapper{{
@@ -58,6 +59,9 @@ func TestReconcileClientCreates(t *testing.T) {
 	}
 	if got := created["redirectUris"]; !reflect.DeepEqual(got, []any{"/neteye/*"}) {
 		t.Errorf("redirectUris = %v", got)
+	}
+	if got := created["attributes"]; !reflect.DeepEqual(got, map[string]any{"pkce.code.challenge.method": "S256"}) {
+		t.Errorf("attributes = %v", got)
 	}
 	if mappers := fake.mappers[result.UUID]; len(mappers) != 1 || stringValue(mappers[0], "name") != "groups membership" {
 		t.Errorf("mappers = %v", mappers)
@@ -102,6 +106,7 @@ func TestReconcileClientRevertsDrift(t *testing.T) {
 	uuid := "uuid-neteye"
 	fake.clients[uuid]["directAccessGrantsEnabled"] = false
 	fake.clients[uuid]["redirectUris"] = []any{"https://evil.example.com/*"}
+	fake.clients[uuid]["attributes"] = map[string]any{"pkce.code.challenge.method": "plain"}
 	fake.mappers[uuid][0]["config"] = map[string]any{"claim.name": "roles"}
 	fake.mappers[uuid] = append(fake.mappers[uuid], representation{"id": "mapper-extra", "name": "extra"})
 	fake.scopes[uuid]["default"] = []string{"profile"}
@@ -119,6 +124,9 @@ func TestReconcileClientRevertsDrift(t *testing.T) {
 	}
 	if got := fake.clients[uuid]["redirectUris"]; !reflect.DeepEqual(got, []any{"/neteye/*"}) {
 		t.Errorf("redirectUris = %v", got)
+	}
+	if got := fake.clients[uuid]["attributes"]; !reflect.DeepEqual(got, map[string]any{"pkce.code.challenge.method": "S256"}) {
+		t.Errorf("attributes = %v", got)
 	}
 	// The declared mapper is corrected, the one added outside the spec survives.
 	if len(fake.mappers[uuid]) != 2 {

@@ -90,6 +90,12 @@ type KeycloakClientSpec struct {
 	// +kubebuilder:validation:Optional
 	WebOrigins []string `json:"webOrigins,omitempty"`
 
+	// Attributes lists the Keycloak client attributes to manage. Attributes not
+	// listed here are left untouched.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:example={"pkce.code.challenge.method":"S256"}
+	Attributes map[string]string `json:"attributes,omitempty"`
+
 	// PublicClient marks the client as public, meaning it authenticates without
 	// a client secret.
 	// +kubebuilder:validation:Optional
