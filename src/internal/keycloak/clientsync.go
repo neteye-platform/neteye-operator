@@ -137,6 +137,9 @@ func desiredClientRepresentation(spec neteye.KeycloakClientSpec, clientSecret st
 	if spec.WebOrigins != nil {
 		desired["webOrigins"] = anySlice(spec.WebOrigins)
 	}
+	if spec.Attributes != nil {
+		desired["attributes"] = stringMap(spec.Attributes)
+	}
 	if !spec.PublicClient && clientSecret != "" {
 		desired["secret"] = clientSecret
 	}
@@ -283,6 +286,14 @@ func anySlice(values []string) []any {
 	converted := make([]any, 0, len(values))
 	for _, value := range values {
 		converted = append(converted, value)
+	}
+	return converted
+}
+
+func stringMap(values map[string]string) map[string]any {
+	converted := make(map[string]any, len(values))
+	for key, value := range values {
+		converted[key] = value
 	}
 	return converted
 }

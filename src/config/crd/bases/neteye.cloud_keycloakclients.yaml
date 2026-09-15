@@ -66,6 +66,15 @@ spec:
                   grant, letting the client authenticate on its own behalf via its
                   Keycloak service account.
                 type: boolean
+              attributes:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Attributes lists the Keycloak client attributes to manage. Attributes not
+                  listed here are left untouched.
+                example:
+                  pkce.code.challenge.method: S256
+                type: object
               clientId:
                 description: ClientID is the Keycloak client identifier, unique within
                   the realm.
