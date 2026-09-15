@@ -82,10 +82,10 @@ make bundle
 make bundle-validate
 
 # Example release override
-make bundle VERSION=0.1.0-alpha10 \
-  IMG=ghcr.io/neteye-platform/neteye-operator:0.1.0-alpha10 \
+make bundle VERSION=0.1.1-alpha.1 \
+  IMG=ghcr.io/neteye-platform/neteye-operator:0.1.1-alpha.1 \
   PACKAGE_NAME=neteye-operator
-make bundle-build BUNDLE_IMG=ghcr.io/neteye-platform/neteye-operator-bundle:0.1.0-alpha10
+make bundle-build BUNDLE_IMG=ghcr.io/neteye-platform/neteye-operator-bundle:0.1.1-alpha.1
 ```
 
 The Makefile pins and downloads Operator SDK `v1.42.3` and kustomize `v5.7.1`
