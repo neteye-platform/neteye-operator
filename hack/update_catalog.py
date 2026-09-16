@@ -4,7 +4,6 @@ import argparse
 import os
 import re
 import tempfile
-from functools import cmp_to_key
 from pathlib import Path
 
 PACKAGE_NAME = "neteye-operator"
@@ -137,7 +136,6 @@ def update_catalog(catalog_path: Path, version: str, bundle_image: str) -> bool:
     if bundle_name in previous_entries:
         raise ValueError(f"channel {channel} already contains {bundle_name}")
 
-    previous_versions = []
     prefix = f"{PACKAGE_NAME}."
     for entry in previous_entries:
         if not entry.startswith(prefix):
@@ -147,11 +145,28 @@ def update_catalog(catalog_path: Path, version: str, bundle_image: str) -> bool:
             raise ValueError(
                 f"invalid bundle version in {channel} channel: {entry_version}"
             )
-        previous_versions.append(entry_version)
 
     previous_version = None
-    if previous_versions:
-        previous_version = max(previous_versions, key=cmp_to_key(compare_semver))
+    if previous_entries:
+        if re.search(r"^    skipRange:", channel_document, re.MULTILINE):
+            raise ValueError(
+                f"channel {channel} uses unsupported skipRange entries; "
+                "use explicit replaces or skips edges"
+            )
+        replaced_entries = set(
+            re.findall(r"^    replaces: (\S+)$", channel_document, re.MULTILINE)
+        )
+        skipped_entries = set(
+            re.findall(r"^      - (\S+)$", channel_document, re.MULTILINE)
+        )
+        channel_heads = set(previous_entries) - replaced_entries - skipped_entries
+        if len(channel_heads) != 1:
+            raise ValueError(
+                f"expected exactly one {channel} channel head, found: "
+                f"{', '.join(sorted(channel_heads)) or 'none'}"
+            )
+        previous_entry = channel_heads.pop()
+        previous_version = previous_entry.removeprefix(prefix)
         if compare_semver(version, previous_version) <= 0:
             raise ValueError(
                 f"release {version} must be newer than {channel} channel version "

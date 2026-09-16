@@ -109,6 +109,8 @@ operator and its OLM bundle image; release automation publishes that bundle
 before the catalog repository references it. The catalog repository publishes
 its `:latest` image from `main`; the Helm chart's `ClusterCatalog` polls that
 mutable image while each catalog entry references an immutable bundle version.
+Catalog promotion follows explicit `replaces` and `skips` edges; `skipRange`
+entries are not supported by the promotion script.
 
 ### Releases
 
