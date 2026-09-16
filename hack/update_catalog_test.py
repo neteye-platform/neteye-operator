@@ -100,22 +100,24 @@ class UpdateCatalogTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be newer"):
             update_catalog(self.catalog_path, "0.1.0-alpha1", image)
 
-    def test_uses_semantic_maximum_as_previous_release(self) -> None:
+    def test_uses_channel_head_as_previous_release(self) -> None:
         image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'2' * 64}"
         catalog = self.catalog_path.read_text(encoding="utf-8")
         catalog = catalog.replace(
             "  - name: neteye-operator.0.2.0-alpha1",
-            "  - name: neteye-operator.0.2.0-alpha2\n"
-            "  - name: neteye-operator.0.2.0-alpha1",
+            "  - name: neteye-operator.0.1.0-alpha9\n"
+            "  - name: neteye-operator.0.1.0-alpha10\n"
+            "    skips:\n"
+            "      - neteye-operator.0.1.0-alpha9",
         )
         self.catalog_path.write_text(catalog, encoding="utf-8")
 
-        update_catalog(self.catalog_path, "0.2.0-alpha3", image)
+        update_catalog(self.catalog_path, "0.1.1-alpha.2", image)
 
         updated = self.catalog_path.read_text(encoding="utf-8")
-        new_entry = updated.split("name: neteye-operator.0.2.0-alpha3", maxsplit=1)[1]
+        new_entry = updated.split("name: neteye-operator.0.1.1-alpha.2", maxsplit=1)[1]
         self.assertTrue(
-            new_entry.startswith("\n    replaces: neteye-operator.0.2.0-alpha2")
+            new_entry.startswith("\n    replaces: neteye-operator.0.1.0-alpha10")
         )
 
 
