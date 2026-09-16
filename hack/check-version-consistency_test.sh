@@ -19,7 +19,7 @@ new_fixture() {
     > "$fixture/src/Makefile"
   printf 'apiVersion: v2\nname: neteye-operator\nversion: %s\n' "$version" \
     > "$fixture/charts/Chart.yaml"
-  printf 'operator:\n  versionRange: ">=%s"\n  channel: %s\nnamespace:\n  operators: neteye-system\n' \
+  printf 'operator:\n  versionRange: "=%s"\n  channel: %s\nnamespace:\n  operators: neteye-system\n' \
     "$version" "$([[ $version == *-* ]] && printf alpha || printf stable)" \
     > "$fixture/charts/values.yaml"
   printf 'annotations:\n  operators.operatorframework.io.bundle.version.v1: %s\n' "$version" \
@@ -87,7 +87,7 @@ sed -i 's/channel: alpha/channel: stable/' "$fixture/charts/values.yaml"
 expect_failure "chart channel mismatch" "operator.channel"
 
 new_fixture
-sed -i 's/>=0.1.0-alpha3/>=0.1.0-alpha2/' "$fixture/charts/values.yaml"
+sed -i 's/=0.1.0-alpha3/=0.1.0-alpha2/' "$fixture/charts/values.yaml"
 expect_failure "chart version range mismatch" "versionRange"
 
 new_fixture

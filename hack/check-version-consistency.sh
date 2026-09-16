@@ -168,7 +168,7 @@ compare_version "bundle metadata annotation" "$annotation_version"
 if [[ -n $mk_version ]]; then
   expected_chart_channel="stable"
   [[ $mk_version == *-* ]] && expected_chart_channel="alpha"
-  expected_chart_version_range=">=$mk_version"
+  expected_chart_version_range="=$mk_version"
 
   if [[ $chart_channel != "$expected_chart_channel" ]]; then
     printf 'error: charts/values.yaml operator.channel = %s (expected %s)\n' \
