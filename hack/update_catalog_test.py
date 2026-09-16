@@ -133,6 +133,35 @@ class UpdateCatalogTest(unittest.TestCase):
             new_entry.startswith("\n    replaces: neteye-operator.0.1.0-alpha10")
         )
 
+    def test_rejects_channel_with_multiple_heads(self) -> None:
+        image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'3' * 64}"
+        catalog = self.catalog_path.read_text(encoding="utf-8")
+        catalog = catalog.replace(
+            "  - name: neteye-operator.0.2.0-alpha1",
+            "  - name: neteye-operator.0.1.0-alpha9\n"
+            "  - name: neteye-operator.0.1.0-alpha10",
+        )
+        self.catalog_path.write_text(catalog, encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "expected exactly one .* channel head"):
+            update_catalog(self.catalog_path, "0.1.1-alpha.2", image)
+
+    def test_rejects_channel_with_no_head(self) -> None:
+        image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'4' * 64}"
+        catalog = self.catalog_path.read_text(encoding="utf-8")
+        catalog = catalog.replace(
+            "  - name: neteye-operator.0.2.0-alpha1",
+            "  - name: neteye-operator.0.1.0-alpha9\n"
+            "  - name: neteye-operator.0.1.0-alpha10\n"
+            "    replaces: neteye-operator.0.1.0-alpha9\n"
+            "    skips:\n"
+            "      - neteye-operator.0.1.0-alpha10",
+        )
+        self.catalog_path.write_text(catalog, encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "found: none"):
+            update_catalog(self.catalog_path, "0.1.1-alpha.2", image)
+
 
 if __name__ == "__main__":
     unittest.main()
