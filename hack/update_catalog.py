@@ -148,6 +148,11 @@ def update_catalog(catalog_path: Path, version: str, bundle_image: str) -> bool:
 
     previous_version = None
     if previous_entries:
+        if re.search(r"^    skipRange:", channel_document, re.MULTILINE):
+            raise ValueError(
+                f"channel {channel} uses unsupported skipRange entries; "
+                "use explicit replaces or skips edges"
+            )
         replaced_entries = set(
             re.findall(r"^    replaces: (\S+)$", channel_document, re.MULTILINE)
         )
