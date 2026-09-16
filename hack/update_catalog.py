@@ -160,7 +160,7 @@ def update_catalog(catalog_path: Path, version: str, bundle_image: str) -> bool:
 
     entry_lines = [f"  - name: {bundle_name}"]
     if previous_version is not None:
-        entry_lines.extend(["    skips:", f"      - {PACKAGE_NAME}.{previous_version}"])
+        entry_lines.append(f"    replaces: {PACKAGE_NAME}.{previous_version}")
     documents[channel_index] = f"{channel_document}\n" + "\n".join(entry_lines)
 
     bundle_document = "\n".join(

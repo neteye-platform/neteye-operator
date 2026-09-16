@@ -49,7 +49,7 @@ class UpdateCatalogTest(unittest.TestCase):
         self.assertTrue(changed)
         updated = self.catalog_path.read_text(encoding="utf-8")
         self.assertIn("name: neteye-operator.0.2.0-alpha2", updated)
-        self.assertIn("- neteye-operator.0.2.0-alpha1", updated)
+        self.assertIn("replaces: neteye-operator.0.2.0-alpha1", updated)
         self.assertIn(f"image: {image}", updated)
         stable_document = updated.split("\n---\n")[1]
         self.assertNotIn("0.2.0-alpha2", stable_document)
@@ -64,7 +64,7 @@ class UpdateCatalogTest(unittest.TestCase):
             "\n---\n"
         )[1]
         self.assertIn("name: neteye-operator.0.2.0", stable_document)
-        self.assertIn("- neteye-operator.0.1.0", stable_document)
+        self.assertIn("replaces: neteye-operator.0.1.0", stable_document)
 
     def test_is_idempotent_for_same_digest(self) -> None:
         image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'d' * 64}"
@@ -115,7 +115,7 @@ class UpdateCatalogTest(unittest.TestCase):
         updated = self.catalog_path.read_text(encoding="utf-8")
         new_entry = updated.split("name: neteye-operator.0.2.0-alpha3", maxsplit=1)[1]
         self.assertTrue(
-            new_entry.startswith("\n    skips:\n      - neteye-operator.0.2.0-alpha2")
+            new_entry.startswith("\n    replaces: neteye-operator.0.2.0-alpha2")
         )
 
 
