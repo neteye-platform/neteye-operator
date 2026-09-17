@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import os
 import re
 import tempfile
+import urllib.request
 from pathlib import Path
 
 PACKAGE_NAME = "neteye-operator"
+NETEYE_LATEST_VERSION_URL = "https://api.neteye.cloud/v2/config/version/latest"
 SEMVER_PATTERN = re.compile(
     r"^(0|[1-9][0-9]*)\."
     r"(0|[1-9][0-9]*)\."
@@ -15,6 +18,10 @@ SEMVER_PATTERN = re.compile(
 )
 BUNDLE_IMAGE_PATTERN = re.compile(
     r"^ghcr\.io/neteye-platform/neteye-operator-bundle@sha256:[0-9a-f]{64}$"
+)
+NIGHTLY_TAG_PATTERN = re.compile(r"^nightly-[0-9a-f]{7,40}$")
+NIGHTLY_IMAGE_PATTERN = re.compile(
+    r"^ghcr\.io/neteye-platform/neteye-operator-bundle:(nightly-[0-9a-f]{7,40})$"
 )
 
 
@@ -82,6 +89,12 @@ def atomic_write(path: Path, content: str) -> None:
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+
+def fetch_latest_neteye_version(url: str = NETEYE_LATEST_VERSION_URL) -> str:
+    with urllib.request.urlopen(url, timeout=10) as response:
+        payload = json.load(response)
+    return re.sub(r"-sr[0-9]+$", "", payload["version"])
 
 
 def update_catalog(catalog_path: Path, version: str, bundle_image: str) -> bool:
@@ -202,18 +215,136 @@ def update_catalog(catalog_path: Path, version: str, bundle_image: str) -> bool:
     return True
 
 
+def update_nightly_channel(
+    catalog_path: Path, bundle_image: str, neteye_version: str
+) -> bool:
+    """Point the rolling nightly-<neteye_version> channel at the newest bundle.
+
+    Unlike `stable`/`alpha`, this is not an upgrade graph: the channel always
+    has exactly one entry (no `replaces` edges). Older nightly bundle
+    documents are kept around (not pruned) for now.
+    """
+    match = NIGHTLY_IMAGE_PATTERN.fullmatch(bundle_image)
+    if not match:
+        raise ValueError(
+            "nightly bundle image must match "
+            f"ghcr.io/neteye-platform/neteye-operator-bundle:nightly-<hash>: {bundle_image}"
+        )
+    tag = match.group(1)
+    if not NIGHTLY_TAG_PATTERN.fullmatch(tag):
+        raise ValueError(f"invalid nightly tag: {tag}")
+
+    channel = f"nightly-{neteye_version}"
+    bundle_name = f"{PACKAGE_NAME}.{tag}"
+    original = catalog_path.read_text(encoding="utf-8")
+    documents = original.rstrip("\n").split("\n---\n")
+
+    channel_indexes = [
+        index
+        for index, document in enumerate(documents)
+        if document_field(document, "schema") == "olm.channel"
+        and document_field(document, "package") == PACKAGE_NAME
+        and document_field(document, "name") == channel
+    ]
+    if len(channel_indexes) > 1:
+        raise ValueError(f"expected at most one {channel} channel document")
+
+    if channel_indexes:
+        channel_index = channel_indexes[0]
+        previous_entries = re.findall(
+            r"^  - name: (\S+)$", documents[channel_index], re.MULTILINE
+        )
+        if previous_entries == [bundle_name]:
+            return False
+        documents[channel_index] = "\n".join(
+            [
+                "schema: olm.channel",
+                f"package: {PACKAGE_NAME}",
+                f"name: {channel}",
+                "entries:",
+                f"  - name: {bundle_name}",
+            ]
+        )
+    else:
+        documents.append(
+            "\n".join(
+                [
+                    "schema: olm.channel",
+                    f"package: {PACKAGE_NAME}",
+                    f"name: {channel}",
+                    "entries:",
+                    f"  - name: {bundle_name}",
+                ]
+            )
+        )
+
+    existing_bundles = [
+        document
+        for document in documents
+        if document_field(document, "schema") == "olm.bundle"
+        and document_field(document, "name") == bundle_name
+    ]
+    if not existing_bundles:
+        bundle_document = "\n".join(
+            [
+                "schema: olm.bundle",
+                f"name: {bundle_name}",
+                f"package: {PACKAGE_NAME}",
+                f"image: {bundle_image}",
+                "properties:",
+                "  - type: olm.gvk",
+                "    value:",
+                "      group: operators.coreos.com",
+                "      kind: ClusterServiceVersion",
+                "      version: v1alpha1",
+                "  - type: olm.package",
+                "    value:",
+                f"      packageName: {PACKAGE_NAME}",
+                f"      version: {tag}",
+            ]
+        )
+        documents.append(bundle_document)
+
+    atomic_write(catalog_path, "\n---\n".join(documents) + "\n")
+    return True
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Add a release to the NetEye OLM catalog"
     )
     parser.add_argument("--catalog", required=True, type=Path)
-    parser.add_argument("--version", required=True)
+    parser.add_argument("--version")
     parser.add_argument("--bundle-image", required=True)
-    return parser.parse_args()
+    parser.add_argument(
+        "--neteye-version",
+        required=False,
+        help=(
+            "NetEye release line the nightly channel is scoped to, e.g. 4.50; "
+            f"defaults to querying {NETEYE_LATEST_VERSION_URL}"
+        ),
+    )
+    parser.add_argument(
+        "--nightly",
+        action="store_true",
+        help="update the rolling nightly channel instead of stable/alpha",
+    )
+    args = parser.parse_args()
+    if not args.nightly and not args.version:
+        parser.error("--version is required unless --nightly is set")
+    return args
 
 
 def main() -> None:
     args = parse_args()
+    if args.nightly:
+        neteye_version = args.neteye_version or fetch_latest_neteye_version()
+        changed = update_nightly_channel(
+            args.catalog, args.bundle_image, neteye_version
+        )
+        status = "updated" if changed else "already current"
+        print(f"nightly-{neteye_version} catalog {status}: {args.bundle_image}")
+        return
     changed = update_catalog(args.catalog, args.version, args.bundle_image)
     status = "updated" if changed else "already current"
     print(f"catalog {status}: {PACKAGE_NAME}.{args.version}")

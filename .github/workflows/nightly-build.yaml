@@ -1,0 +1,251 @@
+name: Nightly Build
+
+on:
+  # schedule:
+  #   - cron: "0 2 * * *"
+  # workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  compute-candidate-tag:
+    name: Compute nightly candidate tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      has-new-commit: ${{ steps.check.outputs.has-new-commit }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # This tag is only used to run the install/update/upgrade e2e
+      # pipelines against; it carries no version meaning. The actual version
+      # bump (from merged PR labels) is only computed by the "Release"
+      # workflow, triggered afterwards once the e2e pipelines pass.
+      #
+      # "new commit" is decided by comparing HEAD against the commit hash
+      # embedded in the most recently published nightly-* package tag
+      # (by creation time), not a tag we maintain ourselves.
+      - name: Check for new commits since the last nightly build
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          head_short="$(git rev-parse --short=12 HEAD)"
+          last_hash="$(gh api "/orgs/${{ github.repository_owner }}/packages/container/neteye-operator/versions?per_page=100" \
+            --jq '[.[] | select(.metadata.container.tags[]? | startswith("nightly-"))]
+                  | sort_by(.created_at)
+                  | last
+                  | (.metadata.container.tags // [])[]
+                  | select(startswith("nightly-"))' \
+            | sed 's/^nightly-//')"
+
+          if [[ "$head_short" == "$last_hash" ]]; then
+            echo "No new commits on main since last nightly build ($head_short)."
+            echo "has-new-commit=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-new-commit=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=nightly-$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+  build-operator:
+    name: Build nightly operator image
+    needs: compute-candidate-tag
+    if: ${{ needs.compute-candidate-tag.outputs.has-new-commit == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish operator image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: src
+          file: src/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/neteye-operator:${{ needs.compute-candidate-tag.outputs.tag }}
+          build-args: VERSION=${{ needs.compute-candidate-tag.outputs.tag }}
+          provenance: mode=max
+          sbom: true
+
+  build-bundle:
+    name: Build nightly bundle image
+    needs: compute-candidate-tag
+    if: ${{ needs.compute-candidate-tag.outputs.has-new-commit == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish bundle image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: src
+          file: src/Dockerfile.bundle
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.tag }}
+          build-args: |
+            VERSION=${{ needs.compute-candidate-tag.outputs.tag }}
+            PACKAGE_NAME=neteye-operator
+          provenance: mode=max
+          sbom: true
+
+  update-nightly-catalog:
+    name: Update nightly catalog channel
+    needs: [compute-candidate-tag, build-operator, build-bundle]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Create catalog read token
+        id: catalog-read-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.NETEYE_APP_ID }}
+          private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: neteye-operator-catalog
+          permission-contents: read
+
+      - name: Checkout operator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: operator
+          ref: main
+          persist-credentials: false
+
+      - name: Checkout catalog
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: neteye-platform/neteye-operator-catalog
+          token: ${{ steps.catalog-read-token.outputs.token }}
+          path: catalog
+          ref: main
+          persist-credentials: false
+
+      - name: Update nightly channel
+        run: |
+          ./operator/hack/update_catalog.py \
+            --catalog ./catalog/catalog/index.yaml \
+            --nightly \
+            --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.tag }}"
+
+      - name: Check catalog changes
+        id: changes
+        working-directory: catalog
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mapfile -t changed_files < <(
+            git status --porcelain=v1 --untracked-files=all | cut -c4-
+          )
+          if [[ ${#changed_files[@]} -ne 1 || ${changed_files[0]} != "catalog/index.yaml" ]]; then
+            echo "error: catalog update modified unexpected files" >&2
+            printf '  %s\n' "${changed_files[@]}" >&2
+            exit 1
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate catalog
+        if: ${{ steps.changes.outputs.changed == 'true' }}
+        run: |
+          docker run --rm \
+            -v "$PWD/catalog/catalog:/configs:ro" \
+            "quay.io/operator-framework/opm:v1.73.0@sha256:e5a6220603fb4504d58c6e3e488386b817e3695c906a62ee0370b5faedc3799a" \
+            validate /configs
+
+      - name: Create catalog write token
+        if: ${{ steps.changes.outputs.changed == 'true' }}
+        id: catalog-write-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.NETEYE_APP_ID }}
+          private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: neteye-operator-catalog
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Create catalog pull request
+        id: catalog-pr
+        if: ${{ steps.changes.outputs.changed == 'true' }}
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.catalog-write-token.outputs.token }}
+          path: catalog
+          add-paths: catalog/index.yaml
+          sign-commits: true
+          commit-message: "chore: nightly ${{ needs.compute-candidate-tag.outputs.tag }}"
+          branch: nightly/neteye-operator-${{ needs.compute-candidate-tag.outputs.tag }}
+          base: main
+          title: "chore: nightly ${{ needs.compute-candidate-tag.outputs.tag }}"
+          body: |
+            Automated nightly catalog update for neteye-operator ${{ needs.compute-candidate-tag.outputs.tag }}.
+
+            Bundle: `ghcr.io/neteye-platform/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.tag }}`
+
+      # NOTE: peter-evans/enable-pull-request-automerge is not yet pinned to a
+      # commit SHA anywhere else in this org - verify/pin it before relying on
+      # this in production. Requires auto-merge to be allowed on the catalog
+      # repo (branch protection / repo settings).
+      - name: Enable auto-merge for the catalog pull request
+        if: ${{ steps.changes.outputs.changed == 'true' }}
+        uses: peter-evans/enable-pull-request-automerge@a660677d5469627102a1c1e11409dd063606628d # v3.0.0
+        with:
+          token: ${{ steps.catalog-write-token.outputs.token }}
+          pull-request-number: ${{ steps.catalog-pr.outputs.pull-request-number }}
+          merge-method: squash
+
+      - name: Report existing nightly build
+        if: ${{ steps.changes.outputs.changed == 'false' }}
+        run: echo "Catalog already up to date for ${{ needs.compute-candidate-tag.outputs.tag }}."
