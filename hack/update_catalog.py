@@ -91,8 +91,8 @@ def atomic_write(path: Path, content: str) -> None:
             temporary_path.unlink(missing_ok=True)
 
 
-def fetch_latest_neteye_version(url: str = NETEYE_LATEST_VERSION_URL) -> str:
-    with urllib.request.urlopen(url, timeout=10) as response:
+def fetch_latest_neteye_version() -> str:
+    with urllib.request.urlopen(NETEYE_LATEST_VERSION_URL, timeout=10) as response:
         payload = json.load(response)
     return re.sub(r"-sr[0-9]+$", "", payload["version"])
 
