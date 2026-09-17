@@ -57,7 +57,8 @@ jobs:
 
           if [[ "$head_short" == "$last_hash" ]]; then
             echo "No new commits on main since last nightly build ($head_short)."
-            echo "has-new-commit=false" >> "$GITHUB_OUTPUT"
+            # TODO: revert once testing is done
+            echo "has-new-commit=true" >> "$GITHUB_OUTPUT"
           else
             echo "has-new-commit=true" >> "$GITHUB_OUTPUT"
           fi

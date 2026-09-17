@@ -9,7 +9,6 @@ import urllib.request
 from pathlib import Path
 
 PACKAGE_NAME = "neteye-operator"
-NETEYE_LATEST_VERSION_URL = "https://api.neteye.cloud/v2/config/version/latest"
 SEMVER_PATTERN = re.compile(
     r"^(0|[1-9][0-9]*)\."
     r"(0|[1-9][0-9]*)\."
@@ -92,7 +91,9 @@ def atomic_write(path: Path, content: str) -> None:
 
 
 def fetch_latest_neteye_version() -> str:
-    with urllib.request.urlopen(NETEYE_LATEST_VERSION_URL, timeout=10) as response:
+    with urllib.request.urlopen(
+        "https://api.neteye.cloud/v2/config/version/latest", timeout=10
+    ) as response:
         payload = json.load(response)
     return re.sub(r"-sr[0-9]+$", "", payload["version"])
 
@@ -321,7 +322,7 @@ def parse_args() -> argparse.Namespace:
         required=False,
         help=(
             "NetEye release line the nightly channel is scoped to, e.g. 4.50; "
-            f"defaults to querying {NETEYE_LATEST_VERSION_URL}"
+            "defaults to querying https://api.neteye.cloud/v2/config/version/latest"
         ),
     )
     parser.add_argument(
