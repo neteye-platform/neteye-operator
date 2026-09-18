@@ -91,6 +91,8 @@ def atomic_write(path: Path, content: str) -> None:
 
 
 def fetch_latest_neteye_version() -> str:
+    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+    # URL is a hardcoded https literal, not attacker-controlled input.
     with urllib.request.urlopen(
         "https://api.neteye.cloud/v2/config/version/latest", timeout=10
     ) as response:
