@@ -60,9 +60,9 @@ jobs:
           labels="$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base main \
             --search "merged:>=${since}" --json labels --jq '.[].labels[].name')"
 
-          bump=patch
-          grep -qx 'feature' <<<"$labels" && bump=minor
-          grep -qx 'major' <<<"$labels" && bump=minor
+          bump="patch"
+          grep -qx 'feature' <<<"$labels" && bump="minor"
+          grep -qx 'major' <<<"$labels" && bump="minor"
 
           IFS='.' read -r major minor patch <<<"$last_version"
           if [[ "$bump" == minor ]]; then
