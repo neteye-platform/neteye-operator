@@ -236,9 +236,7 @@ jobs:
 
             Bundle: `ghcr.io/neteye-platform/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.tag }}`
 
-      # NOTE: peter-evans/enable-pull-request-automerge is not yet pinned to a
-      # commit SHA anywhere else in this org - verify/pin it before relying on
-      # this in production. Requires auto-merge to be allowed on the catalog
+      # Requires auto-merge to be allowed on the catalog
       # repo (branch protection / repo settings).
       - name: Enable auto-merge for the catalog pull request
         if: ${{ steps.changes.outputs.changed == 'true' }}
@@ -247,6 +245,7 @@ jobs:
           token: ${{ steps.catalog-write-token.outputs.token }}
           pull-request-number: ${{ steps.catalog-pr.outputs.pull-request-number }}
           merge-method: squash
+          repository: neteye-operator-catalog
 
       - name: Report existing nightly build
         if: ${{ steps.changes.outputs.changed == 'false' }}
