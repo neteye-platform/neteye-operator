@@ -245,7 +245,7 @@ jobs:
           token: ${{ steps.catalog-write-token.outputs.token }}
           pull-request-number: ${{ steps.catalog-pr.outputs.pull-request-number }}
           merge-method: squash
-          repository: neteye-operator-catalog
+          repository: neteye-platform/neteye-operator-catalog
 
       - name: Report existing nightly build
         if: ${{ steps.changes.outputs.changed == 'false' }}
