@@ -100,6 +100,16 @@ def fetch_latest_neteye_version() -> str:
     return re.sub(r"-sr[0-9]+$", "", payload["version"])
 
 
+def read_operator_version() -> str:
+    makefile_path = Path(__file__).resolve().parent.parent / "src" / "Makefile"
+    match = re.search(
+        r"^VERSION \?= (\S+)$", makefile_path.read_text(encoding="utf-8"), re.MULTILINE
+    )
+    if not match:
+        raise ValueError(f"VERSION not found in {makefile_path}")
+    return match.group(1)
+
+
 def update_catalog(catalog_path: Path, version: str, bundle_image: str) -> bool:
     if not valid_semver(version):
         raise ValueError(f"invalid release version: {version}")
@@ -288,6 +298,10 @@ def update_nightly_channel(
         and document_field(document, "name") == bundle_name
     ]
     if not existing_bundles:
+        # opm requires a valid semver here; the nightly tag itself isn't one,
+        # so keep the operator's current version and append the tag as a
+        # prerelease identifier.
+        pseudo_version = f"{read_operator_version()}-{tag}"
         bundle_document = "\n".join(
             [
                 "schema: olm.bundle",
@@ -303,7 +317,7 @@ def update_nightly_channel(
                 "  - type: olm.package",
                 "    value:",
                 f"      packageName: {PACKAGE_NAME}",
-                f"      version: {tag}",
+                f"      version: {pseudo_version}",
             ]
         )
         documents.append(bundle_document)
