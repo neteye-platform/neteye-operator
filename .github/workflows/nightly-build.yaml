@@ -40,7 +40,7 @@ jobs:
       # workflow, triggered afterwards once the e2e pipelines pass.
       #
       # "new commit" is decided by comparing HEAD against the commit hash
-      # embedded in the most recently published nightly-* package tag
+      # embedded in the most recently published versioned nightly package tag
       # (by creation time), not a tag we maintain ourselves.
       - name: Check for new commits since the last nightly build
         id: check
@@ -49,12 +49,13 @@ jobs:
         run: |
           head_short="$(git rev-parse --short=12 HEAD)"
           last_hash="$(gh api "/orgs/${{ github.repository_owner }}/packages/container/neteye-operator/versions?per_page=100" \
-            --jq '[.[] | select(.metadata.container.tags[]? | startswith("nightly-"))]
+            --jq '[.[] | select(.metadata.container.tags[]? | test("-nightly-[0-9a-f]+$"))]
                   | sort_by(.created_at)
                   | last
                   | (.metadata.container.tags // [])[]
-                  | select(startswith("nightly-"))' \
-            | sed 's/^nightly-//')"
+              | select(test("-nightly-[0-9a-f]+$"))
+              | capture("-nightly-(?<hash>[0-9a-f]+)$").hash' \
+            | head -n 1)"
 
           if [[ "$head_short" == "$last_hash" ]]; then
             echo "No new commits on main since last nightly build ($head_short)."
@@ -100,9 +101,8 @@ jobs:
           file: src/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/neteye-operator:${{ needs.compute-candidate-tag.outputs.tag }}
             ghcr.io/${{ github.repository_owner }}/neteye-operator:${{ needs.compute-candidate-tag.outputs.version-tag }}
-          build-args: VERSION=${{ needs.compute-candidate-tag.outputs.tag }}
+          build-args: VERSION=${{ needs.compute-candidate-tag.outputs.version-tag }}
           provenance: mode=max
           sbom: true
 
@@ -138,10 +138,9 @@ jobs:
           file: src/Dockerfile.bundle
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.tag }}
             ghcr.io/${{ github.repository_owner }}/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.version-tag }}
           build-args: |
-            VERSION=${{ needs.compute-candidate-tag.outputs.tag }}
+            VERSION=${{ needs.compute-candidate-tag.outputs.version-tag }}
             PACKAGE_NAME=neteye-operator
           provenance: mode=max
           sbom: true
@@ -186,7 +185,7 @@ jobs:
           ./operator/hack/update_catalog.py \
             --catalog ./catalog/catalog/index.yaml \
             --nightly \
-            --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.tag }}"
+            --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.version-tag }}"
 
       - name: Check catalog changes
         id: changes
@@ -242,7 +241,7 @@ jobs:
           body: |
             Automated nightly catalog update for neteye-operator ${{ needs.compute-candidate-tag.outputs.tag }}.
 
-            Bundle: `ghcr.io/neteye-platform/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.tag }}`
+            Bundle: `ghcr.io/neteye-platform/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.version-tag }}`
 
       # Requires auto-merge to be allowed on the catalog
       # repo (branch protection / repo settings).

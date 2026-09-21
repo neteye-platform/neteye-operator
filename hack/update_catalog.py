@@ -18,9 +18,9 @@ SEMVER_PATTERN = re.compile(
 BUNDLE_IMAGE_PATTERN = re.compile(
     r"^ghcr\.io/neteye-platform/neteye-operator-bundle@sha256:[0-9a-f]{64}$"
 )
-NIGHTLY_TAG_PATTERN = re.compile(r"^nightly-[0-9a-f]{7,40}$")
+NIGHTLY_TAG_PATTERN = re.compile(r"^(?P<version>.+)-nightly-(?P<hash>[0-9a-f]{7,40})$")
 NIGHTLY_IMAGE_PATTERN = re.compile(
-    r"^ghcr\.io/neteye-platform/neteye-operator-bundle:(nightly-[0-9a-f]{7,40})$"
+    r"^ghcr\.io/neteye-platform/neteye-operator-bundle:(.+-nightly-[0-9a-f]{7,40})$"
 )
 
 
@@ -232,20 +232,17 @@ def update_catalog(catalog_path: Path, version: str, bundle_image: str) -> bool:
 def update_nightly_channel(
     catalog_path: Path, bundle_image: str, neteye_version: str
 ) -> bool:
-    """Point the rolling nightly-<neteye_version> channel at the newest bundle.
-
-    Unlike `stable`/`alpha`, this is not an upgrade graph: the channel always
-    has exactly one entry (no `replaces` edges). Older nightly bundle
-    documents are kept around (not pruned) for now.
-    """
+    """Append the newest bundle to the nightly-<neteye_version> channel."""
     match = NIGHTLY_IMAGE_PATTERN.fullmatch(bundle_image)
     if not match:
         raise ValueError(
             "nightly bundle image must match "
-            f"ghcr.io/neteye-platform/neteye-operator-bundle:nightly-<hash>: {bundle_image}"
+            "ghcr.io/neteye-platform/neteye-operator-bundle:<version>-nightly-<hash>: "
+            f"{bundle_image}"
         )
     tag = match.group(1)
-    if not NIGHTLY_TAG_PATTERN.fullmatch(tag):
+    tag_match = NIGHTLY_TAG_PATTERN.fullmatch(tag)
+    if not tag_match or not valid_semver(tag_match.group("version")):
         raise ValueError(f"invalid nightly tag: {tag}")
 
     channel = f"nightly-{neteye_version}"
@@ -270,14 +267,19 @@ def update_nightly_channel(
         )
         if previous_entries == [bundle_name]:
             return False
-        documents[channel_index] = "\n".join(
-            [
-                "schema: olm.channel",
-                f"package: {PACKAGE_NAME}",
-                f"name: {channel}",
-                "entries:",
-                f"  - name: {bundle_name}",
-            ]
+        new_entry_lines = [
+            f"  - name: {bundle_name}",
+            f"    replaces: {previous_entries[-1]}",
+        ]
+        if len(previous_entries) > 1:
+            new_entry_lines.extend(
+                [
+                    "    skips:",
+                    *[f"      - {entry}" for entry in previous_entries[:-1]],
+                ]
+            )
+        documents[channel_index] = (
+            documents[channel_index].rstrip("\n") + "\n" + "\n".join(new_entry_lines)
         )
     else:
         documents.append(
@@ -299,10 +301,6 @@ def update_nightly_channel(
         and document_field(document, "name") == bundle_name
     ]
     if not existing_bundles:
-        # opm requires a valid semver here; the nightly tag itself isn't one,
-        # so keep the operator's current version and append the tag as a
-        # prerelease identifier.
-        pseudo_version = f"{read_operator_version()}-{tag}"
         bundle_document = "\n".join(
             [
                 "schema: olm.bundle",
@@ -318,7 +316,7 @@ def update_nightly_channel(
                 "  - type: olm.package",
                 "    value:",
                 f"      packageName: {PACKAGE_NAME}",
-                f"      version: {pseudo_version}",
+                f"      version: {tag}",
             ]
         )
         documents.append(bundle_document)

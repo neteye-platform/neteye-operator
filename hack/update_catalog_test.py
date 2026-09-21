@@ -173,39 +173,57 @@ class UpdateNightlyChannelTest(unittest.TestCase):
         )
 
     def test_creates_nightly_channel_when_absent(self) -> None:
-        image = "ghcr.io/neteye-platform/neteye-operator-bundle:nightly-abc1234"
+        image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-abc1234"
 
         changed = update_nightly_channel(self.catalog_path, image, "4.50")
 
         self.assertTrue(changed)
         updated = self.catalog_path.read_text(encoding="utf-8")
         self.assertIn("name: nightly-4.50", updated)
-        self.assertIn("name: neteye-operator.nightly-abc1234", updated)
+        self.assertIn("name: neteye-operator.0.2.0-alpha1-nightly-abc1234", updated)
 
     def test_replaces_previous_nightly_head_but_keeps_old_bundle(self) -> None:
-        first_image = "ghcr.io/neteye-platform/neteye-operator-bundle:nightly-abc1234"
+        first_image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-abc1234"
         update_nightly_channel(self.catalog_path, first_image, "4.50")
-        second_image = "ghcr.io/neteye-platform/neteye-operator-bundle:nightly-def5678"
+        second_image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-def5678"
 
         changed = update_nightly_channel(self.catalog_path, second_image, "4.50")
 
         self.assertTrue(changed)
         updated = self.catalog_path.read_text(encoding="utf-8")
         # old bundle document is kept (no pruning), just no longer the channel head
-        self.assertIn("name: neteye-operator.nightly-abc1234", updated)
-        self.assertIn("name: neteye-operator.nightly-def5678", updated)
+        self.assertIn("name: neteye-operator.0.2.0-alpha1-nightly-abc1234", updated)
+        self.assertIn("name: neteye-operator.0.2.0-alpha1-nightly-def5678", updated)
         nightly_channel = next(
             document
             for document in updated.split("\n---\n")
             if "name: nightly-4.50" in document and "schema: olm.channel" in document
         )
-        self.assertNotIn("nightly-abc1234", nightly_channel)
-        self.assertIn("nightly-def5678", nightly_channel)
-        # nightly channels have no upgrade edges, just the single current entry
-        self.assertNotIn("replaces:", nightly_channel)
+        self.assertIn("0.2.0-alpha1-nightly-abc1234", nightly_channel)
+        self.assertIn("0.2.0-alpha1-nightly-def5678", nightly_channel)
+        self.assertIn(
+            "replaces: neteye-operator.0.2.0-alpha1-nightly-abc1234",
+            nightly_channel,
+        )
+
+        third_image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-789abcd"
+        update_nightly_channel(self.catalog_path, third_image, "4.50")
+        updated = self.catalog_path.read_text(encoding="utf-8")
+        nightly_channel = next(
+            document
+            for document in updated.split("\n---\n")
+            if "name: nightly-4.50" in document and "schema: olm.channel" in document
+        )
+        self.assertIn(
+            "replaces: neteye-operator.0.2.0-alpha1-nightly-def5678",
+            nightly_channel,
+        )
+        self.assertIn(
+            "      - neteye-operator.0.2.0-alpha1-nightly-abc1234", nightly_channel
+        )
 
     def test_scopes_channel_to_neteye_release_line(self) -> None:
-        image = "ghcr.io/neteye-platform/neteye-operator-bundle:nightly-abc1234"
+        image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-abc1234"
 
         update_nightly_channel(self.catalog_path, image, "4.50")
         changed = update_nightly_channel(self.catalog_path, image, "4.51")
@@ -216,7 +234,7 @@ class UpdateNightlyChannelTest(unittest.TestCase):
         self.assertIn("name: nightly-4.51", updated)
 
     def test_is_idempotent_for_same_tag(self) -> None:
-        image = "ghcr.io/neteye-platform/neteye-operator-bundle:nightly-abc1234"
+        image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-abc1234"
         update_nightly_channel(self.catalog_path, image, "4.50")
 
         changed = update_nightly_channel(self.catalog_path, image, "4.50")
@@ -228,6 +246,14 @@ class UpdateNightlyChannelTest(unittest.TestCase):
             update_nightly_channel(
                 self.catalog_path,
                 "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha2",
+                "4.50",
+            )
+
+    def test_rejects_unversioned_nightly_image(self) -> None:
+        with self.assertRaisesRegex(ValueError, "nightly bundle image must match"):
+            update_nightly_channel(
+                self.catalog_path,
+                "ghcr.io/neteye-platform/neteye-operator-bundle:nightly-abc1234",
                 "4.50",
             )
 
