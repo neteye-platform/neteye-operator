@@ -13,7 +13,6 @@ repos:
       - id: check-yaml
         args:
           - --allow-multiple-documents
-        exclude: ^charts/templates/
       - id: check-xml
       - id: mixed-line-ending
       - id: check-symlinks
@@ -109,7 +108,7 @@ repos:
         name: version-consistency
         entry: hack/check-version-consistency.sh
         language: script
-        files: ^(hack/check-version-consistency\.sh|src/Makefile|charts/.+\.yaml|src/bundle/(manifests/.+\.clusterserviceversion|metadata/annotations)\.yaml)$
+        files: ^(hack/check-version-consistency\.sh|src/Makefile|src/bundle/(manifests/.+\.clusterserviceversion|metadata/annotations)\.yaml)$
         pass_filenames: false
       - id: version-consistency-tests
         name: version-consistency-tests
