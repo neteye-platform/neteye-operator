@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New SemVer version to release, e.g. 0.2.0. Leave empty to auto-derive from merged PR labels since the last release."
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  bump-and-tag:
+    name: Bump version and push release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Create write token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.NETEYE_APP_ID }}
+          private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: neteye-operator
+          permission-contents: write
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.release-token.outputs.token }}
+
+      # - name: Configure git identity
+      #   run: |
+      #     git config user.name "neteye-bot"
+      #     git config user.email "neteye-bot@users.noreply.github.com"
+
+      # Bump type is derived from the labels of PRs merged to main since the
+      # last stable release tag: "feature" -> minor, everything else
+      # (bugfix/dependencies/major/unlabeled) -> patch, except "feature"
+      # which bumps minor. Major bumps are treated as minor for now instead
+      # of requiring a human release.
+      - name: Determine version
+        id: version
+        if: ${{ inputs.version == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)"
+          if [[ -z "$last_tag" ]]; then
+            echo "error: no previous stable release tag found" >&2
+            exit 1
+          fi
+          last_version="${last_tag#v}"
+          since="$(git log -1 --format=%aI "$last_tag")"
+
+          labels="$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base main \
+            --search "merged:>=${since}" --json labels --jq '.[].labels[].name')"
+
+          bump="patch"
+          grep -qx 'feature' <<<"$labels" && bump="minor"
+          grep -qx 'major' <<<"$labels" && bump="minor"
+
+          IFS='.' read -r major minor patch <<<"$last_version"
+          if [[ "$bump" == minor ]]; then
+            version="${major}.$((minor + 1)).0"
+          else
+            version="${major}.${minor}.$((patch + 1))"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version and create tag
+        env:
+          VERSION: ${{ inputs.version != '' && inputs.version || steps.version.outputs.version }}
+        run: ./hack/bump-version.sh "$VERSION" --tag
+
+      - name: Push commit and tag
+        env:
+          VERSION: ${{ inputs.version != '' && inputs.version || steps.version.outputs.version }}
+        run: git push origin main "v$VERSION"
