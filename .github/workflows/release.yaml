@@ -50,8 +50,10 @@ jobs:
 
       - name: Resolve version input
         id: input
+        env:
+          VERSION_INPUT: ${{ inputs.version || github.event.client_payload.version || '' }}
         run: |
-          echo "version=${{ inputs.version || github.event.client_payload.version || '' }}" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION_INPUT" >> "$GITHUB_OUTPUT"
 
       # Bump type is derived from the labels of PRs merged to main since the
       # last stable release tag: "feature" -> minor, everything else
@@ -93,27 +95,29 @@ jobs:
         id: push
         env:
           GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
           VERSION: ${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
         run: |
           ./hack/bump-version.sh "$VERSION"
           git add -A
           git commit -m "chore: bump version to $VERSION"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" HEAD:main
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Create signed release tag
         env:
           GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
           VERSION: ${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
         run: |
           # created via the Git Data API with no custom tagger, so GitHub
           # bot-signs it on the App's behalf and shows it as Verified
-          tag_sha="$(gh api "repos/${{ github.repository }}/git/tags" \
+          tag_sha="$(gh api "repos/${REPOSITORY}/git/tags" \
             -f tag="v$VERSION" \
             -f message="v$VERSION" \
             -f object="${{ steps.push.outputs.sha }}" \
             -f type=commit \
             --jq .sha)"
-          gh api "repos/${{ github.repository }}/git/refs" \
+          gh api "repos/${REPOSITORY}/git/refs" \
             -f ref="refs/tags/v$VERSION" \
             -f sha="$tag_sha"
