@@ -25,6 +25,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: neteye-operator
           permission-contents: write
+          permission-pull-requests: write
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -74,12 +75,51 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Bump version and create tag
+      - name: Bump version
         env:
           VERSION: ${{ inputs.version != '' && inputs.version || steps.version.outputs.version }}
-        run: ./hack/bump-version.sh "$VERSION" --tag
+        run: ./hack/bump-version.sh "$VERSION"
 
-      - name: Push commit and tag
+      - name: Open release pull request
+        id: pr
         env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
           VERSION: ${{ inputs.version != '' && inputs.version || steps.version.outputs.version }}
-        run: git push origin main "v$VERSION"
+        run: |
+          branch="release-version-$VERSION"
+          git checkout -b "$branch"
+          git add -A
+          git commit -m "chore: bump version to $VERSION"
+          git push origin "$branch"
+          url="$(gh pr create --base main --head "$branch" \
+            --title "chore: release v$VERSION" \
+            --body "Automated release of v$VERSION.")"
+          echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Merge release pull request
+        id: merge
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+        run: |
+          # --admin bypasses required reviews/checks; the App must be on the
+          # target branch ruleset's bypass list for this to succeed
+          gh pr merge "${{ steps.pr.outputs.number }}" --squash --admin --delete-branch
+          sha="$(gh pr view "${{ steps.pr.outputs.number }}" --json mergeCommit --jq .mergeCommit.oid)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Create signed release tag
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          VERSION: ${{ inputs.version != '' && inputs.version || steps.version.outputs.version }}
+        run: |
+          # created via the Git Data API with no custom tagger, so GitHub
+          # bot-signs it on the App's behalf and shows it as Verified
+          tag_sha="$(gh api "repos/${{ github.repository }}/git/tags" \
+            -f tag="v$VERSION" \
+            -f message="v$VERSION" \
+            -f object="${{ steps.merge.outputs.sha }}" \
+            -f type=commit \
+            --jq .sha)"
+          gh api "repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/tags/v$VERSION" \
+            -f sha="$tag_sha"
