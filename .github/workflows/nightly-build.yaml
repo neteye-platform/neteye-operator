@@ -268,7 +268,9 @@ jobs:
           done
 
           gh pr checks "$pr_number" --repo "$repo" --watch --interval 30 --fail-fast
-          gh pr merge "$pr_number" --repo "$repo" --squash --delete-branch
+          # --admin bypasses the base branch protection merge restriction; the
+          # automation is a configured bypass actor, checks above already gate the merge.
+          gh pr merge "$pr_number" --repo "$repo" --squash --delete-branch --admin
 
       - name: Report existing nightly build
         if: ${{ steps.changes.outputs.changed == 'false' }}
