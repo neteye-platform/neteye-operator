@@ -33,10 +33,10 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.release-token.outputs.token }}
 
-      - name: Configure git identity
-        run: |
-          git config user.name "neteye-bot"
-          git config user.email "neteye-bot@users.noreply.github.com"
+      # - name: Configure git identity
+      #   run: |
+      #     git config user.name "neteye-bot"
+      #     git config user.email "neteye-bot@users.noreply.github.com"
 
       # Bump type is derived from the labels of PRs merged to main since the
       # last stable release tag: "feature" -> minor, everything else
