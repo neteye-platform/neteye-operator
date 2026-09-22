@@ -1,0 +1,50 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: neteye-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: neteye-tenant-shared
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keycloak-system
+---
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterCatalog
+metadata:
+  name: neteye-catalog
+  labels:
+    olm.operatorframework.io/metadata.name: neteye-catalog
+spec:
+  source:
+    type: Image
+    image:
+      ref: ghcr.io/neteye-platform/neteye-operator-catalog:latest
+      pollIntervalMinutes: 10
+---
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterExtension
+metadata:
+  name: neteye-operator
+spec:
+  namespace: neteye-system
+  source:
+    sourceType: Catalog
+    catalog:
+      packageName: neteye-operator
+      channels:
+        - stable
+      version: ">=1.0.0"
+      upgradeConstraintPolicy: CatalogProvided
+      selector:
+        matchLabels:
+          olm.operatorframework.io/metadata.name: neteye-catalog
+  install:
+    preflight:
+      crdUpgradeSafety:
+        enforcement: Strict

@@ -29,26 +29,19 @@ documentation, licensing, and support, see Würth IT Italy:
 
 ## Install
 
-The operator is packaged for OLM. The Helm chart under `charts/` registers
-the operator's `ClusterCatalog` and `ClusterExtension` (and any dependent
-operator catalogs):
+The operator is packaged for OLM. To install it, first create a `ClusterCatalog`
+that references the `neteye-operator-catalog:latest` image from the separate
+catalog repository (`neteye-platform/neteye-operator-catalog`), the
+`neteye-operator` `ClusterExtension`, and required namespaces. An example
+`install.yaml` is provided in `examples/` for convenience. Apply it with:
 
 ```sh
-helm install neteye-operator ./charts \
-  --namespace neteye-system --create-namespace
+kubectl apply -f ./examples/install.yaml
 ```
 
-Set the catalog image and channel in `charts/values.yaml` before
-installing. Once the operator is running, create a `NetEye` resource to
+Once the operator is running, create a `NetEye` resource to
 describe your deployment — see the API types in `src/api/v1alpha1/` and the
 generated CRD under `src/bundle/manifests/`.
-
-The chart creates `keycloak-system` for the Keycloak Operator and
-`neteye-tenant-shared` for the shared Keycloak workload; pre-existing
-namespaces are left untouched. The Keycloak instance, its TLS Certificate,
-HTTPRoute, and NetworkPolicy always run in `neteye-tenant-shared`, regardless
-of the `NetEye` resource namespace. Its database credential Secrets and
-cert-manager Issuer must therefore exist in `neteye-tenant-shared`.
 
 ## Development
 
@@ -107,10 +100,7 @@ The file-based OLM catalog and its catalog image build are maintained in the
 separate `neteye-operator-catalog` repository. This repository builds the
 operator and its OLM bundle image; release automation publishes that bundle
 before the catalog repository references it. The catalog repository publishes
-its `:latest` image from `main`; the Helm chart's `ClusterCatalog` polls that
-mutable image while each catalog entry references an immutable bundle version.
-Catalog promotion follows explicit `replaces` and `skips` edges; `skipRange`
-entries are not supported by the promotion script.
+its `:latest` image from `main`.
 
 ### Releases
 
@@ -118,9 +108,7 @@ Releases are prepared in a pull request and published from an annotated SemVer
 tag. The tagged commit must be reachable from `main` or from the matching
 `release/<major>.<minor>` branch derived from the tag. For example, `v1.2.4`
 may be published from `main` or `release/1.2`, but not from another release
-train. Update `VERSION` in `src/Makefile`, `version` in `charts/Chart.yaml`, and
-the chart's operator `versionRange` and `channel` in `charts/values.yaml`, then
-regenerate the bundle:
+train. Update `VERSION` in `src/Makefile` then regenerate the bundle:
 
 ```sh
 make bundle bundle-validate
@@ -167,13 +155,13 @@ Pre-commit hooks are configured in `.pre-commit-config.yaml` (run via
 
 ```text
 src/
-  api/v1alpha1/      # NetEye CRD types + validating webhook
-  controllers/       # NetEye reconciler
+  api/*/             # NetEye CRD types + validating webhook
+  controllers/       # NetEye reconcilers
   internal/
-    keycloak/        # shared Keycloak component (ClusterExtension + instance)
     resources/       # generic apply / ownership / readiness helpers
+    ...              # other internal packages / operator components
   bundle/            # OLM bundle built from this operator's API
-charts/              # Helm chart (installs the operator via OLM)
+examples/            # example of operator installation
 ```
 
 ## License
