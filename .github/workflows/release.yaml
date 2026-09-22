@@ -6,6 +6,10 @@ on:
       version:
         description: "New SemVer version to release, e.g. 0.2.0. Leave empty to auto-derive from merged PR labels since the last release."
         required: false
+  # fired by PAC's own GitHub Check Run for the "e2e" PipelineRun; no
+  # dispatch call from Tekton needed
+  check_run:
+    types: [completed]
 
 permissions:
   contents: read
@@ -15,6 +19,12 @@ jobs:
     name: Bump version and push release tag
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # only proceed for a manual dispatch, or a successful "e2e" check on main
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.check_run.name == 'e2e' &&
+       github.event.check_run.conclusion == 'success' &&
+       github.event.check_run.check_suite.head_branch == 'main')
     steps:
       - name: Create write token
         id: release-token
@@ -25,19 +35,23 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: neteye-operator
           permission-contents: write
-          permission-pull-requests: write
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ steps.release-token.outputs.token }}
+          persist-credentials: false
 
       - name: Configure git identity
         run: |
           git config user.name "Davide Sbetti"
           git config user.email "WN00188966@wgs.wuerth.com"
+
+      - name: Resolve version input
+        id: input
+        run: |
+          echo "version=${{ inputs.version || github.event.client_payload.version || '' }}" >> "$GITHUB_OUTPUT"
 
       # Bump type is derived from the labels of PRs merged to main since the
       # last stable release tag: "feature" -> minor, everything else
@@ -46,7 +60,7 @@ jobs:
       # of requiring a human release.
       - name: Determine version
         id: version
-        if: ${{ inputs.version == '' }}
+        if: ${{ steps.input.outputs.version == '' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -75,49 +89,29 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Bump version
-        env:
-          VERSION: ${{ inputs.version != '' && inputs.version || steps.version.outputs.version }}
-        run: ./hack/bump-version.sh "$VERSION"
-
-      - name: Open release pull request
-        id: pr
+      - name: Bump version, commit and push
+        id: push
         env:
           GH_TOKEN: ${{ steps.release-token.outputs.token }}
-          VERSION: ${{ inputs.version != '' && inputs.version || steps.version.outputs.version }}
+          VERSION: ${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
         run: |
-          branch="release-version-$VERSION"
-          git checkout -b "$branch"
+          ./hack/bump-version.sh "$VERSION"
           git add -A
           git commit -m "chore: bump version to $VERSION"
-          git push origin "$branch"
-          url="$(gh pr create --base main --head "$branch" \
-            --title "chore: release v$VERSION" \
-            --body "Automated release of v$VERSION.")"
-          echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
-
-      - name: Merge release pull request
-        id: merge
-        env:
-          GH_TOKEN: ${{ steps.release-token.outputs.token }}
-        run: |
-          # --admin bypasses required reviews/checks; the App must be on the
-          # target branch ruleset's bypass list for this to succeed
-          gh pr merge "${{ steps.pr.outputs.number }}" --squash --admin --delete-branch
-          sha="$(gh pr view "${{ steps.pr.outputs.number }}" --json mergeCommit --jq .mergeCommit.oid)"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Create signed release tag
         env:
           GH_TOKEN: ${{ steps.release-token.outputs.token }}
-          VERSION: ${{ inputs.version != '' && inputs.version || steps.version.outputs.version }}
+          VERSION: ${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
         run: |
           # created via the Git Data API with no custom tagger, so GitHub
           # bot-signs it on the App's behalf and shows it as Verified
           tag_sha="$(gh api "repos/${{ github.repository }}/git/tags" \
             -f tag="v$VERSION" \
             -f message="v$VERSION" \
-            -f object="${{ steps.merge.outputs.sha }}" \
+            -f object="${{ steps.push.outputs.sha }}" \
             -f type=commit \
             --jq .sha)"
           gh api "repos/${{ github.repository }}/git/refs" \

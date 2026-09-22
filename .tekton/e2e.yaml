@@ -1,0 +1,167 @@
+---
+# Manually chained from nightly-build.yaml (last step of update-nightly-catalog
+# fires this via the PAC incoming webhook). Requires, in the target
+# cluster/namespace (not managed here):
+#   - Repository CR with an `incoming` entry targeting branch "main"
+#   - Secret referenced by that entry (the shared incoming-webhook secret)
+#   - A ServiceAccount for this PipelineRun with RBAC to create/get
+#     PipelineRuns in the "rd-neteye-pipeline" namespace (where the real
+#     neteye-operator-install/-update/-upgrade Pipelines from
+#     si-rd-tekton-pipelines are deployed)
+#
+# Only the "install" e2e pipeline is wired up so far; add "update" and
+# "upgrade" as additional tasks the same way once validated - each needs its
+# own params block since their target Pipelines take different params.
+# Release itself stays a GitHub Actions workflow (.github/workflows/release.yaml),
+# triggered directly by its `check_run: completed` handler reacting to the
+# GitHub Check Run PAC reports for this PipelineRun (named "e2e") - no
+# dispatch call needed from here.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: e2e
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[incoming]"
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  params:
+    - name: operator-nightly-tag
+      value: ""
+    - name: tekton-namespace
+      value: rd-neteye-pipeline
+    - name: neteye-revision
+      value: develop
+    - name: retry-until-hour-utc
+      value: "06"
+    - name: retry-interval-seconds
+      value: "300"
+  pipelineSpec:
+    params:
+      - name: operator-nightly-tag
+        type: string
+      - name: tekton-namespace
+        type: string
+        default: rd-neteye-pipeline
+      - name: neteye-revision
+        type: string
+        default: develop
+      - name: retry-until-hour-utc
+        type: string
+        default: "06"
+      - name: retry-interval-seconds
+        type: string
+        default: "300"
+    tasks:
+      - name: install
+        params:
+          - name: operator-nightly-tag
+            value: $(params.operator-nightly-tag)
+          - name: tekton-namespace
+            value: $(params.tekton-namespace)
+          - name: neteye-revision
+            value: $(params.neteye-revision)
+          - name: retry-until-hour-utc
+            value: $(params.retry-until-hour-utc)
+          - name: retry-interval-seconds
+            value: $(params.retry-interval-seconds)
+        taskSpec:
+          params:
+            - name: operator-nightly-tag
+              type: string
+            - name: tekton-namespace
+              type: string
+            - name: neteye-revision
+              type: string
+            - name: retry-until-hour-utc
+              type: string
+            - name: retry-interval-seconds
+              type: string
+          steps:
+            - name: run-until-cutoff
+              image: ghcr.io/witglobal/oc-cli-tools:1.1.0@sha256:404155df46f632761680eb70f3473746c4eecb6c55c89dd6b39adf8276ee85a8
+              env:
+                - name: OPERATOR_NIGHTLY_TAG
+                  value: $(params.operator-nightly-tag)
+                - name: NAMESPACE
+                  value: $(params.tekton-namespace)
+                - name: NETEYE_REVISION
+                  value: $(params.neteye-revision)
+                - name: RETRY_UNTIL_HOUR_UTC
+                  value: $(params.retry-until-hour-utc)
+                - name: RETRY_INTERVAL_SECONDS
+                  value: $(params.retry-interval-seconds)
+              script: |
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                retry_cutoff() {
+                  now=$(date -u +%s)
+                  midnight=$(( now - $(date -u +%H)*3600 - $(date -u +%M)*60 - $(date -u +%S) ))
+                  cutoff=$(( midnight + RETRY_UNTIL_HOUR_UTC * 3600 ))
+                  [[ "$now" -ge "$cutoff" ]] && cutoff=$(( cutoff + 86400 ))
+                  echo "$cutoff"
+                }
+
+                cutoff="$(retry_cutoff)"
+                attempt=0
+
+                while :; do
+                  attempt=$((attempt + 1))
+                  name="$(oc create -n "$NAMESPACE" -f - <<EOF | awk -F/ '{print $2}' | awk '{print $1}'
+                  apiVersion: tekton.dev/v1
+                  kind: PipelineRun
+                  metadata:
+                    generateName: e2e-neteye-operator-install-
+                    annotations:
+                      neteye.cloud/operator-nightly-tag: "$OPERATOR_NIGHTLY_TAG"
+                  spec:
+                    pipelineRef:
+                      name: neteye-operator-install
+                    taskRunTemplate:
+                      serviceAccountName: openshift-pipelines
+                    timeouts:
+                      pipeline: "1h0m0s"
+                    workspaces:
+                      - name: sourceCode
+                        volumeClaimTemplate:
+                          spec:
+                            storageClassName: ocs-storagecluster-cephfs-sing-rep
+                            volumeMode: Filesystem
+                            accessModes: ["ReadWriteMany"]
+                            resources:
+                              requests:
+                                storage: 1Gi
+                    params:
+                      - name: neteyeSetupBranch
+                        value: "$NETEYE_REVISION"
+                      - name: operatorChartVersion
+                        value: "$OPERATOR_NIGHTLY_TAG"
+                EOF
+                  )"
+                  echo "Attempt $attempt: created PipelineRun $name"
+
+                  status=""
+                  while [[ -z "$status" ]]; do
+                    conditions="$(tkn pipelinerun describe "$name" -n "$NAMESPACE" -o jsonpath='{.status.conditions[0].status}' 2>/dev/null || true)"
+                    if [[ -n "$conditions" ]]; then
+                      status="$conditions"
+                    else
+                      sleep 3
+                    fi
+                  done
+
+                  if [[ "$status" == "True" ]]; then
+                    echo "Succeeded"
+                    exit 0
+                  fi
+
+                  now="$(date -u +%s)"
+                  if [[ "$now" -ge "$cutoff" ]]; then
+                    echo "Giving up after attempt $attempt: retry cutoff reached"
+                    exit 1
+                  fi
+
+                  echo "Attempt $attempt failed, retrying in ${RETRY_INTERVAL_SECONDS}s"
+                  sleep "$RETRY_INTERVAL_SECONDS"
+                done
