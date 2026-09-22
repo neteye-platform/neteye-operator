@@ -26,6 +26,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.validate.outputs.version }}
+      release-line: ${{ steps.validate.outputs.release-line }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,7 +50,8 @@ jobs:
         run: |
           if [[ "$REF_TYPE" == "tag" ]]; then
             ./hack/check-version-consistency.sh --tag "$REF_NAME"
-            ./hack/check-release-source.sh --tag "$REF_NAME"
+            ./hack/check-release-source.sh --tag "$REF_NAME" | tee /dev/stderr \
+              | grep '^release-line=' >> "$GITHUB_OUTPUT"
           else
             ./hack/check-version-consistency.sh
           fi
@@ -239,11 +241,18 @@ jobs:
         env:
           BUNDLE_DIGEST: ${{ needs.build-bundle.outputs.digest }}
           VERSION: ${{ needs.release-metadata.outputs.version }}
+          RELEASE_LINE: ${{ needs.release-metadata.outputs.release-line }}
         run: |
-          ./operator/hack/update_catalog.py \
-            --catalog ./catalog/catalog/index.yaml \
-            --version "$VERSION" \
+          args=(
+            --catalog ./catalog/catalog/index.yaml
+            --version "$VERSION"
             --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle@$BUNDLE_DIGEST"
+          )
+          # release/* tags only backport bugfixes to channels still on that minor line.
+          if [[ "$RELEASE_LINE" == "release" ]]; then
+            args+=(--backport)
+          fi
+          ./operator/hack/update_catalog.py "${args[@]}"
 
       - name: Check catalog changes
         id: changes

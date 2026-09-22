@@ -149,7 +149,7 @@ jobs:
     name: Update nightly catalog channel
     needs: [compute-candidate-tag, build-operator, build-bundle]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: write
@@ -224,6 +224,7 @@ jobs:
           repositories: neteye-operator-catalog
           permission-contents: write
           permission-pull-requests: write
+          permission-checks: read
 
       - name: Create catalog pull request
         id: catalog-pr
@@ -243,16 +244,17 @@ jobs:
 
             Bundle: `ghcr.io/neteye-platform/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.version-tag }}`
 
-      # Requires auto-merge to be allowed on the catalog
-      # repo (branch protection / repo settings).
-      - name: Enable auto-merge for the catalog pull request
+      - name: Wait for status checks and merge the catalog pull request
         if: ${{ steps.changes.outputs.changed == 'true' }}
-        uses: peter-evans/enable-pull-request-automerge@a660677d5469627102a1c1e11409dd063606628d # v3.0.0
-        with:
-          token: ${{ steps.catalog-write-token.outputs.token }}
-          pull-request-number: ${{ steps.catalog-pr.outputs.pull-request-number }}
-          merge-method: squash
-          repository: neteye-platform/neteye-operator-catalog
+        env:
+          GH_TOKEN: ${{ steps.catalog-write-token.outputs.token }}
+        run: |
+          gh pr checks "${{ steps.catalog-pr.outputs.pull-request-number }}" \
+            --repo neteye-platform/neteye-operator-catalog \
+            --watch --interval 30 --fail-fast
+          gh pr merge "${{ steps.catalog-pr.outputs.pull-request-number }}" \
+            --repo neteye-platform/neteye-operator-catalog \
+            --squash --delete-branch
 
       - name: Report existing nightly build
         if: ${{ steps.changes.outputs.changed == 'false' }}

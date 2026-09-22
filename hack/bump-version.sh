@@ -59,11 +59,6 @@ channel="stable"
 cd "$repo_root"
 
 sed -i -E "s/^VERSION \?= .+$/VERSION ?= ${new_version}/" src/Makefile
-sed -i -E "s/^version: .+$/version: ${new_version}/" charts/Chart.yaml
-sed -i -E "/^operator:/,/^[^ ]/{
-  s/^(  versionRange: ).+$/\1\"=${new_version}\"/
-  s/^(  channel: ).+$/\1${channel}/
-}" charts/values.yaml
 
 make -C src bundle VERSION="${new_version}"
 
