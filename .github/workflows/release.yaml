@@ -49,7 +49,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          last_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)"
+          # git tag --list uses glob matching, not regex, so 'v[0-9]*.[0-9]*.[0-9]*'
+          # also matches prerelease tags like v0.1.1-alpha.3; filter those out.
+          last_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)"
           if [[ -z "$last_tag" ]]; then
             echo "error: no previous stable release tag found" >&2
             exit 1
