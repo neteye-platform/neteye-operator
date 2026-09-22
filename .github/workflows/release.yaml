@@ -35,8 +35,8 @@ jobs:
 
       - name: Configure git identity
         run: |
-          git config user.name "neteye-bot"
-          git config user.email "neteye-bot@users.noreply.github.com"
+          git config user.name "Davide Sbetti"
+          git config user.email "WN00188966@wgs.wuerth.com"
 
       # Bump type is derived from the labels of PRs merged to main since the
       # last stable release tag: "feature" -> minor, everything else
