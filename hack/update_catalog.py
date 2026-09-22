@@ -339,7 +339,11 @@ def update_catalog_backport(
 def update_nightly_channel(
     catalog_path: Path, bundle_image: str, neteye_version: str
 ) -> bool:
-    """Append the newest bundle to the nightly and stable release channels."""
+    """Append the newest bundle to the rolling nightly channel.
+
+    Stable channels only advance when a tagged release is promoted by the
+    build-and-test workflow, never by the nightly build.
+    """
     match = NIGHTLY_IMAGE_PATTERN.fullmatch(bundle_image)
     if not match:
         raise ValueError(
@@ -352,30 +356,28 @@ def update_nightly_channel(
     if not tag_match or not valid_semver(tag_match.group("version")):
         raise ValueError(f"invalid nightly tag: {tag}")
 
-    channels = (f"{neteye_version}-nightly", f"{neteye_version}-stable")
+    channel = f"{neteye_version}-nightly"
     bundle_name = f"{PACKAGE_NAME}.{tag}"
     original = catalog_path.read_text(encoding="utf-8")
     documents = original.rstrip("\n").split("\n---\n")
 
     changed = False
-    for channel in channels:
-        channel_indexes = [
-            index
-            for index, document in enumerate(documents)
-            if document_field(document, "schema") == "olm.channel"
-            and document_field(document, "package") == PACKAGE_NAME
-            and document_field(document, "name") == channel
-        ]
-        if len(channel_indexes) > 1:
-            raise ValueError(f"expected at most one {channel} channel document")
+    channel_indexes = [
+        index
+        for index, document in enumerate(documents)
+        if document_field(document, "schema") == "olm.channel"
+        and document_field(document, "package") == PACKAGE_NAME
+        and document_field(document, "name") == channel
+    ]
+    if len(channel_indexes) > 1:
+        raise ValueError(f"expected at most one {channel} channel document")
 
-        if channel_indexes:
-            channel_index = channel_indexes[0]
-            previous_entries = re.findall(
-                r"^  - name: (\S+)$", documents[channel_index], re.MULTILINE
-            )
-            if previous_entries == [bundle_name]:
-                continue
+    if channel_indexes:
+        channel_index = channel_indexes[0]
+        previous_entries = re.findall(
+            r"^  - name: (\S+)$", documents[channel_index], re.MULTILINE
+        )
+        if previous_entries != [bundle_name]:
             new_entry_lines = [
                 f"  - name: {bundle_name}",
                 f"    replaces: {previous_entries[-1]}",
@@ -392,18 +394,19 @@ def update_nightly_channel(
                 + "\n"
                 + "\n".join(new_entry_lines)
             )
-        else:
-            documents.append(
-                "\n".join(
-                    [
-                        "schema: olm.channel",
-                        f"package: {PACKAGE_NAME}",
-                        f"name: {channel}",
-                        "entries:",
-                        f"  - name: {bundle_name}",
-                    ]
-                )
+            changed = True
+    else:
+        documents.append(
+            "\n".join(
+                [
+                    "schema: olm.channel",
+                    f"package: {PACKAGE_NAME}",
+                    f"name: {channel}",
+                    "entries:",
+                    f"  - name: {bundle_name}",
+                ]
             )
+        )
         changed = True
 
     existing_bundles = [

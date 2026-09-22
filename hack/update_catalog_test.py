@@ -250,7 +250,7 @@ class UpdateNightlyChannelTest(unittest.TestCase):
             CATALOG.format(old_digest="a" * 64), encoding="utf-8"
         )
 
-    def test_creates_nightly_and_stable_channels_when_absent(self) -> None:
+    def test_creates_nightly_channel_when_absent(self) -> None:
         image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-abc1234"
 
         changed = update_nightly_channel(self.catalog_path, image, "4.50")
@@ -258,7 +258,7 @@ class UpdateNightlyChannelTest(unittest.TestCase):
         self.assertTrue(changed)
         updated = self.catalog_path.read_text(encoding="utf-8")
         self.assertIn("name: 4.50-nightly", updated)
-        self.assertIn("name: 4.50-stable", updated)
+        self.assertNotIn("name: 4.50-stable", updated)
         self.assertIn("name: neteye-operator.0.2.0-alpha1-nightly-abc1234", updated)
 
     def test_replaces_previous_nightly_head_but_keeps_old_bundle(self) -> None:
@@ -276,10 +276,9 @@ class UpdateNightlyChannelTest(unittest.TestCase):
         channels = [
             document
             for document in updated.split("\n---\n")
-            if "schema: olm.channel" in document
-            and ("name: 4.50-nightly" in document or "name: 4.50-stable" in document)
+            if "schema: olm.channel" in document and "name: 4.50-nightly" in document
         ]
-        self.assertEqual(len(channels), 2)
+        self.assertEqual(len(channels), 1)
         for channel in channels:
             self.assertIn("0.2.0-alpha1-nightly-abc1234", channel)
             self.assertIn("0.2.0-alpha1-nightly-def5678", channel)
@@ -313,9 +312,9 @@ class UpdateNightlyChannelTest(unittest.TestCase):
         self.assertTrue(changed)
         updated = self.catalog_path.read_text(encoding="utf-8")
         self.assertIn("name: 4.50-nightly", updated)
-        self.assertIn("name: 4.50-stable", updated)
         self.assertIn("name: 4.51-nightly", updated)
-        self.assertIn("name: 4.51-stable", updated)
+        self.assertNotIn("name: 4.50-stable", updated)
+        self.assertNotIn("name: 4.51-stable", updated)
 
     def test_is_idempotent_for_same_tag(self) -> None:
         image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-abc1234"

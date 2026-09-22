@@ -249,12 +249,26 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.catalog-write-token.outputs.token }}
         run: |
-          gh pr checks "${{ steps.catalog-pr.outputs.pull-request-number }}" \
-            --repo neteye-platform/neteye-operator-catalog \
-            --watch --interval 30 --fail-fast
-          gh pr merge "${{ steps.catalog-pr.outputs.pull-request-number }}" \
-            --repo neteye-platform/neteye-operator-catalog \
-            --squash --delete-branch
+          pr_number="${{ steps.catalog-pr.outputs.pull-request-number }}"
+          repo="neteye-platform/neteye-operator-catalog"
+
+          # Checks are registered asynchronously after PR creation; gh errors out
+          # instead of waiting when none exist yet, so poll until one appears.
+          for attempt in $(seq 1 10); do
+            output="$(gh pr checks "$pr_number" --repo "$repo" 2>&1)" || true
+            if [[ "$output" != *"no checks reported"* ]]; then
+              break
+            fi
+            if [[ "$attempt" -eq 10 ]]; then
+              echo "$output" >&2
+              exit 1
+            fi
+            echo "No checks reported yet for PR #$pr_number (attempt $attempt/10); retrying in 15s..."
+            sleep 15
+          done
+
+          gh pr checks "$pr_number" --repo "$repo" --watch --interval 30 --fail-fast
+          gh pr merge "$pr_number" --repo "$repo" --squash --delete-branch
 
       - name: Report existing nightly build
         if: ${{ steps.changes.outputs.changed == 'false' }}
