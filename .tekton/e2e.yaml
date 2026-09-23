@@ -158,11 +158,11 @@ spec:
                   echo "Attempt $attempt: created PipelineRun $name"
 
                   status=""
-                  while [[ -z "$status" ]]; do
-                    conditions="$(tkn pipelinerun describe "$name" -n "$NAMESPACE" -o jsonpath='{.status.conditions[0].status}' 2>/dev/null || true)"
-                    if [[ -n "$conditions" ]]; then
-                      status="$conditions"
-                    else
+                  while [[ -z "$status" || "$status" == "Unknown" ]]; do
+                    status="$(oc get pipelinerun "$name" -n "$NAMESPACE" \
+                      -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].status}' \
+                      2>/dev/null || true)"
+                    if [[ -z "$status" || "$status" == "Unknown" ]]; then
                       sleep 3
                     fi
                   done
