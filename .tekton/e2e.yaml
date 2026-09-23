@@ -26,7 +26,7 @@ metadata:
     pipelinesascode.tekton.dev/max-keep-runs: "5"
 spec:
   params:
-    - name: operator-nightly-tag
+    - name: operator-nightly-version
       value: ""
     - name: operator-nightly-channel
       value: ""
