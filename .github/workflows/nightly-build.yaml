@@ -285,5 +285,8 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$(jq -n \
               --arg tag "${{ needs.compute-candidate-tag.outputs.version-tag }}" \
+              --arg sha "$(git rev-parse HEAD)" \
               --arg secret "$PAC_SECRET" \
-              '{repository:"neteye-operator", branch:"main", pipelinerun:"e2e", secret:$secret, params:{"operator-nightly-tag":$tag}}')"
+              '{repository:"https://github.com/neteye-platform/neteye-operator",
+                branch:"main", sha:$sha, pipelinerun:"e2e", secret:$secret,
+                params:{"operator-nightly-tag":$tag}}')"
