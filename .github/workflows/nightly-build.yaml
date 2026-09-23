@@ -296,7 +296,7 @@ jobs:
               --arg channel "$operator_channel" \
               --arg secret "$PAC_SECRET" \
               '{repository:"neteye-operator",
-                branch:"operator-nightly-builds", pipelinerun:"e2e", secret:$secret,
+                branch:"operator-nightly-builds", pipelinerun:"neteye-operator-e2e", secret:$secret,
                 params:{"operator-nightly-version":$version,
                   "operator-nightly-channel":$channel}}')")"
           printf '%s\n' "$response"

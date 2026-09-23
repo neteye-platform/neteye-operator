@@ -19,7 +19,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  name: e2e
+  name: neteye-operator-e2e
   annotations:
     pipelinesascode.tekton.dev/on-event: "[incoming]"
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -127,7 +127,7 @@ spec:
                     timeouts:
                       pipeline: "3h0m0s"
                     workspaces:
-                      - name: sourceCode
+                      - name: shared-workspace
                         volumeClaimTemplate:
                           spec:
                             storageClassName: ocs-storagecluster-cephfs-sing-rep
