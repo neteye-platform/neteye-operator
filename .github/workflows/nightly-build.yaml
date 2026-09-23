@@ -285,12 +285,12 @@ jobs:
 
           response="$(curl --fail-with-body -sS -X POST "$PAC_CONTROLLER_URL/incoming" \
             -H "Content-Type: application/json" \
+            -H 'X-GitHub-Event: push' \
             -d "$(jq -n \
               --arg tag "${{ needs.compute-candidate-tag.outputs.version-tag }}" \
-              --arg sha "$(git -C operator rev-parse HEAD)" \
               --arg secret "$PAC_SECRET" \
-              '{repository:"https://github.com/neteye-platform/neteye-operator",
-                branch:"main", sha:$sha, pipelinerun:"e2e", secret:$secret,
+              '{repository:"neteye-operator",
+                branch:"main", pipelinerun:"e2e", secret:$secret,
                 params:{"operator-nightly-tag":$tag}}')")"
           printf '%s\n' "$response"
           if jq -e '(.message // "") | test("error"; "i")' >/dev/null <<<"$response"; then
