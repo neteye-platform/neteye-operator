@@ -33,7 +33,7 @@ spec:
     - name: tekton-namespace
       value: rd-neteye-pipeline
     - name: neteye-version
-      value: develop
+      value: latest
   pipelineSpec:
     params:
       - name: operator-nightly-version
