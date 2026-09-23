@@ -9,6 +9,7 @@ import urllib.request
 from pathlib import Path
 
 PACKAGE_NAME = "neteye-operator"
+NETEYE_VERSION_URL = "https://api.neteye.cloud/v2/config/version/latest"
 SEMVER_PATTERN = re.compile(
     r"^(0|[1-9][0-9]*)\."
     r"(0|[1-9][0-9]*)\."
@@ -91,12 +92,11 @@ def atomic_write(path: Path, content: str) -> None:
 
 
 def fetch_latest_neteye_version() -> str:
-    # URL is a hardcoded https literal, not attacker-controlled input.
-    with (
-        urllib.request.urlopen(  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-            "https://api.neteye.cloud/v2/config/version/latest", timeout=10
-        ) as response
-    ):
+    request = urllib.request.Request(
+        NETEYE_VERSION_URL,
+        headers={"User-Agent": "neteye-operator-update-catalog"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
         payload = json.load(response)
     return re.sub(r"-sr[0-9]+$", "", payload["version"])
 
