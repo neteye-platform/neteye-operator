@@ -283,15 +283,23 @@ jobs:
         run: |
           set -euo pipefail
 
+          latest_version="$(curl --fail-with-body -sS --max-time 10 \
+            -A 'neteye-operator-update-catalog' \
+            'https://api.neteye.cloud/v2/config/version/latest' \
+            | jq -er '.version | sub("-sr[0-9]+$"; "")')"
+          operator_channel="${latest_version}-nightly"
+
           response="$(curl --fail-with-body -sS -X POST "$PAC_CONTROLLER_URL/incoming" \
             -H "Content-Type: application/json" \
             -H 'X-GitHub-Event: push' \
             -d "$(jq -n \
               --arg tag "${{ needs.compute-candidate-tag.outputs.version-tag }}" \
+              --arg channel "$operator_channel" \
               --arg secret "$PAC_SECRET" \
               '{repository:"neteye-operator",
-                branch:"main", pipelinerun:"e2e", secret:$secret,
-                params:{"operator-nightly-tag":$tag}}')")"
+                branch:"operator-nightly-builds", pipelinerun:"e2e", secret:$secret,
+                params:{"operator-nightly-tag":$tag,
+                  "operator-nightly-channel":$channel}}')")"
           printf '%s\n' "$response"
           if jq -e '(.message // "") | test("error"; "i")' >/dev/null <<<"$response"; then
             echo "PAC reported an error while processing the incoming webhook" >&2

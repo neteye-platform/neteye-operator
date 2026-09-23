@@ -36,7 +36,7 @@ spec:
       value: develop
   pipelineSpec:
     params:
-      - name: operator-nightly-tag
+      - name: operator-nightly-version
         type: string
       - name: operator-nightly-channel
         type: string
@@ -53,8 +53,8 @@ spec:
     tasks:
       - name: install
         params:
-          - name: operator-nightly-tag
-            value: $(params.operator-nightly-tag)
+          - name: operator-nightly-version
+            value: $(params.operator-nightly-version)
           - name: operator-nightly-channel
             value: $(params.operator-nightly-channel)
           - name: tekton-namespace
@@ -65,7 +65,7 @@ spec:
             value: $(params.neteye-update-upgrade)
         taskSpec:
           params:
-            - name: operator-nightly-tag
+            - name: operator-nightly-version
               type: string
             - name: operator-nightly-channel
               type: string
@@ -84,8 +84,8 @@ spec:
               env:
                 - name: HOME
                   value: /tekton/home
-                - name: OPERATOR_NIGHTLY_TAG
-                  value: $(params.operator-nightly-tag)
+                - name: OPERATOR_NIGHTLY_VERSION
+                  value: $(params.operator-nightly-version)
                 - name: NAMESPACE
                   value: $(params.tekton-namespace)
                 - name: NETEYE_VERSION
@@ -115,7 +115,7 @@ spec:
                   metadata:
                     generateName: e2e-neteye-operator-${run_mode}-$(date -u +%Y%m%d%H%M%S)-
                     annotations:
-                      neteye.cloud/operator-nightly-tag: "$OPERATOR_NIGHTLY_TAG"
+                      neteye.cloud/operator-nightly-version: "$OPERATOR_NIGHTLY_VERSION"
                       neteye.cloud/operator-nightly-channel: "$OPERATOR_NIGHTLY_CHANNEL"
                       neteye.cloud/neteye-update-upgrade: "$NETEYE_UPDATE_UPGRADE"
                       neteye.cloud/neteye-version: "$NETEYE_VERSION"
@@ -148,7 +148,7 @@ spec:
                       - name: neteyeOperatorChannel
                         value: "$OPERATOR_NIGHTLY_CHANNEL"
                       - name: neteyeOperatorVersion
-                        value: "$OPERATOR_NIGHTLY_TAG"
+                        value: "$OPERATOR_NIGHTLY_VERSION"
                       - name: neteyeUpdateUpgrade
                         value: "$NETEYE_UPDATE_UPGRADE"
                       - name: skipTests
