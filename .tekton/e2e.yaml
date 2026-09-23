@@ -144,7 +144,7 @@ spec:
                       - name: taskRevision
                         value: "support-update-upgrade-builds"
                       - name: openshiftScriptsRef
-                        value: "support-update-upgrade-builds"
+                        value: "support-update-upgrade-build"
                       - name: neteyeOperatorChannel
                         value: "$OPERATOR_NIGHTLY_CHANNEL"
                       - name: neteyeOperatorVersion
