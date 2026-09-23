@@ -281,11 +281,13 @@ jobs:
           PAC_CONTROLLER_URL: ${{ secrets.PAC_CONTROLLER_URL }}
           PAC_SECRET: ${{ secrets.PAC_INCOMING_SECRET }}
         run: |
+          set -euo pipefail
+
           curl -sS -X POST "$PAC_CONTROLLER_URL/incoming" \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
               --arg tag "${{ needs.compute-candidate-tag.outputs.version-tag }}" \
-              --arg sha "$(git rev-parse HEAD)" \
+              --arg sha "$(git -C operator rev-parse HEAD)" \
               --arg secret "$PAC_SECRET" \
               '{repository:"https://github.com/neteye-platform/neteye-operator",
                 branch:"main", sha:$sha, pipelinerun:"e2e", secret:$secret,
