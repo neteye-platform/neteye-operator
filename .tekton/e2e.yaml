@@ -28,57 +28,58 @@ spec:
   params:
     - name: operator-nightly-tag
       value: ""
+    - name: operator-nightly-channel
+      value: ""
     - name: tekton-namespace
       value: rd-neteye-pipeline
-    - name: neteye-revision
+    - name: neteye-version
       value: develop
-    - name: retry-until-hour-utc
-      value: "06"
-    - name: retry-interval-seconds
-      value: "300"
   pipelineSpec:
     params:
       - name: operator-nightly-tag
         type: string
+      - name: operator-nightly-channel
+        type: string
+        default: nightly
       - name: tekton-namespace
         type: string
         default: rd-neteye-pipeline
-      - name: neteye-revision
+      - name: neteye-version
         type: string
-        default: develop
-      - name: retry-until-hour-utc
+        default: latest
+      - name: neteye-update-upgrade
         type: string
-        default: "06"
-      - name: retry-interval-seconds
-        type: string
-        default: "300"
+        default: none
     tasks:
       - name: install
         params:
           - name: operator-nightly-tag
             value: $(params.operator-nightly-tag)
+          - name: operator-nightly-channel
+            value: $(params.operator-nightly-channel)
           - name: tekton-namespace
             value: $(params.tekton-namespace)
-          - name: neteye-revision
-            value: $(params.neteye-revision)
-          - name: retry-until-hour-utc
-            value: $(params.retry-until-hour-utc)
-          - name: retry-interval-seconds
-            value: $(params.retry-interval-seconds)
+          - name: neteye-version
+            value: $(params.neteye-version)
+          - name: neteye-update-upgrade
+            value: $(params.neteye-update-upgrade)
         taskSpec:
           params:
             - name: operator-nightly-tag
               type: string
+            - name: operator-nightly-channel
+              type: string
+              default: nightly
             - name: tekton-namespace
               type: string
-            - name: neteye-revision
+            - name: neteye-version
               type: string
-            - name: retry-until-hour-utc
+              default: latest
+            - name: neteye-update-upgrade
               type: string
-            - name: retry-interval-seconds
-              type: string
+              default: none
           steps:
-            - name: run-until-cutoff
+            - name: run-e2e-operator-tests
               image: ghcr.io/witglobal/oc-cli-tools:1.1.0@sha256:404155df46f632761680eb70f3473746c4eecb6c55c89dd6b39adf8276ee85a8
               env:
                 - name: HOME
@@ -87,45 +88,44 @@ spec:
                   value: $(params.operator-nightly-tag)
                 - name: NAMESPACE
                   value: $(params.tekton-namespace)
-                - name: NETEYE_REVISION
-                  value: $(params.neteye-revision)
-                - name: RETRY_UNTIL_HOUR_UTC
-                  value: $(params.retry-until-hour-utc)
-                - name: RETRY_INTERVAL_SECONDS
-                  value: $(params.retry-interval-seconds)
+                - name: NETEYE_VERSION
+                  value: $(params.neteye-version)
+                - name: OPERATOR_NIGHTLY_CHANNEL
+                  value: $(params.operator-nightly-channel)
+                - name: NETEYE_UPDATE_UPGRADE
+                  value: $(params.neteye-update-upgrade)
               script: |
                 #!/usr/bin/env bash
                 set -euo pipefail
 
-                retry_cutoff() {
-                  # force base-10: date/param values are zero-padded (e.g. "09"), which
-                  # bash arithmetic would otherwise treat as invalid octal literals
-                  now=$(date -u +%s)
-                  midnight=$(( now - 10#$(date -u +%H)*3600 - 10#$(date -u +%M)*60 - 10#$(date -u +%S) ))
-                  cutoff=$(( midnight + 10#${RETRY_UNTIL_HOUR_UTC} * 3600 ))
-                  [[ "$now" -ge "$cutoff" ]] && cutoff=$(( cutoff + 86400 ))
-                  echo "$cutoff"
-                }
+                case "$NETEYE_UPDATE_UPGRADE" in
+                  none) run_mode=install ;;
+                  update|upgrade) run_mode="$NETEYE_UPDATE_UPGRADE" ;;
+                  *) echo "Invalid neteye-update-upgrade value: $NETEYE_UPDATE_UPGRADE" >&2; exit 1 ;;
+                esac
 
-                cutoff="$(retry_cutoff)"
                 attempt=0
+                max_attempts=4
 
-                while :; do
+                while (( attempt < max_attempts )); do
                   attempt=$((attempt + 1))
                   name="$(oc create -n "$NAMESPACE" -f - <<EOF | awk -F/ '{print $2}' | awk '{print $1}'
                   apiVersion: tekton.dev/v1
                   kind: PipelineRun
                   metadata:
-                    generateName: e2e-neteye-operator-install-
+                    generateName: e2e-neteye-operator-${run_mode}-$(date -u +%Y%m%d%H%M%S)-
                     annotations:
                       neteye.cloud/operator-nightly-tag: "$OPERATOR_NIGHTLY_TAG"
+                      neteye.cloud/operator-nightly-channel: "$OPERATOR_NIGHTLY_CHANNEL"
+                      neteye.cloud/neteye-update-upgrade: "$NETEYE_UPDATE_UPGRADE"
+                      neteye.cloud/neteye-version: "$NETEYE_VERSION"
                   spec:
                     pipelineRef:
-                      name: neteye-operator-install
+                      name: rhel8-neteye-build
                     taskRunTemplate:
                       serviceAccountName: openshift-pipelines
                     timeouts:
-                      pipeline: "1h0m0s"
+                      pipeline: "3h0m0s"
                     workspaces:
                       - name: sourceCode
                         volumeClaimTemplate:
@@ -137,10 +137,22 @@ spec:
                               requests:
                                 storage: 1Gi
                     params:
-                      - name: neteyeSetupBranch
-                        value: "$NETEYE_REVISION"
-                      - name: operatorChartVersion
+                      - name: projects
+                        value: "neteye-ci-dummy"
+                      - name: version
+                        value: "$NETEYE_VERSION"
+                      - name: taskRevision
+                        value: "support-update-upgrade-builds"
+                      - name: openshiftScriptsRef
+                        value: "support-update-upgrade-builds"
+                      - name: neteyeOperatorChannel
+                        value: "$OPERATOR_NIGHTLY_CHANNEL"
+                      - name: neteyeOperatorVersion
                         value: "$OPERATOR_NIGHTLY_TAG"
+                      - name: neteyeUpdateUpgrade
+                        value: "$NETEYE_UPDATE_UPGRADE"
+                      - name: skipTests
+                        value: "true"
                 EOF
                   )"
                   echo "Attempt $attempt: created PipelineRun $name"
@@ -160,12 +172,11 @@ spec:
                     exit 0
                   fi
 
-                  now="$(date -u +%s)"
-                  if [[ "$now" -ge "$cutoff" ]]; then
-                    echo "Giving up after attempt $attempt: retry cutoff reached"
+                  if (( attempt >= max_attempts )); then
+                    echo "Giving up after attempt $attempt: retry limit reached"
                     exit 1
                   fi
 
-                  echo "Attempt $attempt failed, retrying in ${RETRY_INTERVAL_SECONDS}s"
-                  sleep "$RETRY_INTERVAL_SECONDS"
+                  echo "Attempt $attempt failed, retrying in 3s"
+                  sleep 3
                 done
