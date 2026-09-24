@@ -50,6 +50,11 @@ jobs:
         run: |
           echo "version=$VERSION_INPUT" >> "$GITHUB_OUTPUT"
 
+      - name: Configure git identity
+        run: |
+          git config user.name "neteye-steward[bot]"
+          git config user.email "265889471+neteye-steward[bot]@users.noreply.github.com"
+
       # Bump type is derived from the labels of PRs merged to main since the
       # last stable release tag: "feature" -> minor, everything else
       # (bugfix/dependencies/major/unlabeled) -> patch, except "feature"
@@ -61,14 +66,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # git tag --list uses glob matching, not regex, so 'v[0-9]*.[0-9]*.[0-9]*'
-          # also matches prerelease tags like v0.1.1-alpha.3; filter those out.
-          last_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)"
+          # Use the newest release tag as the baseline. This repository may only
+          # have prerelease tags initially, so accept and normalize those too.
+          last_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' | head -n1)"
           if [[ -z "$last_tag" ]]; then
-            echo "error: no previous stable release tag found" >&2
+            echo "error: no previous release tag found" >&2
             exit 1
           fi
           last_version="${last_tag#v}"
+          last_version="${last_version%%-*}"
           since="$(git log -1 --format=%aI "$last_tag")"
 
           labels="$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base main \
