@@ -22,7 +22,8 @@ jobs:
     # only proceed for a manual dispatch, or a successful PAC E2E check
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.check_run.name == 'TektonCI / neteye-operator-e2e' &&
+      (github.event.check_run.app.slug == 'wp-pipeline-as-code' &&
+       startsWith(github.event.check_run.name, 'TektonCI / neteye-operator-e2e') &&
        github.event.check_run.conclusion == 'success')
     steps:
       - name: Create write token
@@ -41,11 +42,6 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Configure git identity
-        run: |
-          git config user.name "Davide Sbetti"
-          git config user.email "WN00188966@wgs.wuerth.com"
 
       - name: Resolve version input
         id: input
