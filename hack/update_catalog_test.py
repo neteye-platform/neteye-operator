@@ -2,7 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from update_catalog import update_catalog
+from update_catalog import (
+    update_catalog,
+    update_catalog_backport,
+    update_nightly_channel,
+)
 
 CATALOG = """schema: olm.package
 name: neteye-operator
@@ -65,6 +69,19 @@ class UpdateCatalogTest(unittest.TestCase):
         )[1]
         self.assertIn("name: neteye-operator.0.2.0", stable_document)
         self.assertIn("replaces: neteye-operator.0.1.0", stable_document)
+
+    def test_adds_release_to_versioned_stable_channel(self) -> None:
+        image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'f' * 64}"
+
+        changed = update_catalog(
+            self.catalog_path, "0.2.0", image, neteye_version="4.50"
+        )
+
+        self.assertTrue(changed)
+        updated = self.catalog_path.read_text(encoding="utf-8")
+        self.assertIn("defaultChannel: 4.50-stable", updated)
+        self.assertIn("name: 4.50-stable", updated)
+        self.assertIn("name: neteye-operator.0.2.0", updated)
 
     def test_is_idempotent_for_same_digest(self) -> None:
         image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'d' * 64}"
@@ -161,6 +178,180 @@ class UpdateCatalogTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "found: none"):
             update_catalog(self.catalog_path, "0.1.1-alpha.2", image)
+
+
+class UpdateCatalogBackportTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.catalog_path = Path(self.temp_dir.name) / "index.yaml"
+        self.catalog_path.write_text(
+            CATALOG.format(old_digest="a" * 64), encoding="utf-8"
+        )
+
+    def test_adds_bugfix_only_to_matching_minor_channel(self) -> None:
+        image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'5' * 64}"
+
+        changed = update_catalog_backport(self.catalog_path, "0.1.1", image)
+
+        self.assertTrue(changed)
+        updated = self.catalog_path.read_text(encoding="utf-8")
+        documents = updated.split("\n---\n")
+        stable_document = next(d for d in documents if "name: stable" in d)
+        alpha_document = next(d for d in documents if "name: alpha" in d)
+        self.assertIn("name: neteye-operator.0.1.1", stable_document)
+        self.assertIn("replaces: neteye-operator.0.1.0", stable_document)
+        self.assertNotIn("0.1.1", alpha_document)
+
+    def test_adds_bugfix_to_every_matching_channel(self) -> None:
+        catalog = self.catalog_path.read_text(encoding="utf-8")
+        catalog = catalog.replace(
+            "  - name: neteye-operator.0.2.0-alpha1",
+            "  - name: neteye-operator.0.1.0-alpha1",
+        )
+        self.catalog_path.write_text(catalog, encoding="utf-8")
+        image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'6' * 64}"
+
+        changed = update_catalog_backport(self.catalog_path, "0.1.1", image)
+
+        self.assertTrue(changed)
+        updated = self.catalog_path.read_text(encoding="utf-8")
+        documents = updated.split("\n---\n")
+        stable_document = next(d for d in documents if "name: stable" in d)
+        alpha_document = next(d for d in documents if "name: alpha" in d)
+        self.assertIn("name: neteye-operator.0.1.1", stable_document)
+        self.assertIn("name: neteye-operator.0.1.1", alpha_document)
+
+    def test_rejects_when_no_channel_matches_minor(self) -> None:
+        image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'7' * 64}"
+
+        with self.assertRaisesRegex(ValueError, "nothing to backport"):
+            update_catalog_backport(self.catalog_path, "0.3.1", image)
+
+    def test_rejects_out_of_order_backport(self) -> None:
+        image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'8' * 64}"
+
+        with self.assertRaisesRegex(ValueError, "must be newer"):
+            update_catalog_backport(self.catalog_path, "0.1.0-alpha1", image)
+
+    def test_is_idempotent_for_same_digest(self) -> None:
+        image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'9' * 64}"
+        update_catalog_backport(self.catalog_path, "0.1.1", image)
+
+        changed = update_catalog_backport(self.catalog_path, "0.1.1", image)
+
+        self.assertFalse(changed)
+
+    def test_rejects_replacing_existing_release_digest(self) -> None:
+        image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'a' * 63}b"
+        update_catalog_backport(
+            self.catalog_path,
+            "0.1.1",
+            f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'c' * 64}",
+        )
+
+        with self.assertRaisesRegex(ValueError, "refusing to replace"):
+            update_catalog_backport(self.catalog_path, "0.1.1", image)
+
+
+class UpdateNightlyChannelTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.catalog_path = Path(self.temp_dir.name) / "index.yaml"
+        self.catalog_path.write_text(
+            CATALOG.format(old_digest="a" * 64), encoding="utf-8"
+        )
+
+    def test_creates_nightly_channel_when_absent(self) -> None:
+        image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-abc1234"
+
+        changed = update_nightly_channel(self.catalog_path, image, "4.50")
+
+        self.assertTrue(changed)
+        updated = self.catalog_path.read_text(encoding="utf-8")
+        self.assertIn("name: 4.50-nightly", updated)
+        self.assertNotIn("name: 4.50-stable", updated)
+        self.assertIn("name: neteye-operator.0.2.0-alpha1-nightly-abc1234", updated)
+
+    def test_replaces_previous_nightly_head_but_keeps_old_bundle(self) -> None:
+        first_image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-abc1234"
+        update_nightly_channel(self.catalog_path, first_image, "4.50")
+        second_image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-def5678"
+
+        changed = update_nightly_channel(self.catalog_path, second_image, "4.50")
+
+        self.assertTrue(changed)
+        updated = self.catalog_path.read_text(encoding="utf-8")
+        # old bundle document is kept (no pruning), just no longer the channel head
+        self.assertIn("name: neteye-operator.0.2.0-alpha1-nightly-abc1234", updated)
+        self.assertIn("name: neteye-operator.0.2.0-alpha1-nightly-def5678", updated)
+        channels = [
+            document
+            for document in updated.split("\n---\n")
+            if "schema: olm.channel" in document and "name: 4.50-nightly" in document
+        ]
+        self.assertEqual(len(channels), 1)
+        for channel in channels:
+            self.assertIn("0.2.0-alpha1-nightly-abc1234", channel)
+            self.assertIn("0.2.0-alpha1-nightly-def5678", channel)
+            self.assertIn(
+                "replaces: neteye-operator.0.2.0-alpha1-nightly-abc1234",
+                channel,
+            )
+
+        third_image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-789abcd"
+        update_nightly_channel(self.catalog_path, third_image, "4.50")
+        updated = self.catalog_path.read_text(encoding="utf-8")
+        nightly_channel = next(
+            document
+            for document in updated.split("\n---\n")
+            if "name: 4.50-nightly" in document and "schema: olm.channel" in document
+        )
+        self.assertIn(
+            "replaces: neteye-operator.0.2.0-alpha1-nightly-def5678",
+            nightly_channel,
+        )
+        self.assertIn(
+            "      - neteye-operator.0.2.0-alpha1-nightly-abc1234", nightly_channel
+        )
+
+    def test_scopes_channel_to_neteye_release_line(self) -> None:
+        image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-abc1234"
+
+        update_nightly_channel(self.catalog_path, image, "4.50")
+        changed = update_nightly_channel(self.catalog_path, image, "4.51")
+
+        self.assertTrue(changed)
+        updated = self.catalog_path.read_text(encoding="utf-8")
+        self.assertIn("name: 4.50-nightly", updated)
+        self.assertIn("name: 4.51-nightly", updated)
+        self.assertNotIn("name: 4.50-stable", updated)
+        self.assertNotIn("name: 4.51-stable", updated)
+
+    def test_is_idempotent_for_same_tag(self) -> None:
+        image = "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha1-nightly-abc1234"
+        update_nightly_channel(self.catalog_path, image, "4.50")
+
+        changed = update_nightly_channel(self.catalog_path, image, "4.50")
+
+        self.assertFalse(changed)
+
+    def test_rejects_non_nightly_image(self) -> None:
+        with self.assertRaisesRegex(ValueError, "nightly bundle image must match"):
+            update_nightly_channel(
+                self.catalog_path,
+                "ghcr.io/neteye-platform/neteye-operator-bundle:0.2.0-alpha2",
+                "4.50",
+            )
+
+    def test_rejects_unversioned_nightly_image(self) -> None:
+        with self.assertRaisesRegex(ValueError, "nightly bundle image must match"):
+            update_nightly_channel(
+                self.catalog_path,
+                "ghcr.io/neteye-platform/neteye-operator-bundle:nightly-abc1234",
+                "4.50",
+            )
 
 
 if __name__ == "__main__":
