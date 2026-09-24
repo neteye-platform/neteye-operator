@@ -6,6 +6,10 @@ on:
       version:
         description: "New SemVer version to release, e.g. 0.2.0. Leave empty to auto-derive from merged PR labels since the last release."
         required: false
+      neteye-version:
+        description: "NetEye release line for the catalog channel, e.g. 4.50. Defaults to the latest API version."
+        required: false
+        default: latest
   # fired by PAC's own GitHub Check Run for the "neteye-operator-e2e" PipelineRun; no
   # dispatch call from Tekton needed
   check_run:
@@ -13,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   bump-and-tag:
@@ -50,6 +55,11 @@ jobs:
         run: |
           echo "version=$VERSION_INPUT" >> "$GITHUB_OUTPUT"
 
+      - name: Configure git identity
+        run: |
+          git config user.name "neteye-steward[bot]"
+          git config user.email "265889471+neteye-steward[bot]@users.noreply.github.com"
+
       # Bump type is derived from the labels of PRs merged to main since the
       # last stable release tag: "feature" -> minor, everything else
       # (bugfix/dependencies/major/unlabeled) -> patch, except "feature"
@@ -61,14 +71,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # git tag --list uses glob matching, not regex, so 'v[0-9]*.[0-9]*.[0-9]*'
-          # also matches prerelease tags like v0.1.1-alpha.3; filter those out.
-          last_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)"
+          # Use the newest release tag as the baseline. This repository may only
+          # have prerelease tags initially, so accept and normalize those too.
+          last_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' | head -n1)"
           if [[ -z "$last_tag" ]]; then
-            echo "error: no previous stable release tag found" >&2
+            echo "error: no previous release tag found" >&2
             exit 1
           fi
           last_version="${last_tag#v}"
+          last_version="${last_version%%-*}"
           since="$(git log -1 --format=%aI "$last_tag")"
 
           labels="$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base main \
@@ -116,3 +127,185 @@ jobs:
           gh api "repos/${REPOSITORY}/git/refs" \
             -f ref="refs/tags/v$VERSION" \
             -f sha="$tag_sha"
+
+      - name: Resolve NetEye version
+        id: neteye-version
+        env:
+          NETEYE_VERSION_INPUT: ${{ inputs.neteye-version || 'latest' }}
+        run: |
+          if [[ "$NETEYE_VERSION_INPUT" == "latest" ]]; then
+            neteye_version="$(curl --fail-with-body -sS --max-time 10 \
+              -A 'neteye-operator-release' \
+              'https://api.neteye.cloud/v2/config/version/latest' \
+              | jq -er '.version | sub("-sr[0-9]+$"; "")')"
+          else
+            neteye_version="$NETEYE_VERSION_INPUT"
+          fi
+          if [[ ! "$neteye_version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "invalid NetEye release line: $neteye_version" >&2
+            exit 1
+          fi
+          echo "version=$neteye_version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish operator image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: src
+          file: src/Dockerfile
+          push: true
+          tags: >-
+            ghcr.io/${{ github.repository_owner }}/neteye-operator:${{
+            steps.input.outputs.version != '' && steps.input.outputs.version ||
+            steps.version.outputs.version }}
+          build-args: VERSION=${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Build and publish bundle image
+        id: bundle-image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: src
+          file: src/Dockerfile.bundle
+          push: true
+          tags: >-
+            ghcr.io/${{ github.repository_owner }}/neteye-operator-bundle:${{
+            steps.input.outputs.version != '' && steps.input.outputs.version ||
+            steps.version.outputs.version }}
+          build-args: |
+            VERSION=${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
+            PACKAGE_NAME=neteye-operator
+          provenance: mode=max
+          sbom: true
+
+      - name: Create catalog read token
+        id: catalog-read-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.NETEYE_APP_ID }}
+          private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: neteye-operator-catalog
+          permission-contents: read
+
+      - name: Checkout catalog
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: neteye-platform/neteye-operator-catalog
+          token: ${{ steps.catalog-read-token.outputs.token }}
+          path: catalog
+          ref: main
+          persist-credentials: false
+
+      - name: Add release to catalog
+        env:
+          BUNDLE_DIGEST: ${{ steps.bundle-image.outputs.digest }}
+          VERSION: ${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
+          NETEYE_VERSION: ${{ steps.neteye-version.outputs.version }}
+        run: |
+          ./hack/update_catalog.py \
+            --catalog ./catalog/catalog/index.yaml \
+            --version "$VERSION" \
+            --neteye-version "$NETEYE_VERSION" \
+            --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle@$BUNDLE_DIGEST"
+
+      - name: Check catalog changes
+        id: catalog-changes
+        working-directory: catalog
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mapfile -t changed_files < <(
+            git status --porcelain=v1 --untracked-files=all | cut -c4-
+          )
+          if [[ ${#changed_files[@]} -ne 1 || ${changed_files[0]} != "catalog/index.yaml" ]]; then
+            echo "error: catalog update modified unexpected files" >&2
+            printf '  %s\n' "${changed_files[@]}" >&2
+            exit 1
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate catalog
+        run: |
+          docker run --rm \
+            -v "$PWD/catalog/catalog:/configs:ro" \
+            "quay.io/operator-framework/opm:v1.73.0@sha256:e5a6220603fb4504d58c6e3e488386b817e3695c906a62ee0370b5faedc3799a" \
+            validate /configs
+
+      - name: Create catalog write token
+        if: ${{ steps.catalog-changes.outputs.changed == 'true' }}
+        id: catalog-write-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.NETEYE_APP_ID }}
+          private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: neteye-operator-catalog
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Create catalog pull request
+        id: catalog-pr
+        if: ${{ steps.catalog-changes.outputs.changed == 'true' }}
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.catalog-write-token.outputs.token }}
+          path: catalog
+          add-paths: catalog/index.yaml
+          sign-commits: true
+          commit-message: >-
+            feat: add v${{ steps.input.outputs.version != '' &&
+            steps.input.outputs.version || steps.version.outputs.version }} release
+          branch: >-
+            release/neteye-operator-v${{ steps.input.outputs.version != '' &&
+            steps.input.outputs.version || steps.version.outputs.version }}
+          base: main
+          title: >-
+            feat: add v${{ steps.input.outputs.version != '' &&
+            steps.input.outputs.version || steps.version.outputs.version }} release
+          body: |
+            Automated catalog promotion for neteye-operator v${{
+            steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}.
+
+            Bundle: `ghcr.io/neteye-platform/neteye-operator-bundle@${{ steps.bundle-image.outputs.digest }}`
+            Channel: `${{ steps.neteye-version.outputs.version }}-stable`
+
+      - name: Wait for status checks and merge the catalog pull request
+        if: ${{ steps.catalog-changes.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.catalog-write-token.outputs.token }}
+        run: |
+          pr_number="${{ steps.catalog-pr.outputs.pull-request-number }}"
+          repo="neteye-platform/neteye-operator-catalog"
+
+          # Checks are registered asynchronously after PR creation; gh errors out
+          # instead of waiting when none exist yet, so poll until one appears.
+          for attempt in $(seq 1 10); do
+            output="$(gh pr checks "$pr_number" --repo "$repo" 2>&1)" || true
+            if [[ "$output" != *"no checks reported"* ]]; then
+              break
+            fi
+            if [[ "$attempt" -eq 10 ]]; then
+              echo "$output" >&2
+              exit 1
+            fi
+            echo "No checks reported yet for PR #$pr_number (attempt $attempt/10); retrying in 15s..."
+            sleep 15
+          done
+
+          gh pr checks "$pr_number" --repo "$repo" --watch --interval 30 --fail-fast
+          # --admin bypasses the base branch protection merge restriction; checks
+          # above already gate the merge.
+          gh pr merge "$pr_number" --repo "$repo" --squash --delete-branch --admin
