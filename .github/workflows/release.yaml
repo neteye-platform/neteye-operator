@@ -6,7 +6,7 @@ on:
       version:
         description: "New SemVer version to release, e.g. 0.2.0. Leave empty to auto-derive from merged PR labels since the last release."
         required: false
-  # fired by PAC's own GitHub Check Run for the "e2e" PipelineRun; no
+  # fired by PAC's own GitHub Check Run for the "neteye-operator-e2e" PipelineRun; no
   # dispatch call from Tekton needed
   check_run:
     types: [completed]
@@ -19,12 +19,11 @@ jobs:
     name: Bump version and push release tag
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # only proceed for a manual dispatch, or a successful "e2e" check on main
+    # only proceed for a manual dispatch, or a successful PAC E2E check
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.check_run.name == 'e2e' &&
-       github.event.check_run.conclusion == 'success' &&
-       github.event.check_run.check_suite.head_branch == 'main')
+      (github.event.check_run.name == 'TektonCI / neteye-operator-e2e' &&
+       github.event.check_run.conclusion == 'success')
     steps:
       - name: Create write token
         id: release-token
