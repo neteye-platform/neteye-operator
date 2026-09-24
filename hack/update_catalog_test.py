@@ -70,6 +70,19 @@ class UpdateCatalogTest(unittest.TestCase):
         self.assertIn("name: neteye-operator.0.2.0", stable_document)
         self.assertIn("replaces: neteye-operator.0.1.0", stable_document)
 
+    def test_adds_release_to_versioned_stable_channel(self) -> None:
+        image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'f' * 64}"
+
+        changed = update_catalog(
+            self.catalog_path, "0.2.0", image, neteye_version="4.50"
+        )
+
+        self.assertTrue(changed)
+        updated = self.catalog_path.read_text(encoding="utf-8")
+        self.assertIn("defaultChannel: 4.50-stable", updated)
+        self.assertIn("name: 4.50-stable", updated)
+        self.assertIn("name: neteye-operator.0.2.0", updated)
+
     def test_is_idempotent_for_same_digest(self) -> None:
         image = f"ghcr.io/neteye-platform/neteye-operator-bundle@sha256:{'d' * 64}"
         update_catalog(self.catalog_path, "0.2.0-alpha2", image)

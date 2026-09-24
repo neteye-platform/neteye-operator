@@ -111,13 +111,22 @@ def read_operator_version() -> str:
     return match.group(1)
 
 
-def update_catalog(catalog_path: Path, version: str, bundle_image: str) -> bool:
+def update_catalog(
+    catalog_path: Path,
+    version: str,
+    bundle_image: str,
+    neteye_version: str | None = None,
+) -> bool:
     if not valid_semver(version):
         raise ValueError(f"invalid release version: {version}")
     if not BUNDLE_IMAGE_PATTERN.fullmatch(bundle_image):
         raise ValueError(f"bundle image must be pinned by GHCR digest: {bundle_image}")
 
-    channel = "alpha" if "-" in version else "stable"
+    channel = (
+        f"{neteye_version}-stable"
+        if neteye_version
+        else ("alpha" if "-" in version else "stable")
+    )
     bundle_name = f"{PACKAGE_NAME}.{version}"
     original = catalog_path.read_text(encoding="utf-8")
     documents = original.rstrip("\n").split("\n---\n")
@@ -154,11 +163,37 @@ def update_catalog(catalog_path: Path, version: str, bundle_image: str) -> bool:
         and document_field(document, "package") == PACKAGE_NAME
         and document_field(document, "name") == channel
     ]
-    if len(channel_indexes) != 1:
-        raise ValueError(f"expected exactly one {PACKAGE_NAME} {channel} channel")
+    if len(channel_indexes) > 1:
+        raise ValueError(f"expected at most one {PACKAGE_NAME} {channel} channel")
+    if channel_indexes:
+        channel_index = channel_indexes[0]
+        channel_document = documents[channel_index]
+    else:
+        channel_index = len(documents)
+        channel_document = "\n".join(
+            [
+                "schema: olm.channel",
+                f"package: {PACKAGE_NAME}",
+                f"name: {channel}",
+                "entries:",
+            ]
+        )
+        documents.append(channel_document)
 
-    channel_index = channel_indexes[0]
-    channel_document = documents[channel_index]
+    if neteye_version:
+        package_index = next(
+            index
+            for index, document in enumerate(documents)
+            if document_field(document, "schema") == "olm.package"
+            and document_field(document, "name") == PACKAGE_NAME
+        )
+        documents[package_index] = re.sub(
+            r"^defaultChannel: \S+$",
+            f"defaultChannel: {channel}",
+            documents[package_index],
+            flags=re.MULTILINE,
+        )
+
     previous_entries = re.findall(r"^  - name: (\S+)$", channel_document, re.MULTILINE)
     if bundle_name in previous_entries:
         raise ValueError(f"channel {channel} already contains {bundle_name}")
@@ -451,7 +486,7 @@ def parse_args() -> argparse.Namespace:
         "--neteye-version",
         required=False,
         help=(
-            "NetEye release line the nightly channel is scoped to, e.g. 4.50; "
+            "NetEye release line for the versioned channel, e.g. 4.50; "
             "defaults to querying https://api.neteye.cloud/v2/config/version/latest"
         ),
     )
@@ -491,7 +526,10 @@ def main() -> None:
         status = "updated" if changed else "already current"
         print(f"backport catalog {status}: {PACKAGE_NAME}.{args.version}")
         return
-    changed = update_catalog(args.catalog, args.version, args.bundle_image)
+    neteye_version = args.neteye_version or fetch_latest_neteye_version()
+    changed = update_catalog(
+        args.catalog, args.version, args.bundle_image, neteye_version
+    )
     status = "updated" if changed else "already current"
     print(f"catalog {status}: {PACKAGE_NAME}.{args.version}")
 
