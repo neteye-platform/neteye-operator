@@ -113,7 +113,7 @@ spec:
                   apiVersion: tekton.dev/v1
                   kind: PipelineRun
                   metadata:
-                    generateName: e2e-neteye-operator-${run_mode}-$(date -u +%Y%m%d%H%M%S)-
+                    generateName: neteye-operator-e2e-${run_mode}-$(date -u +%Y%m%d%H%M%S)-
                     annotations:
                       neteye.cloud/operator-nightly-version: "$OPERATOR_NIGHTLY_VERSION"
                       neteye.cloud/operator-nightly-channel: "$OPERATOR_NIGHTLY_CHANNEL"
