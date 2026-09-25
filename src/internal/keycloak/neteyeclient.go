@@ -87,7 +87,7 @@ func netEyeClientSpec() neteye.KeycloakClientSpec {
 			ProtocolMapper: "oidc-group-membership-mapper",
 			Config: map[string]string{
 				"full.path":            "true",
-				"id.token.claim":       "true",
+				"id.token.claim":       "false",
 				"access.token.claim":   "true",
 				"userinfo.token.claim": "true",
 				"claim.name":           "groups",

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
-import json
 import os
 import re
 import tempfile
-import urllib.request
 from pathlib import Path
+
+import requests
 
 PACKAGE_NAME = "neteye-operator"
 NETEYE_VERSION_URL = "https://api.neteye.cloud/v2/config/version/latest"
@@ -92,12 +92,13 @@ def atomic_write(path: Path, content: str) -> None:
 
 
 def fetch_latest_neteye_version() -> str:
-    request = urllib.request.Request(
+    response = requests.get(
         NETEYE_VERSION_URL,
         headers={"User-Agent": "neteye-operator-update-catalog"},
+        timeout=10,
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        payload = json.load(response)
+    response.raise_for_status()
+    payload = response.json()
     return re.sub(r"-sr[0-9]+$", "", payload["version"])
 
 

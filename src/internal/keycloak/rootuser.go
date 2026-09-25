@@ -21,7 +21,7 @@ const (
 	// in the keycloak-create-user role.
 	RootUsername = "root"
 	// RootResourceName is the KeycloakUser resource declaring it.
-	RootResourceName = "neteye-root"
+	RootResourceName = "root"
 	// RootSecretName holds the password of the root user.
 	RootSecretName = InstanceName + "-root"
 	// RootSecretPasswordKey is the key holding that password.
@@ -69,10 +69,12 @@ func (c *Component) EnsureRootUser(ctx context.Context, namespace string) error 
 func rootUserSpec() neteye.KeycloakUserSpec {
 	enabled := true
 	return neteye.KeycloakUserSpec{
-		Realm:      masterRealm,
-		Username:   RootUsername,
-		Enabled:    &enabled,
-		RealmRoles: []string{RootRealmRole},
+		Realm:         masterRealm,
+		Username:      RootUsername,
+		Enabled:       &enabled,
+		RealmRoles:    []string{RootRealmRole},
+		Email:         RootUsername + "@neteyelocal",
+		EmailVerified: true,
 		Credential: &neteye.KeycloakUserCredentialSpec{
 			SecretRef: neteye.NetEyeSecretKeySelector{
 				Name: RootSecretName,
