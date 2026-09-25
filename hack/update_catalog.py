@@ -5,6 +5,7 @@ import http.client
 import json
 import os
 import re
+import ssl
 import tempfile
 from pathlib import Path
 
@@ -93,7 +94,11 @@ def atomic_write(path: Path, content: str) -> None:
 
 
 def fetch_latest_neteye_version() -> str:
-    connection = http.client.HTTPSConnection(NETEYE_VERSION_HOST, timeout=10)
+    connection = http.client.HTTPSConnection(  # nosec B309
+        NETEYE_VERSION_HOST,
+        timeout=10,
+        context=ssl.create_default_context(),
+    )
     try:
         connection.request(
             "GET",
