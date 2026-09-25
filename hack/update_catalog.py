@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 
 import argparse
-import http.client
-import json
 import os
 import re
-import ssl
 import tempfile
 from pathlib import Path
 
+import requests
+
 PACKAGE_NAME = "neteye-operator"
-NETEYE_VERSION_HOST = "api.neteye.cloud"
-NETEYE_VERSION_PATH = "/v2/config/version/latest"
+NETEYE_VERSION_URL = "https://api.neteye.cloud/v2/config/version/latest"
 SEMVER_PATTERN = re.compile(
     r"^(0|[1-9][0-9]*)\."
     r"(0|[1-9][0-9]*)\."
@@ -94,25 +92,13 @@ def atomic_write(path: Path, content: str) -> None:
 
 
 def fetch_latest_neteye_version() -> str:
-    connection = http.client.HTTPSConnection(  # nosec B309
-        NETEYE_VERSION_HOST,
+    response = requests.get(
+        NETEYE_VERSION_URL,
+        headers={"User-Agent": "neteye-operator-update-catalog"},
         timeout=10,
-        context=ssl.create_default_context(),
     )
-    try:
-        connection.request(
-            "GET",
-            NETEYE_VERSION_PATH,
-            headers={"User-Agent": "neteye-operator-update-catalog"},
-        )
-        response = connection.getresponse()
-        if response.status != http.HTTPStatus.OK:
-            raise RuntimeError(
-                f"failed to fetch latest NetEye version: HTTP {response.status}"
-            )
-        payload = json.load(response)
-    finally:
-        connection.close()
+    response.raise_for_status()
+    payload = response.json()
     return re.sub(r"-sr[0-9]+$", "", payload["version"])
 
 

@@ -1,8 +1,11 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from update_catalog import (
+    NETEYE_VERSION_URL,
+    fetch_latest_neteye_version,
     update_catalog,
     update_catalog_backport,
     update_nightly_channel,
@@ -34,6 +37,23 @@ properties:
       packageName: neteye-operator
       version: 0.2.0-alpha1
 """
+
+
+class FetchLatestNetEyeVersionTest(unittest.TestCase):
+    @patch("update_catalog.requests.get")
+    def test_uses_verified_requests_client(self, get: Mock) -> None:
+        response = get.return_value
+        response.json.return_value = {"version": "4.50.0-sr1"}
+
+        version = fetch_latest_neteye_version()
+
+        self.assertEqual(version, "4.50.0")
+        get.assert_called_once_with(
+            NETEYE_VERSION_URL,
+            headers={"User-Agent": "neteye-operator-update-catalog"},
+            timeout=10,
+        )
+        response.raise_for_status.assert_called_once_with()
 
 
 class UpdateCatalogTest(unittest.TestCase):
