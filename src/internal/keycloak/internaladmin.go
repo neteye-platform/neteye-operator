@@ -21,10 +21,10 @@ const (
 	// admin before deleting it.
 	InternalAdminUsername = "neteye-internal-keycloak-admin"
 	// InternalAdminResourceName is the KeycloakUser resource declaring it.
-	InternalAdminResourceName = "neteye-internal-admin"
+	InternalAdminResourceName = "neteye-internal-keycloak-admin"
 	// InternalAdminSecretName holds the password of the internal admin. It is
 	// separate from AdminSecretName, which belongs to the bootstrap account.
-	InternalAdminSecretName = InstanceName + "-internal-admin"
+	InternalAdminSecretName = InstanceName + "-neteye-internal-keycloak-admin"
 	// InternalAdminSecretPasswordKey is the key holding that password.
 	InternalAdminSecretPasswordKey = "password"
 	// InternalAdminRealmRole is the realm role the account needs to administer
@@ -70,10 +70,12 @@ func (c *Component) EnsureInternalAdminUser(ctx context.Context, namespace strin
 func internalAdminSpec() neteye.KeycloakUserSpec {
 	enabled := true
 	return neteye.KeycloakUserSpec{
-		Realm:      masterRealm,
-		Username:   InternalAdminUsername,
-		Enabled:    &enabled,
-		RealmRoles: []string{InternalAdminRealmRole},
+		Realm:         masterRealm,
+		Username:      InternalAdminUsername,
+		Enabled:       &enabled,
+		Email:         InternalAdminUsername + "@neteyelocal",
+		EmailVerified: true,
+		RealmRoles:    []string{InternalAdminRealmRole},
 		Credential: &neteye.KeycloakUserCredentialSpec{
 			SecretRef: neteye.NetEyeSecretKeySelector{
 				Name: InternalAdminSecretName,
