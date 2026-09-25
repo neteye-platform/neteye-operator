@@ -213,6 +213,7 @@ jobs:
           VERSION: ${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
           NETEYE_VERSION: ${{ steps.neteye-version.outputs.version }}
         run: |
+          python3 -m pip install --disable-pip-version-check -r hack/requirements.txt
           ./hack/update_catalog.py \
             --catalog ./catalog/catalog/index.yaml \
             --version "$VERSION" \
