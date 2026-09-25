@@ -1,0 +1,206 @@
+---
+# Manually chained from nightly-build.yaml (last step of update-nightly-catalog
+# fires this via the PAC incoming webhook). Requires, in the target
+# cluster/namespace (not managed here):
+#   - Repository CR with an `incoming` entry targeting branch "main"
+#   - Secret referenced by that entry (the shared incoming-webhook secret)
+#   - A ServiceAccount for this PipelineRun with RBAC to create/get
+#     PipelineRuns in the "rd-neteye-pipeline" namespace (where the real
+#     neteye-operator-install/-update/-upgrade Pipelines from
+#     si-rd-tekton-pipelines are deployed)
+#
+# Triggers the "install", "update" and "upgrade" e2e pipelines as three
+# independent tasks (they run in parallel since none declares runAfter).
+# Each task shares the same taskSpec (via YAML anchor/alias) and only differs
+# in the literal "neteye-update-upgrade" value it passes in; the shared script
+# retries its own PipelineRun up to max_attempts times, stopping as soon as
+# one attempt succeeds.
+# Release itself stays a GitHub Actions workflow (.github/workflows/release.yaml),
+# triggered directly by its `check_run: completed` handler reacting to the
+# GitHub Check Run PAC reports for this PipelineRun (named "e2e") - no
+# dispatch call needed from here.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: neteye-operator-e2e
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[incoming]"
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+spec:
+  params:
+    - name: operator-nightly-version
+      value: ""
+    - name: operator-nightly-channel
+      value: ""
+    - name: tekton-namespace
+      value: rd-neteye-pipeline
+    - name: neteye-version
+      value: latest
+  pipelineSpec:
+    params:
+      - name: operator-nightly-version
+        type: string
+      - name: operator-nightly-channel
+        type: string
+        default: nightly
+      - name: tekton-namespace
+        type: string
+        default: rd-neteye-pipeline
+      - name: neteye-version
+        type: string
+        default: latest
+    tasks:
+      - name: install
+        params:
+          - name: operator-nightly-version
+            value: $(params.operator-nightly-version)
+          - name: operator-nightly-channel
+            value: $(params.operator-nightly-channel)
+          - name: tekton-namespace
+            value: $(params.tekton-namespace)
+          - name: neteye-version
+            value: $(params.neteye-version)
+          - name: neteye-update-upgrade
+            value: none
+        taskSpec: &e2eTaskSpec
+          params:
+            - name: operator-nightly-version
+              type: string
+            - name: operator-nightly-channel
+              type: string
+              default: nightly
+            - name: tekton-namespace
+              type: string
+            - name: neteye-version
+              type: string
+              default: latest
+            - name: neteye-update-upgrade
+              type: string
+              default: none
+          steps:
+            - name: run-e2e-operator-tests
+              image: ghcr.io/witglobal/oc-cli-tools:1.1.0@sha256:404155df46f632761680eb70f3473746c4eecb6c55c89dd6b39adf8276ee85a8
+              env:
+                - name: HOME
+                  value: /tekton/home
+                - name: OPERATOR_NIGHTLY_VERSION
+                  value: $(params.operator-nightly-version)
+                - name: NAMESPACE
+                  value: $(params.tekton-namespace)
+                - name: NETEYE_VERSION
+                  value: $(params.neteye-version)
+                - name: OPERATOR_NIGHTLY_CHANNEL
+                  value: $(params.operator-nightly-channel)
+                - name: NETEYE_UPDATE_UPGRADE
+                  value: $(params.neteye-update-upgrade)
+              script: |
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                case "$NETEYE_UPDATE_UPGRADE" in
+                  none) run_mode=install ;;
+                  update|upgrade) run_mode="$NETEYE_UPDATE_UPGRADE" ;;
+                  *) echo "Invalid neteye-update-upgrade value: $NETEYE_UPDATE_UPGRADE" >&2; exit 1 ;;
+                esac
+
+                attempt=0
+                max_attempts=3
+
+                while (( attempt < max_attempts )); do
+                  attempt=$((attempt + 1))
+                  name="$(oc create -n "$NAMESPACE" -f - <<EOF | awk -F/ '{print $2}' | awk '{print $1}'
+                  apiVersion: tekton.dev/v1
+                  kind: PipelineRun
+                  metadata:
+                    generateName: neteye-operator-e2e-${run_mode}-$(date -u +%Y%m%d%H%M%S)-
+                    annotations:
+                      neteye.cloud/operator-nightly-version: "$OPERATOR_NIGHTLY_VERSION"
+                      neteye.cloud/operator-nightly-channel: "$OPERATOR_NIGHTLY_CHANNEL"
+                      neteye.cloud/neteye-update-upgrade: "$NETEYE_UPDATE_UPGRADE"
+                      neteye.cloud/neteye-version: "$NETEYE_VERSION"
+                  spec:
+                    pipelineRef:
+                      name: rhel8-neteye-build
+                    taskRunTemplate:
+                      serviceAccountName: openshift-pipelines
+                    timeouts:
+                      pipeline: "3h0m0s"
+                    workspaces:
+                      - name: shared-workspace
+                        volumeClaimTemplate:
+                          spec:
+                            storageClassName: ocs-storagecluster-cephfs-sing-rep
+                            volumeMode: Filesystem
+                            accessModes: ["ReadWriteMany"]
+                            resources:
+                              requests:
+                                storage: 1Gi
+                    params:
+                      - name: projects
+                        value: "neteye-ci-dummy"
+                      - name: version
+                        value: "$NETEYE_VERSION"
+                      - name: taskRevision
+                        value: "support-update-upgrade-builds"
+                      - name: openshiftScriptsRef
+                        value: "support-update-upgrade-build"
+                      - name: neteyeOperatorChannel
+                        value: "$OPERATOR_NIGHTLY_CHANNEL"
+                      - name: neteyeOperatorVersion
+                        value: "$OPERATOR_NIGHTLY_VERSION"
+                      - name: neteyeUpdateUpgrade
+                        value: "$NETEYE_UPDATE_UPGRADE"
+                EOF
+                  )"
+                  echo "Attempt $attempt: created PipelineRun $name"
+
+                  status=""
+                  while [[ -z "$status" || "$status" == "Unknown" ]]; do
+                    status="$(oc get pipelinerun "$name" -n "$NAMESPACE" \
+                      -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].status}' \
+                      2>/dev/null || true)"
+                    if [[ -z "$status" || "$status" == "Unknown" ]]; then
+                      sleep 3
+                    fi
+                  done
+
+                  if [[ "$status" == "True" ]]; then
+                    echo "Succeeded"
+                    exit 0
+                  fi
+
+                  if (( attempt >= max_attempts )); then
+                    echo "Giving up after attempt $attempt: retry limit reached"
+                    exit 1
+                  fi
+
+                  echo "Attempt $attempt failed, retrying in 3s"
+                  sleep 3
+                done
+      - name: update
+        params:
+          - name: operator-nightly-version
+            value: $(params.operator-nightly-version)
+          - name: operator-nightly-channel
+            value: $(params.operator-nightly-channel)
+          - name: tekton-namespace
+            value: $(params.tekton-namespace)
+          - name: neteye-version
+            value: $(params.neteye-version)
+          - name: neteye-update-upgrade
+            value: update
+        taskSpec: *e2eTaskSpec
+      - name: upgrade
+        params:
+          - name: operator-nightly-version
+            value: $(params.operator-nightly-version)
+          - name: operator-nightly-channel
+            value: $(params.operator-nightly-channel)
+          - name: tekton-namespace
+            value: $(params.tekton-namespace)
+          - name: neteye-version
+            value: $(params.neteye-version)
+          - name: neteye-update-upgrade
+            value: upgrade
+        taskSpec: *e2eTaskSpec
