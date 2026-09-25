@@ -151,8 +151,6 @@ spec:
                         value: "$OPERATOR_NIGHTLY_VERSION"
                       - name: neteyeUpdateUpgrade
                         value: "$NETEYE_UPDATE_UPGRADE"
-                      - name: skipTests
-                        value: "true"
                 EOF
                   )"
                   echo "Attempt $attempt: created PipelineRun $name"
