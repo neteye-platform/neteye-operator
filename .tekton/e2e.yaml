@@ -32,10 +32,11 @@ spec:
   timeouts:
     pipeline: "8h0m0s"
   params:
+    # Filled by PAC from the incoming webhook params (see nightly-build.yaml).
     - name: operator-nightly-version
-      value: ""
+      value: "{{ operator-nightly-version }}"
     - name: operator-nightly-channel
-      value: ""
+      value: "{{ operator-nightly-channel }}"
     - name: tekton-namespace
       value: rd-neteye-pipeline
     - name: neteye-version
