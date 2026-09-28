@@ -180,11 +180,28 @@ jobs:
           ref: main
           persist-credentials: false
 
+      # Resolved once so the catalog update and the e2e trigger use the same channel.
+      - name: Resolve nightly channel
+        id: nightly-channel
+        run: |
+          set -euo pipefail
+          neteye_version="$(curl --fail-with-body -sS --max-time 10 \
+            -A 'neteye-operator-update-catalog' \
+            'https://api.neteye.cloud/v2/config/version/latest' \
+            | jq -er '.version | sub("-sr[0-9]+$"; "")')"
+          if [[ ! "$neteye_version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "error: unexpected NetEye version: $neteye_version" >&2
+            exit 1
+          fi
+          echo "neteye-version=$neteye_version" >> "$GITHUB_OUTPUT"
+          echo "channel=${neteye_version}-nightly" >> "$GITHUB_OUTPUT"
+
       - name: Update nightly channel
         run: |
           ./operator/hack/update_catalog.py \
             --catalog ./catalog/catalog/index.yaml \
             --nightly \
+            --neteye-version "${{ steps.nightly-channel.outputs.neteye-version }}" \
             --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.version-tag }}"
 
       - name: Check catalog changes
@@ -283,11 +300,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          latest_version="$(curl --fail-with-body -sS --max-time 10 \
-            -A 'neteye-operator-update-catalog' \
-            'https://api.neteye.cloud/v2/config/version/latest' \
-            | jq -er '.version | sub("-sr[0-9]+$"; "")')"
-          operator_channel="${latest_version}-nightly"
+          operator_channel="${{ steps.nightly-channel.outputs.channel }}"
 
           response="$(curl --fail-with-body -sS -X POST "$PAC_CONTROLLER_URL/incoming" \
             -H "Content-Type: application/json" \

@@ -28,6 +28,9 @@ metadata:
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
     pipelinesascode.tekton.dev/max-keep-runs: "5"
 spec:
+  # Must cover max_attempts (3) sequential child PipelineRuns of up to 5h each.
+  timeouts:
+    pipeline: "8h0m0s"
   params:
     - name: operator-nightly-version
       value: ""
@@ -43,7 +46,6 @@ spec:
         type: string
       - name: operator-nightly-channel
         type: string
-        default: nightly
       - name: tekton-namespace
         type: string
         default: rd-neteye-pipeline
@@ -69,7 +71,6 @@ spec:
               type: string
             - name: operator-nightly-channel
               type: string
-              default: nightly
             - name: tekton-namespace
               type: string
             - name: neteye-version
@@ -104,6 +105,11 @@ spec:
                   *) echo "Invalid neteye-update-upgrade value: $NETEYE_UPDATE_UPGRADE" >&2; exit 1 ;;
                 esac
 
+                if [[ ! "$OPERATOR_NIGHTLY_CHANNEL" =~ ^[0-9]+\.[0-9]+-nightly$ ]]; then
+                  echo "Invalid operator-nightly-channel (expected <major>.<minor>-nightly): '$OPERATOR_NIGHTLY_CHANNEL'" >&2
+                  exit 1
+                fi
+
                 attempt=0
                 max_attempts=3
 
@@ -133,7 +139,7 @@ spec:
                     taskRunTemplate:
                       serviceAccountName: openshift-pipelines
                     timeouts:
-                      pipeline: "3h0m0s"
+                      pipeline: "3h30m0s"
                     workspaces:
                       - name: shared-workspace
                         volumeClaimTemplate:
@@ -208,7 +214,7 @@ spec:
           - name: tekton-namespace
             value: $(params.tekton-namespace)
           - name: neteye-version
-            value: $(params.neteye-version)
+            value: current
           - name: neteye-update-upgrade
             value: upgrade
         taskSpec: *e2eTaskSpec
