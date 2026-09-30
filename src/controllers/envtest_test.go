@@ -332,6 +332,37 @@ func TestAPIServerAppliesTelemetryDefaults(t *testing.T) {
 	}
 }
 
+func TestAPIServerAppliesKeycloakDatabaseDefaults(t *testing.T) {
+	c, _ := startEnvtest(t)
+	ctx := context.Background()
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: keycloak.WorkloadNamespace}}); err != nil {
+		t.Fatal(err)
+	}
+	ne := &neteye.NetEye{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform", Namespace: keycloak.WorkloadNamespace},
+		Spec: neteye.NetEyeSpec{
+			Version:                      neteye.CurrentNetEyeVersion,
+			Gateway:                      neteye.NetEyeGatewaySpec{Name: "neteye", ClassName: "cilium"},
+			InternalCertificateIssuerRef: "internal-issuer",
+			Identity: neteye.NetEyeIdentitySpec{
+				Hostname:     "keycloak.example.com",
+				DBConnection: neteye.NetEyeDBConnectionSpec{Host: "mariadb.example.com"},
+			},
+		},
+	}
+	if err := c.Create(ctx, ne); err != nil {
+		t.Fatalf("create NetEye with omitted database fields: %v", err)
+	}
+	current := &neteye.NetEye{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatal(err)
+	}
+	db := current.Spec.Identity.DBConnection
+	if db.DBName != "keycloak" || db.UsernameSecret == nil || *db.UsernameSecret != (neteye.NetEyeSecretKeySelector{Name: "keycloak-db-credentials", Key: "username"}) || db.PasswordSecret == nil || *db.PasswordSecret != (neteye.NetEyeSecretKeySelector{Name: "keycloak-db-credentials", Key: "password"}) {
+		t.Errorf("database defaults = %+v", db)
+	}
+}
+
 func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeElasticStackSpec) (client.Client, *runtime.Scheme, context.Context, *neteye.NetEye, *NetEyeReconciler) {
 	t.Helper()
 	c, s := startEnvtest(t)
@@ -362,8 +393,8 @@ func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeEla
 				DBConnection: neteye.NetEyeDBConnectionSpec{
 					Host:           "mariadb.example.com",
 					DBName:         "keycloak",
-					UsernameSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"},
-					PasswordSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
+					UsernameSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"},
+					PasswordSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
 				},
 			},
 			ElasticStack: elasticConfig,
@@ -471,8 +502,8 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 				DBConnection: neteye.NetEyeDBConnectionSpec{
 					Host:           "mariadb.example.com",
 					DBName:         "keycloak",
-					UsernameSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"},
-					PasswordSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
+					UsernameSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"},
+					PasswordSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
 				},
 			},
 		},

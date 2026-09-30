@@ -55,20 +55,57 @@ type NetEyeDBConnectionSpec struct {
 	Port int32 `json:"port,omitempty"`
 
 	// DBName is the database name used by Keycloak.
-	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:default=keycloak
 	// +kubebuilder:example="keycloak"
-	DBName string `json:"dbName"`
+	DBName string `json:"dbName,omitempty"`
 
 	// UsernameSecret references the Secret key containing the database username.
 	// The Secret must exist in the shared Keycloak workload namespace.
-	// +kubebuilder:validation:Required
-	UsernameSecret NetEyeSecretKeySelector `json:"usernameSecret"`
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={name:keycloak-db-credentials,key:username}
+	UsernameSecret *NetEyeSecretKeySelector `json:"usernameSecret,omitempty"`
 
 	// PasswordSecret references the Secret key containing the database password.
 	// The Secret must exist in the shared Keycloak workload namespace.
-	// +kubebuilder:validation:Required
-	PasswordSecret NetEyeSecretKeySelector `json:"passwordSecret"`
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={name:keycloak-db-credentials,key:password}
+	PasswordSecret *NetEyeSecretKeySelector `json:"passwordSecret,omitempty"`
+}
+
+const (
+	DefaultKeycloakDatabaseName              = "keycloak"
+	DefaultKeycloakDatabaseCredentialsName   = "keycloak-db-credentials"
+	DefaultKeycloakDatabaseUsernameSecretKey = "username"
+	DefaultKeycloakDatabasePasswordSecretKey = "password"
+)
+
+// EffectiveDBName returns the Keycloak database name for objects that bypassed
+// admission defaulting.
+func (s *NetEyeDBConnectionSpec) EffectiveDBName() string {
+	if s == nil || s.DBName == "" {
+		return DefaultKeycloakDatabaseName
+	}
+	return s.DBName
+}
+
+// EffectiveUsernameSecret returns the Keycloak database username selector for
+// objects that bypassed admission defaulting.
+func (s *NetEyeDBConnectionSpec) EffectiveUsernameSecret() NetEyeSecretKeySelector {
+	if s == nil || s.UsernameSecret == nil {
+		return NetEyeSecretKeySelector{Name: DefaultKeycloakDatabaseCredentialsName, Key: DefaultKeycloakDatabaseUsernameSecretKey}
+	}
+	return *s.UsernameSecret
+}
+
+// EffectivePasswordSecret returns the Keycloak database password selector for
+// objects that bypassed admission defaulting.
+func (s *NetEyeDBConnectionSpec) EffectivePasswordSecret() NetEyeSecretKeySelector {
+	if s == nil || s.PasswordSecret == nil {
+		return NetEyeSecretKeySelector{Name: DefaultKeycloakDatabaseCredentialsName, Key: DefaultKeycloakDatabasePasswordSecretKey}
+	}
+	return *s.PasswordSecret
 }
 
 // NetEyeEnvVar defines an environment variable.

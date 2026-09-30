@@ -246,6 +246,7 @@ spec:
                       Credential Secrets must exist in the shared Keycloak workload namespace.
                     properties:
                       dbName:
+                        default: keycloak
                         description: DBName is the database name used by Keycloak.
                         example: keycloak
                         minLength: 1
@@ -257,6 +258,9 @@ spec:
                         minLength: 1
                         type: string
                       passwordSecret:
+                        default:
+                          key: password
+                          name: keycloak-db-credentials
                         description: |-
                           PasswordSecret references the Secret key containing the database password.
                           The Secret must exist in the shared Keycloak workload namespace.
@@ -283,6 +287,9 @@ spec:
                         minimum: 1
                         type: integer
                       usernameSecret:
+                        default:
+                          key: username
+                          name: keycloak-db-credentials
                         description: |-
                           UsernameSecret references the Secret key containing the database username.
                           The Secret must exist in the shared Keycloak workload namespace.
@@ -302,10 +309,7 @@ spec:
                         - name
                         type: object
                     required:
-                    - dbName
                     - host
-                    - passwordSecret
-                    - usernameSecret
                     type: object
                   hostname:
                     description: Hostname is the public hostname configured for the
