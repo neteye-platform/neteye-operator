@@ -120,8 +120,8 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 			Host:           "db.example.com",
 			Port:           3307,
 			DBName:         "keycloak",
-			UsernameSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"},
-			PasswordSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
+			UsernameSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"},
+			PasswordSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
 		},
 	}
 	spec := keycloakInstanceSpec("ghcr.io/example/keycloak:1.0.0", identity)
@@ -164,6 +164,53 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 	}
 	if _, ok := spec["networkPolicy"]; !ok {
 		t.Error("networkPolicy should always be configured")
+	}
+}
+
+func TestKeycloakInstanceSpecDatabaseDefaultsAndOverrides(t *testing.T) {
+	tests := []struct {
+		name     string
+		database neteye.NetEyeDBConnectionSpec
+		want     map[string]any
+	}{
+		{
+			name:     "uses defaults when admission is bypassed",
+			database: neteye.NetEyeDBConnectionSpec{Host: "db.example.com"},
+			want: map[string]any{
+				"vendor":         "mariadb",
+				"host":           "db.example.com",
+				"port":           int64(defaultDatabasePort),
+				"database":       "keycloak",
+				"usernameSecret": map[string]any{"name": "keycloak-db-credentials", "key": "username"},
+				"passwordSecret": map[string]any{"name": "keycloak-db-credentials", "key": "password"},
+			},
+		},
+		{
+			name: "preserves explicit overrides",
+			database: neteye.NetEyeDBConnectionSpec{
+				Host:           "db.example.com",
+				Port:           3307,
+				DBName:         "custom-keycloak",
+				UsernameSecret: &neteye.NetEyeSecretKeySelector{Name: "custom-credentials", Key: "user"},
+				PasswordSecret: &neteye.NetEyeSecretKeySelector{Name: "custom-credentials", Key: "pass"},
+			},
+			want: map[string]any{
+				"vendor":         "mariadb",
+				"host":           "db.example.com",
+				"port":           int64(3307),
+				"database":       "custom-keycloak",
+				"usernameSecret": map[string]any{"name": "custom-credentials", "key": "user"},
+				"passwordSecret": map[string]any{"name": "custom-credentials", "key": "pass"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "kc.example.com", DBConnection: tt.database})
+			if got := spec["db"]; !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("database spec = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 

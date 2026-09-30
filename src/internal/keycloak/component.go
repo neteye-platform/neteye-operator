@@ -285,6 +285,8 @@ func (c *Component) EnsureInstance(ctx context.Context, namespace, image string,
 
 func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[string]any {
 	database := identity.DBConnection
+	usernameSecret := database.EffectiveUsernameSecret()
+	passwordSecret := database.EffectivePasswordSecret()
 	spec := map[string]any{
 		"instances": int64(identityReplicas(identity)),
 		"image":     image,
@@ -292,14 +294,14 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 			"vendor":   "mariadb",
 			"host":     database.Host,
 			"port":     int64(externalDatabasePort(database)),
-			"database": database.DBName,
+			"database": database.EffectiveDBName(),
 			"usernameSecret": map[string]any{
-				"name": database.UsernameSecret.Name,
-				"key":  database.UsernameSecret.Key,
+				"name": usernameSecret.Name,
+				"key":  usernameSecret.Key,
 			},
 			"passwordSecret": map[string]any{
-				"name": database.PasswordSecret.Name,
-				"key":  database.PasswordSecret.Key,
+				"name": passwordSecret.Name,
+				"key":  passwordSecret.Key,
 			},
 		},
 		"http": map[string]any{

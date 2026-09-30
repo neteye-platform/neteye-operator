@@ -73,6 +73,34 @@ func TestGeneratedCRDDefaultsEDOTGatewayReplicas(t *testing.T) {
 	}
 }
 
+func TestKeycloakDatabaseConnectionDefaults(t *testing.T) {
+	var database *NetEyeDBConnectionSpec
+	if got := database.EffectiveDBName(); got != DefaultKeycloakDatabaseName {
+		t.Errorf("nil database name = %q, want %q", got, DefaultKeycloakDatabaseName)
+	}
+	if got, want := database.EffectiveUsernameSecret(), (NetEyeSecretKeySelector{Name: DefaultKeycloakDatabaseCredentialsName, Key: DefaultKeycloakDatabaseUsernameSecretKey}); got != want {
+		t.Errorf("nil username selector = %+v, want %+v", got, want)
+	}
+	if got, want := database.EffectivePasswordSecret(), (NetEyeSecretKeySelector{Name: DefaultKeycloakDatabaseCredentialsName, Key: DefaultKeycloakDatabasePasswordSecretKey}); got != want {
+		t.Errorf("nil password selector = %+v, want %+v", got, want)
+	}
+}
+
+func TestKeycloakDatabaseConnectionEffectiveValuesPreserveExplicitConfiguration(t *testing.T) {
+	username := &NetEyeSecretKeySelector{Name: "custom-credentials", Key: "user"}
+	password := &NetEyeSecretKeySelector{Name: "custom-credentials", Key: "pass"}
+	database := &NetEyeDBConnectionSpec{DBName: " custom-keycloak ", UsernameSecret: username, PasswordSecret: password}
+	if got := database.EffectiveDBName(); got != " custom-keycloak " {
+		t.Errorf("database name = %q, want explicit value", got)
+	}
+	if got := database.EffectiveUsernameSecret(); got != *username {
+		t.Errorf("username selector = %+v, want %+v", got, *username)
+	}
+	if got := database.EffectivePasswordSecret(); got != *password {
+		t.Errorf("password selector = %+v, want %+v", got, *password)
+	}
+}
+
 func TestTelemetryDefaults(t *testing.T) {
 	collector := &NetEyeOtelCollectorSpec{}
 	if collector.EffectiveReplicas() != 1 || collector.EffectiveBasicAuthSecretName() != "otel-collector-basicauth" || collector.EffectiveRootCASecretName() != "neteye-root-ca" || collector.EffectiveAPIKeySecret() != (NetEyeSecretKeySelector{Name: "otel-collector-icinga-api-key-secret", Key: "api_key"}) {
