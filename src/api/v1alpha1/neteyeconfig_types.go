@@ -163,10 +163,34 @@ type NetEyeIdentitySpec struct {
 	// +listMapKey=name
 	AdditionalOptions []NetEyeKeycloakOption `json:"additionalOptions,omitempty"`
 
+	// Telemetry configures opt-in identity service telemetry export to the shared
+	// EDOT Gateway. Each signal is disabled by default.
+	// +kubebuilder:validation:Optional
+	Telemetry *NetEyeIdentityTelemetrySpec `json:"telemetry,omitempty"`
+
 	// DBConnection configures the MariaDB database used by identity services.
 	// Credential Secrets must exist in the shared Keycloak workload namespace.
 	// +kubebuilder:validation:Required
 	DBConnection NetEyeDBConnectionSpec `json:"dbConnection"`
+}
+
+// NetEyeIdentityTelemetrySpec configures opt-in Keycloak telemetry signals.
+type NetEyeIdentityTelemetrySpec struct {
+	// LogsEnabled exports Keycloak logs through the EDOT Gateway.
+	// +kubebuilder:default=false
+	LogsEnabled bool `json:"logsEnabled,omitempty"`
+
+	// MetricsEnabled exports Keycloak metrics through the EDOT Gateway.
+	// +kubebuilder:default=false
+	MetricsEnabled bool `json:"metricsEnabled,omitempty"`
+
+	// ResourceAttributes adds OpenTelemetry resource attributes to Keycloak
+	// telemetry. When either signal is enabled, attributes are merged over the
+	// default data_stream.namespace=neteye_system_internal. The service.name
+	// attribute is forbidden because the operator owns the Keycloak service name
+	// (neteye-keycloak).
+	// +kubebuilder:validation:Optional
+	ResourceAttributes map[string]string `json:"resourceAttributes,omitempty"`
 }
 
 // NetEyeElasticStackSpec configures the shared Elastic Stack telemetry pipeline.

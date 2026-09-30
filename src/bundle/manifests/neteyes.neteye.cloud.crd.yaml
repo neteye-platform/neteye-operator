@@ -348,6 +348,32 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
+                  telemetry:
+                    description: |-
+                      Telemetry configures opt-in identity service telemetry export to the shared
+                      EDOT Gateway. Each signal is disabled by default.
+                    properties:
+                      logsEnabled:
+                        default: false
+                        description: LogsEnabled exports Keycloak logs through the
+                          EDOT Gateway.
+                        type: boolean
+                      metricsEnabled:
+                        default: false
+                        description: MetricsEnabled exports Keycloak metrics through
+                          the EDOT Gateway.
+                        type: boolean
+                      resourceAttributes:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          ResourceAttributes adds OpenTelemetry resource attributes to Keycloak
+                          telemetry. When either signal is enabled, attributes are merged over the
+                          default data_stream.namespace=neteye_system_internal. The service.name
+                          attribute is forbidden because the operator owns the Keycloak service name
+                          (neteye-keycloak).
+                        type: object
+                    type: object
                 required:
                 - dbConnection
                 - hostname
