@@ -3,9 +3,13 @@ IMG ?= ghcr.io/neteye-platform/neteye-operator:$(VERSION)
 BUNDLE_IMG ?= ghcr.io/neteye-platform/neteye-operator-bundle:$(VERSION)
 
 # Tool versions.
+# renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools
 CONTROLLER_GEN_VERSION ?= v0.21.0
-GOLANGCI_LINT_VERSION ?= v2.13.2
+# renovate: datasource=github-releases depName=golangci/golangci-lint
+GOLANGCI_LINT_VERSION ?= v2.14.0
+# renovate: datasource=github-releases depName=kubernetes-sigs/kustomize extractVersion=^kustomize/(?<version>.+)$
 KUSTOMIZE_VERSION ?= v5.7.1
+# renovate: datasource=github-releases depName=operator-framework/operator-sdk
 OPERATOR_SDK_VERSION ?= v1.42.3
 VERSION ?= 0.1.14
 PACKAGE_NAME ?= neteye-operator
@@ -19,7 +23,9 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 OPERATOR_SDK ?= $(LOCALBIN)/operator-sdk
 GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 ENVTEST ?= $(LOCALBIN)/setup-envtest
+# A release branch, not a tag: Renovate cannot resolve it.
 ENVTEST_VERSION ?= release-0.24
+# renovate: datasource=github-releases depName=kubernetes/kubernetes extractVersion=^v(?<version>.+)$
 ENVTEST_K8S_VERSION ?= 1.36.2
 CRD_BASES ?= config/crd/bases
 
@@ -44,8 +50,7 @@ verify-generated: generate bundle bundle-validate ## Regenerate all code and OLM
 
 .PHONY: fmt
 fmt: ## Run gofmt against Go code.
-	gofmt -w main.go api/v1alpha1/*.go
-	gofmt -w controllers/*.go internal/keycloak/*.go internal/elasticstack/*.go internal/resources/*.go
+	gofmt -l -w .
 
 .PHONY: vet
 vet: ## Run go vet.

@@ -6,11 +6,35 @@ run:
 linters:
   default: standard
   enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errname
     - errorlint
+    - gocheckcompilerdirectives
+    - gosec
+    - intrange
+    - makezero
     - misspell
+    - nilerr
+    - noctx
+    - predeclared
+    - reassign
     - revive
     - unconvert
+    - usestdlibvars
+    - wastedassign
   settings:
+    gosec:
+      config:
+        # "secret", "credentials" and "apiKey" name Kubernetes objects here, so
+        # the default pattern matches object names rather than credentials.
+        # gitleaks, Trivy and CodeQL cover real secret material.
+        G101:
+          pattern: "(?i)passwd|password|pwd|token|bearer|private[_-]?key"
     misspell:
       locale: US
     revive:

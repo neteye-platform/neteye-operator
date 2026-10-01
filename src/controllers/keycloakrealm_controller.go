@@ -34,7 +34,7 @@ func (r *KeycloakRealmReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, err
 	}
-	api, err := r.adminAPI(ctx, realm.Namespace) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
+	api, err := r.adminAPI(ctx, realm.Namespace)
 	if err != nil {
 		if !realm.DeletionTimestamp.IsZero() {
 			if r.isMissingCredentials(err) {
@@ -43,11 +43,8 @@ func (r *KeycloakRealmReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			}
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
-		if r.isMissingCredentials(err) {
-			r.setStatus(ctx, req.NamespacedName, realm, neteye.ServiceStateFailed, missingCredentialsMessage(realm.Namespace))
-			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
-		}
-		r.setStatus(ctx, req.NamespacedName, realm, neteye.ServiceStateNotReady, err.Error())
+		state, message := r.adminAPIFailure(err, realm.Namespace)
+		r.setStatus(ctx, req.NamespacedName, realm, state, message)
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
 	if !realm.DeletionTimestamp.IsZero() {

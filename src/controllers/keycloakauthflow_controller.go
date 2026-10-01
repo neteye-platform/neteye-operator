@@ -38,13 +38,10 @@ func (r *KeycloakAuthFlowReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if !flow.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, flow)
 	}
-	api, err := r.adminAPI(ctx, flow.Namespace) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
+	api, err := r.adminAPI(ctx, flow.Namespace)
 	if err != nil {
-		if r.isMissingCredentials(err) {
-			r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateFailed, missingCredentialsMessage(flow.Namespace))
-			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
-		}
-		r.setStatus(ctx, req.NamespacedName, flow, neteye.ServiceStateNotReady, err.Error())
+		state, message := r.adminAPIFailure(err, flow.Namespace)
+		r.setStatus(ctx, req.NamespacedName, flow, state, message)
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
 	if controllerutil.AddFinalizer(flow, KeycloakAuthFlowFinalizer) {

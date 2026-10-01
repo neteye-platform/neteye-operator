@@ -15,6 +15,67 @@
       "matchPackageNames": ["ghcr.io/neteye-platform/neteye-operator-catalog"],
       "pinDigests": false,
       "minimumReleaseAge": null
+    },
+    {
+      "description": "Keep the operand images in the Go defaults and in the CSV patch in a single pull request, so the two copies cannot drift",
+      "matchFileNames": [
+        "src/api/v1alpha1/neteyeconfig_types.go",
+        "src/config/manifests/patches/deployment.yaml"
+      ],
+      "groupName": "operand images"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Operand images in the NetEye component defaults",
+      "managerFilePatterns": ["/^src/api/v1alpha1/neteyeconfig_types\\.go$/"],
+      "datasourceTemplate": "docker",
+      "matchStrings": [
+        "Image:\\s*\"(?<depName>[^\"@:]+):(?<currentValue>[^\"@]+?)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?\""
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Operand images advertised as RELATED_IMAGE_* in the CSV deployment patch",
+      "managerFilePatterns": [
+        "/^src/config/manifests/patches/deployment\\.yaml$/"
+      ],
+      "datasourceTemplate": "docker",
+      "matchStrings": [
+        "value:\\s*(?<depName>[^\\s@:,]+):(?<currentValue>[^\\s@,]+?)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?,"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "opm image used to validate the generated catalog",
+      "managerFilePatterns": ["/^\\.github/workflows/release\\.yaml$/"],
+      "datasourceTemplate": "docker",
+      "matchStrings": [
+        "\"(?<depName>quay\\.io/operator-framework/opm):(?<currentValue>[^\"@]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "OLM release repackaged as a Helm chart",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/publish-olm-chart\\.yaml$/"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "operator-framework/operator-controller",
+      "matchStrings": [
+        "default:\\s*\"(?<currentValue>v[\\d.]+)\"",
+        "inputs\\.olm_version\\s*\\|\\|\\s*'(?<currentValue>v[\\d.]+)'"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Go tools installed as pre-commit additional_dependencies",
+      "managerFilePatterns": ["/^\\.pre-commit-config\\.yaml$/"],
+      "datasourceTemplate": "go",
+      "matchStrings": [
+        "- (?<depName>github\\.com/[^@\\s]+)@(?<currentValue>v[^\\s]+)"
+      ]
     }
   ]
 }

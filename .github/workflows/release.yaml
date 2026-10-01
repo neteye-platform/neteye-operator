@@ -115,13 +115,14 @@ jobs:
           GH_TOKEN: ${{ steps.release-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
           VERSION: ${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
+          COMMIT_SHA: ${{ steps.push.outputs.sha }}
         run: |
           # created via the Git Data API with no custom tagger, so GitHub
           # bot-signs it on the App's behalf and shows it as Verified
           tag_sha="$(gh api "repos/${REPOSITORY}/git/tags" \
             -f tag="v$VERSION" \
             -f message="v$VERSION" \
-            -f object="${{ steps.push.outputs.sha }}" \
+            -f object="$COMMIT_SHA" \
             -f type=commit \
             --jq .sha)"
           gh api "repos/${REPOSITORY}/git/refs" \
@@ -287,8 +288,9 @@ jobs:
         if: ${{ steps.catalog-changes.outputs.changed == 'true' }}
         env:
           GH_TOKEN: ${{ steps.catalog-write-token.outputs.token }}
+          PR_NUMBER: ${{ steps.catalog-pr.outputs.pull-request-number }}
         run: |
-          pr_number="${{ steps.catalog-pr.outputs.pull-request-number }}"
+          pr_number="$PR_NUMBER"
           repo="neteye-platform/neteye-operator-catalog"
 
           # Checks are registered asynchronously after PR creation; gh errors out
