@@ -32,7 +32,7 @@ const (
 	GatewayListenerName = "keycloak"
 	TLSCertificateName  = "keycloak-tls"
 	TLSSecretName       = "keycloak-tls-secret"
-	InstanceName        = "neteye-kc"
+	InstanceName        = keycloakconfig.InstanceName
 	ServiceName         = "neteye-kc-service"
 	EgressPolicyName    = "neteye-kc-egress"
 	IngressPolicyName   = "neteye-kc-ingress"
@@ -179,7 +179,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, RouteHostname, []string{RouteHostname}, issuerRef, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
 	}
-	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), &owner); err != nil {
+	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), identityTelemetryEnabled(identity), &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak workload network policy: %w", err)
 	}
 	if err := c.EnsureIngressNetworkPolicy(ctx, namespace, &owner); err != nil {
@@ -310,7 +310,8 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 		"ingress": map[string]any{
 			"enabled": false,
 		},
-		"networkPolicy": map[string]any{"enabled": false},
+		"networkPolicy":  map[string]any{"enabled": false},
+		"startOptimized": false,
 		"hostname": map[string]any{
 			"hostname":           resourceURI(identity.Hostname),
 			"strict":             true,
@@ -319,7 +320,16 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 		"proxy": map[string]any{
 			"headers": "xforwarded",
 		},
-		"additionalOptions": keycloakAdditionalOptions(identity.AdditionalOptions),
+		"additionalOptions": keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry),
+	}
+	if identityTelemetryEnabled(identity) {
+		spec["features"] = map[string]any{"enabled": keycloakTelemetryFeatures(identity.Telemetry)}
+		spec["telemetry"] = map[string]any{
+			"endpoint":           "http://otel-edot-gateway:4317",
+			"protocol":           "grpc",
+			"serviceName":        "neteye-keycloak",
+			"resourceAttributes": keycloakTelemetryResourceAttributes(identity.Telemetry.ResourceAttributes),
+		}
 	}
 	if env := keycloakEnv(identity.PodExtraEnvVars); len(env) > 0 {
 		spec["env"] = env
@@ -388,27 +398,55 @@ func keycloakHostManagementPolicySpec() map[string]any {
 }
 
 // EnsureWorkloadNetworkPolicy creates the Keycloak egress policy.
-func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, databasePort int32, owner *metav1.OwnerReference) error {
+func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, databasePort int32, telemetryEnabled bool, owner *metav1.OwnerReference) error {
 	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:  nativeNetworkPolicyGVK(),
 		Name: EgressPolicyName, Namespace: namespace, Owner: owner,
-		Spec: keycloakEgressNetworkPolicySpec(databasePort),
+		Spec: keycloakEgressNetworkPolicySpec(databasePort, telemetryEnabled),
 	})
 	return err
 }
 
-func keycloakEgressNetworkPolicySpec(databasePort int32) map[string]any {
+func keycloakEgressNetworkPolicySpec(databasePort int32, telemetryEnabled bool) map[string]any {
+	egress := []any{
+		// Standard NetworkPolicy cannot select an external database by DNS name.
+		// Restrict the interim rule to the configured database TCP port only.
+		map[string]any{"ports": []any{networkPort(databasePort, "TCP")}},
+		map[string]any{"to": []any{namespaceAndPodSelector(KubeSystemNamespace, map[string]any{"k8s-app": "kube-dns"})}, "ports": []any{networkPort(53, "TCP"), networkPort(53, "UDP")}},
+		map[string]any{"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}}, // TODO: add this field in NE 4.51 "to": []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
+	}
+	if telemetryEnabled {
+		egress = append(egress, map[string]any{"to": []any{namespaceAndPodSelector(WorkloadNamespace, map[string]any{"app": "otel-edot-gateway"})}, "ports": []any{networkPort(4317, "TCP")}})
+	}
 	return map[string]any{
 		"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()},
 		"policyTypes": []any{"Egress"},
-		"egress": []any{
-			// Standard NetworkPolicy cannot select an external database by DNS name.
-			// Restrict the interim rule to the configured database TCP port only.
-			map[string]any{"ports": []any{networkPort(databasePort, "TCP")}},
-			map[string]any{"to": []any{namespaceAndPodSelector(KubeSystemNamespace, map[string]any{"k8s-app": "kube-dns"})}, "ports": []any{networkPort(53, "TCP"), networkPort(53, "UDP")}},
-			map[string]any{"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}}, // TODO: add this field in NE 4.51 "to": []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
-		},
+		"egress":      egress,
 	}
+}
+
+func identityTelemetryEnabled(identity neteye.NetEyeIdentitySpec) bool {
+	return identity.Telemetry != nil && (identity.Telemetry.LogsEnabled || identity.Telemetry.MetricsEnabled)
+}
+
+func keycloakTelemetryFeatures(telemetry *neteye.NetEyeIdentityTelemetrySpec) []any {
+	features := make([]any, 0, 2)
+	if telemetry.LogsEnabled {
+		features = append(features, "opentelemetry-logs")
+	}
+	if telemetry.MetricsEnabled {
+		features = append(features, "opentelemetry-metrics")
+	}
+	return features
+}
+
+func keycloakTelemetryResourceAttributes(attributes map[string]string) map[string]any {
+	merged := make(map[string]any, len(attributes)+1)
+	merged["data_stream.namespace"] = "neteye_system_internal"
+	for key, value := range attributes {
+		merged[key] = value
+	}
+	return merged
 }
 
 func networkPort(port int32, protocol string) map[string]any {
@@ -464,9 +502,9 @@ func keycloakEnv(values []neteye.NetEyeEnvVar) []any {
 	return env
 }
 
-func keycloakAdditionalOptions(values []neteye.NetEyeKeycloakOption) []any {
+func keycloakAdditionalOptions(values []neteye.NetEyeKeycloakOption, telemetry *neteye.NetEyeIdentityTelemetrySpec) []any {
 	managedOptions := keycloakconfig.ManagedOptions()
-	options := make([]any, 0, len(managedOptions)+len(values))
+	options := make([]any, 0, len(managedOptions)+len(values)+3)
 	for _, option := range managedOptions {
 		if option.EmitAsServerOption {
 			options = append(options, nameValue(option.Name, option.Value))
@@ -477,6 +515,12 @@ func keycloakAdditionalOptions(values []neteye.NetEyeKeycloakOption) []any {
 			continue
 		}
 		options = append(options, nameValue(option.Name, option.Value))
+	}
+	if telemetry != nil && telemetry.LogsEnabled {
+		options = append(options, nameValue("telemetry-logs-enabled", "true"))
+	}
+	if telemetry != nil && telemetry.MetricsEnabled {
+		options = append(options, nameValue("telemetry-metrics-enabled", "true"), nameValue("metrics-enabled", "true"))
 	}
 	return options
 }

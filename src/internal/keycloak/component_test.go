@@ -77,7 +77,7 @@ func TestKeycloakAdditionalOptions(t *testing.T) {
 		{Name: "spi-cache-embedded--default--cluster-name", Value: "custom-cluster"},
 		{Name: "proxy-headers", Value: "forwarded"},
 		{Name: "spi-connections-http-client--default--connection-pool-size", Value: "20"},
-	})
+	}, nil)
 	want := []any{
 		map[string]any{"name": "http-relative-path", "value": HTTPRelativePath},
 		map[string]any{"name": "spi-cache-embedded--default--cluster-name", "value": InfinispanClusterName},
@@ -159,7 +159,7 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 	if want := keycloakEnv(identity.PodExtraEnvVars); !reflect.DeepEqual(spec["env"], want) {
 		t.Errorf("env = %#v, want %#v", spec["env"], want)
 	}
-	if want := keycloakAdditionalOptions(identity.AdditionalOptions); !reflect.DeepEqual(spec["additionalOptions"], want) {
+	if want := keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry); !reflect.DeepEqual(spec["additionalOptions"], want) {
 		t.Errorf("additionalOptions = %#v, want %#v", spec["additionalOptions"], want)
 	}
 	if _, ok := spec["networkPolicy"]; !ok {
@@ -221,6 +221,97 @@ func TestKeycloakInstanceSpecOmitsEnvWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestKeycloakInstanceSpecTelemetrySignals(t *testing.T) {
+	tests := []struct {
+		name      string
+		telemetry *neteye.NetEyeIdentityTelemetrySpec
+		features  []any
+		options   []any
+	}{
+		{name: "omitted"},
+		{name: "both disabled", telemetry: &neteye.NetEyeIdentityTelemetrySpec{}},
+		{name: "logs", telemetry: &neteye.NetEyeIdentityTelemetrySpec{LogsEnabled: true}, features: []any{"opentelemetry-logs"}, options: []any{map[string]any{"name": "telemetry-logs-enabled", "value": "true"}}},
+		{name: "metrics", telemetry: &neteye.NetEyeIdentityTelemetrySpec{MetricsEnabled: true}, features: []any{"opentelemetry-metrics"}, options: []any{map[string]any{"name": "telemetry-metrics-enabled", "value": "true"}, map[string]any{"name": "metrics-enabled", "value": "true"}}},
+		{name: "both", telemetry: &neteye.NetEyeIdentityTelemetrySpec{LogsEnabled: true, MetricsEnabled: true}, features: []any{"opentelemetry-logs", "opentelemetry-metrics"}, options: []any{map[string]any{"name": "telemetry-logs-enabled", "value": "true"}, map[string]any{"name": "telemetry-metrics-enabled", "value": "true"}, map[string]any{"name": "metrics-enabled", "value": "true"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", Telemetry: tt.telemetry})
+			if got, found := spec["features"]; (len(tt.features) > 0 && (!reflect.DeepEqual(got, map[string]any{"enabled": tt.features}) || !found)) || (len(tt.features) == 0 && found) {
+				t.Errorf("features = %#v, found=%t", got, found)
+			}
+			if got, found := spec["telemetry"]; (len(tt.features) > 0 && (!reflect.DeepEqual(got, map[string]any{"endpoint": "http://otel-edot-gateway:4317", "protocol": "grpc", "serviceName": "neteye-keycloak", "resourceAttributes": map[string]any{"data_stream.namespace": "neteye_system_internal"}}) || !found)) || (len(tt.features) == 0 && found) {
+				t.Errorf("telemetry = %#v, found=%t", got, found)
+			}
+			options := spec["additionalOptions"].([]any)
+			for _, want := range tt.options {
+				if !containsOption(options, want) {
+					t.Errorf("additionalOptions = %#v, missing %#v", options, want)
+				}
+			}
+			if len(options) != 2+len(tt.options) {
+				t.Errorf("additionalOptions = %#v, want no telemetry option leakage", options)
+			}
+			if spec["startOptimized"] != false {
+				t.Errorf("startOptimized = %#v, want false", spec["startOptimized"])
+			}
+		})
+	}
+}
+
+func TestKeycloakTelemetryResourceAttributes(t *testing.T) {
+	attributes := map[string]string{
+		"data_stream.namespace":  "tenant-a",
+		"deployment.environment": "production",
+	}
+	identity := neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", Telemetry: &neteye.NetEyeIdentityTelemetrySpec{LogsEnabled: true, ResourceAttributes: attributes}}
+
+	for _, flags := range []neteye.NetEyeIdentityTelemetrySpec{
+		{LogsEnabled: true, ResourceAttributes: attributes},
+		{MetricsEnabled: true, ResourceAttributes: attributes},
+		{LogsEnabled: true, MetricsEnabled: true, ResourceAttributes: attributes},
+		{ResourceAttributes: attributes},
+	} {
+		*identity.Telemetry = flags
+		spec := keycloakInstanceSpec("img", identity)
+		telemetry, found := spec["telemetry"].(map[string]any)
+		if enabled := flags.LogsEnabled || flags.MetricsEnabled; !enabled {
+			if found {
+				t.Errorf("telemetry = %#v, want omitted when signals are disabled", telemetry)
+			}
+			continue
+		}
+		if !found {
+			t.Fatal("telemetry is missing when a signal is enabled")
+		}
+		if got, want := telemetry["serviceName"], "neteye-keycloak"; got != want {
+			t.Errorf("serviceName = %q, want %q", got, want)
+		}
+		want := map[string]any{"data_stream.namespace": "tenant-a", "deployment.environment": "production"}
+		if got := telemetry["resourceAttributes"]; !reflect.DeepEqual(got, want) {
+			t.Errorf("resourceAttributes = %#v, want %#v", got, want)
+		}
+	}
+	if !reflect.DeepEqual(attributes, map[string]string{"data_stream.namespace": "tenant-a", "deployment.environment": "production"}) {
+		t.Errorf("input resource attributes mutated: %#v", attributes)
+	}
+
+	merged := keycloakTelemetryResourceAttributes(attributes)
+	merged["deployment.environment"] = "staging"
+	if attributes["deployment.environment"] != "production" {
+		t.Errorf("resource attributes alias input map: %#v", attributes)
+	}
+}
+
+func containsOption(options []any, want any) bool {
+	for _, option := range options {
+		if reflect.DeepEqual(option, want) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestKeycloakNetworkPolicies(t *testing.T) {
 	instance := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "h"})
 	if !reflect.DeepEqual(instance["networkPolicy"], map[string]any{"enabled": false}) {
@@ -259,7 +350,7 @@ func TestKeycloakNetworkPolicies(t *testing.T) {
 	if !reflect.DeepEqual(hostRules[1].(map[string]any)["fromEntities"], []any{"host", "remote-node"}) {
 		t.Errorf("host entities = %#v", hostRules[1].(map[string]any)["fromEntities"])
 	}
-	egress := keycloakEgressNetworkPolicySpec(3306)
+	egress := keycloakEgressNetworkPolicySpec(3306, false)
 	if got := egress["policyTypes"]; !reflect.DeepEqual(got, []any{"Egress"}) {
 		t.Errorf("policyTypes = %#v, want only Egress", got)
 	}
@@ -275,5 +366,9 @@ func TestKeycloakNetworkPolicies(t *testing.T) {
 	}
 	if !reflect.DeepEqual(rules[2].(map[string]any)["ports"], []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}) {
 		t.Errorf("intra-cluster ports = %#v", rules[2].(map[string]any)["ports"])
+	}
+	telemetryRules := keycloakEgressNetworkPolicySpec(3306, true)["egress"].([]any)
+	if len(telemetryRules) != 4 || !reflect.DeepEqual(telemetryRules[3], map[string]any{"to": []any{namespaceAndPodSelector(WorkloadNamespace, map[string]any{"app": "otel-edot-gateway"})}, "ports": []any{networkPort(4317, "TCP")}}) {
+		t.Errorf("telemetry egress rule = %#v", telemetryRules)
 	}
 }

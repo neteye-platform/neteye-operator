@@ -5,6 +5,7 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -187,6 +188,16 @@ func TestNetEyeValidatorRejectsManagedKeycloakOptions(t *testing.T) {
 		{name: "relative path", optionName: "http-relative-path", wantErr: true},
 		{name: "proxy headers", optionName: "proxy-headers", wantErr: true},
 		{name: "cluster name", optionName: "spi-cache-embedded--default--cluster-name", wantErr: true},
+		{name: "telemetry logs", optionName: "telemetry-logs-enabled", wantErr: true},
+		{name: "telemetry metrics", optionName: "telemetry-metrics-enabled", wantErr: true},
+		{name: "metrics", optionName: "metrics-enabled", wantErr: true},
+		{name: "telemetry endpoint", optionName: "telemetry-endpoint", wantErr: true},
+		{name: "telemetry protocol", optionName: "telemetry-protocol", wantErr: true},
+		{name: "telemetry service", optionName: "telemetry-service-name", wantErr: true},
+		{name: "logs endpoint", optionName: "telemetry-logs-endpoint", wantErr: true},
+		{name: "logs protocol", optionName: "telemetry-logs-protocol", wantErr: true},
+		{name: "metrics endpoint", optionName: "telemetry-metrics-endpoint", wantErr: true},
+		{name: "metrics protocol", optionName: "telemetry-metrics-protocol", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -195,6 +206,60 @@ func TestNetEyeValidatorRejectsManagedKeycloakOptions(t *testing.T) {
 			_, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNetEyeValidatorValidatesIdentityTelemetry(t *testing.T) {
+	tests := []struct {
+		name         string
+		telemetry    *NetEyeIdentityTelemetrySpec
+		elasticStack *NetEyeElasticStackSpec
+		wantErr      bool
+	}{
+		{name: "omitted telemetry"},
+		{name: "both disabled", telemetry: &NetEyeIdentityTelemetrySpec{}},
+		{name: "logs enabled with elastic stack", telemetry: &NetEyeIdentityTelemetrySpec{LogsEnabled: true}, elasticStack: validTelemetryConfig()},
+		{name: "metrics enabled with elastic stack", telemetry: &NetEyeIdentityTelemetrySpec{MetricsEnabled: true}, elasticStack: validTelemetryConfig()},
+		{name: "both enabled with elastic stack", telemetry: &NetEyeIdentityTelemetrySpec{LogsEnabled: true, MetricsEnabled: true}, elasticStack: validTelemetryConfig()},
+		{name: "logs enabled without elastic stack", telemetry: &NetEyeIdentityTelemetrySpec{LogsEnabled: true}, wantErr: true},
+		{name: "metrics enabled with disabled elastic stack", telemetry: &NetEyeIdentityTelemetrySpec{MetricsEnabled: true}, elasticStack: &NetEyeElasticStackSpec{}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := netEyeWithVersion(CurrentNetEyeVersion)
+			obj.Spec.Identity.Telemetry = tt.telemetry
+			obj.Spec.ElasticStack = tt.elasticStack
+			_, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			_, err = (&NetEyeValidator{}).ValidateUpdate(context.Background(), netEyeWithVersion(CurrentNetEyeVersion), obj)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateUpdate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNetEyeValidatorReservesTelemetryServiceName(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("logs enabled %t", enabled), func(t *testing.T) {
+			obj := netEyeWithVersion(CurrentNetEyeVersion)
+			obj.Spec.Identity.Telemetry = &NetEyeIdentityTelemetrySpec{LogsEnabled: enabled, ResourceAttributes: map[string]string{"service.name": "other", "data_stream.namespace": "custom"}}
+			if enabled {
+				obj.Spec.ElasticStack = validTelemetryConfig()
+			}
+			if _, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj); err == nil {
+				t.Fatal("expected service.name to be rejected on create")
+			}
+			if _, err := (&NetEyeValidator{}).ValidateUpdate(context.Background(), netEyeWithVersion(CurrentNetEyeVersion), obj); err == nil {
+				t.Fatal("expected service.name to be rejected on update")
+			}
+			delete(obj.Spec.Identity.Telemetry.ResourceAttributes, "service.name")
+			if _, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj); err != nil {
+				t.Fatalf("data_stream.namespace override should be allowed: %v", err)
 			}
 		})
 	}

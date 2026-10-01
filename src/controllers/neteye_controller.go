@@ -229,9 +229,13 @@ func (r *NetEyeReconciler) reconcileEDOTGateway(ctx context.Context, ne *neteye.
 	if ne.Spec.ElasticStack.Telemetry != nil {
 		spec = ne.Spec.ElasticStack.Telemetry.EDOTGateway
 	}
-	outcome := r.EDOTGatewayComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, image, caBundleImage, owner)
+	outcome := r.EDOTGatewayComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, image, caBundleImage, identityTelemetryEnabled(ne.Spec.Identity), owner)
 	ne.Status.ServicesStatus.ElasticStack.EDOTGateway = elasticStackServiceStatus(phaseToServiceState(outcome.Phase), outcome.Message, image)
 	return mapTelemetryOutcome(edotGatewayComponentID, outcome, r.waitForProgressingRequeue(), r.failureRequeue())
+}
+
+func identityTelemetryEnabled(identity neteye.NetEyeIdentitySpec) bool {
+	return identity.Telemetry != nil && (identity.Telemetry.LogsEnabled || identity.Telemetry.MetricsEnabled)
 }
 func mapTelemetryOutcome(id componentID, outcome elasticstack.Outcome, progressingRequeue, failureRequeue time.Duration) (componentResult, error) {
 	switch outcome.Phase {

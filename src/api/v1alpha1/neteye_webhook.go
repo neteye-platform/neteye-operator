@@ -96,10 +96,22 @@ func validateIdentity(neteye *NetEye) error {
 			errors = append(errors, field.Forbidden(path.Index(i).Child("name"), "option is managed by the NetEye operator"))
 		}
 	}
+	if telemetry := neteye.Spec.Identity.Telemetry; telemetry != nil {
+		if _, present := telemetry.ResourceAttributes["service.name"]; present {
+			errors = append(errors, field.Forbidden(field.NewPath("spec", "identity", "telemetry", "resourceAttributes").Key("service.name"), "service name is managed by the NetEye operator"))
+		}
+	}
+	if identityTelemetryEnabled(neteye.Spec.Identity.Telemetry) && (neteye.Spec.ElasticStack == nil || !neteye.Spec.ElasticStack.Enabled) {
+		errors = append(errors, field.Forbidden(field.NewPath("spec", "identity", "telemetry"), "requires elasticStack.enabled to be true"))
+	}
 	if len(errors) > 0 {
 		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, errors)
 	}
 	return nil
+}
+
+func identityTelemetryEnabled(telemetry *NetEyeIdentityTelemetrySpec) bool {
+	return telemetry != nil && (telemetry.LogsEnabled || telemetry.MetricsEnabled)
 }
 
 func validateElasticStack(neteye *NetEye) error {

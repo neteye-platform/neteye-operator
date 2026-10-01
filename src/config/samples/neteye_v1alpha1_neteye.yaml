@@ -14,6 +14,15 @@ spec:
   identity:
     replicas: 1
     hostname: keycloak.example.com
+    # Opt in to Keycloak OTLP export only when elasticStack.enabled is true.
+    # Both signals default to false; enable either independently.
+    # telemetry:
+    #   logsEnabled: true
+    #   metricsEnabled: true
+    #   # data_stream.namespace defaults to neteye_system_internal. The
+    #   # Keycloak service name remains operator-managed (neteye-keycloak).
+    #   resourceAttributes:
+    #     deployment.environment: production
     podExtraEnvVars:
       - name: JAVA_OPTS_APPEND
         value: -Djava.net.preferIPv6Addresses=true
