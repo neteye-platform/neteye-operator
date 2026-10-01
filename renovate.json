@@ -33,7 +33,8 @@
       "datasourceTemplate": "docker",
       "matchStrings": [
         "Image:\\s*\"(?<depName>[^\"@:]+):(?<currentValue>[^\"@]+?)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?\""
-      ]
+      ],
+      "autoReplaceStringTemplate": "Image: \"{{{depName}}}:{{{newValue}}}{{#if newDigest}}@{{{newDigest}}}{{/if}}\""
     },
     {
       "customType": "regex",
@@ -42,7 +43,8 @@
       "datasourceTemplate": "docker",
       "matchStrings": [
         "value:\\s*(?<depName>[^\\s@:,]+):(?<currentValue>[^\\s@,]+?)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?,"
-      ]
+      ],
+      "autoReplaceStringTemplate": "value: {{{depName}}}:{{{newValue}}}{{#if newDigest}}@{{{newDigest}}}{{/if}},"
     },
     {
       "customType": "regex",
