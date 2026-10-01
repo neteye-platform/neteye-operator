@@ -66,6 +66,11 @@ for branch in "${candidate_branches[@]}"; do
   fi
   if git merge-base --is-ancestor "$tag_commit" "refs/remotes/origin/$branch"; then
     printf 'release source valid: %s is reachable from %s\n' "$release_tag" "$branch"
+    if [[ $branch == main ]]; then
+      echo "release-line=main"
+    else
+      echo "release-line=release"
+    fi
     exit 0
   fi
 done
