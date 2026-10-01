@@ -73,6 +73,91 @@ func TestGeneratedCRDDefaultsEDOTGatewayReplicas(t *testing.T) {
 	}
 }
 
+func TestKeycloakDatabaseConnectionDefaults(t *testing.T) {
+	var database *NetEyeDBConnectionSpec
+	if got := database.EffectiveDBName(); got != DefaultKeycloakDatabaseName {
+		t.Errorf("nil database name = %q, want %q", got, DefaultKeycloakDatabaseName)
+	}
+	if got, want := database.EffectiveUsernameSecret(), (NetEyeSecretKeySelector{Name: DefaultKeycloakDatabaseCredentialsName, Key: DefaultKeycloakDatabaseUsernameSecretKey}); got != want {
+		t.Errorf("nil username selector = %+v, want %+v", got, want)
+	}
+	if got, want := database.EffectivePasswordSecret(), (NetEyeSecretKeySelector{Name: DefaultKeycloakDatabaseCredentialsName, Key: DefaultKeycloakDatabasePasswordSecretKey}); got != want {
+		t.Errorf("nil password selector = %+v, want %+v", got, want)
+	}
+}
+
+func TestKeycloakDatabaseConnectionEffectiveValuesPreserveExplicitConfiguration(t *testing.T) {
+	username := &NetEyeSecretKeySelector{Name: "custom-credentials", Key: "user"}
+	password := &NetEyeSecretKeySelector{Name: "custom-credentials", Key: "pass"}
+	database := &NetEyeDBConnectionSpec{DBName: " custom-keycloak ", UsernameSecret: username, PasswordSecret: password}
+	if got := database.EffectiveDBName(); got != " custom-keycloak " {
+		t.Errorf("database name = %q, want explicit value", got)
+	}
+	if got := database.EffectiveUsernameSecret(); got != *username {
+		t.Errorf("username selector = %+v, want %+v", got, *username)
+	}
+	if got := database.EffectivePasswordSecret(); got != *password {
+		t.Errorf("password selector = %+v, want %+v", got, *password)
+	}
+}
+
+func TestGeneratedCRDDefaultsIdentityTelemetrySignals(t *testing.T) {
+	data, err := os.ReadFile("../../config/crd/bases/neteye.cloud_neteyes.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	crd := &unstructured.Unstructured{}
+	if err := yaml.Unmarshal(data, crd); err != nil {
+		t.Fatal(err)
+	}
+	versions, found, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	if err != nil || !found || len(versions) == 0 {
+		t.Fatalf("find CRD versions: found=%t err=%v", found, err)
+	}
+	version, ok := versions[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("CRD version has unexpected type %T", versions[0])
+	}
+	path := []string{"schema", "openAPIV3Schema", "properties", "spec", "properties", "identity", "properties", "telemetry"}
+	for _, signal := range []string{"logsEnabled", "metricsEnabled"} {
+		value, found, err := unstructured.NestedFieldCopy(version, append(append([]string{}, path...), "properties", signal, "default")...)
+		if err != nil || !found || value != false {
+			t.Errorf("%s default = %v, found=%t, err=%v; want false", signal, value, found, err)
+		}
+	}
+	identityRequired, found, err := unstructured.NestedStringSlice(version, "schema", "openAPIV3Schema", "properties", "spec", "properties", "identity", "required")
+	if err != nil || !found {
+		t.Fatalf("identity required fields: found=%t err=%v", found, err)
+	}
+	for _, field := range identityRequired {
+		if field == "telemetry" {
+			t.Fatal("identity telemetry must remain optional")
+		}
+	}
+	resourceAttributes, found, err := unstructured.NestedMap(version, append(path, "properties", "resourceAttributes")...)
+	if err != nil || !found || resourceAttributes["type"] != "object" {
+		t.Fatalf("resourceAttributes schema = %#v, found=%t, err=%v", resourceAttributes, found, err)
+	}
+	additionalProperties, ok := resourceAttributes["additionalProperties"].(map[string]interface{})
+	if !ok || additionalProperties["type"] != "string" {
+		t.Errorf("resourceAttributes additionalProperties = %#v, want string map", resourceAttributes["additionalProperties"])
+	}
+	if _, hasDefault := resourceAttributes["default"]; hasDefault {
+		t.Errorf("resourceAttributes default = %#v, want no CRD default", resourceAttributes["default"])
+	}
+}
+
+func TestIdentityTelemetryDeepCopy(t *testing.T) {
+	original := &NetEyeIdentitySpec{Telemetry: &NetEyeIdentityTelemetrySpec{LogsEnabled: true, ResourceAttributes: map[string]string{"data_stream.namespace": "custom"}}}
+	copy := original.DeepCopy()
+	copy.Telemetry.LogsEnabled = false
+	copy.Telemetry.MetricsEnabled = true
+	copy.Telemetry.ResourceAttributes["data_stream.namespace"] = "other"
+	if !original.Telemetry.LogsEnabled || original.Telemetry.MetricsEnabled || original.Telemetry.ResourceAttributes["data_stream.namespace"] != "custom" {
+		t.Fatal("identity telemetry deepcopy shares fields with original")
+	}
+}
+
 func TestTelemetryDefaults(t *testing.T) {
 	collector := &NetEyeOtelCollectorSpec{}
 	if collector.EffectiveReplicas() != 1 || collector.EffectiveBasicAuthSecretName() != "otel-collector-basicauth" || collector.EffectiveRootCASecretName() != "neteye-root-ca" || collector.EffectiveAPIKeySecret() != (NetEyeSecretKeySelector{Name: "otel-collector-icinga-api-key-secret", Key: "api_key"}) {

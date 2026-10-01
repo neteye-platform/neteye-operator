@@ -7,6 +7,7 @@ package keycloakconfig
 const (
 	HTTPRelativePath      = "/auth"
 	InfinispanClusterName = "neteye-k8s-ispn"
+	InstanceName          = "neteye-kc"
 )
 
 // ManagedOption describes a Keycloak option controlled by the NetEye operator.
@@ -20,6 +21,16 @@ var managedOptions = [...]ManagedOption{
 	{Name: "http-relative-path", Value: HTTPRelativePath, EmitAsServerOption: true},
 	{Name: "spi-cache-embedded--default--cluster-name", Value: InfinispanClusterName, EmitAsServerOption: true},
 	{Name: "proxy-headers"},
+	{Name: "telemetry-logs-enabled"},
+	{Name: "telemetry-metrics-enabled"},
+	{Name: "metrics-enabled"},
+	{Name: "telemetry-endpoint"},
+	{Name: "telemetry-protocol"},
+	{Name: "telemetry-service-name"},
+	{Name: "telemetry-logs-endpoint"},
+	{Name: "telemetry-logs-protocol"},
+	{Name: "telemetry-metrics-endpoint"},
+	{Name: "telemetry-metrics-protocol"},
 }
 
 // ManagedOptions returns the Keycloak options controlled by the NetEye operator.

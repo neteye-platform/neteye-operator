@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/keycloakconfig"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -41,7 +42,7 @@ func NewEDOTGatewayComponent(c client.Client) *EDOTGatewayComponent {
 	return &EDOTGatewayComponent{client: c}
 }
 
-func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeEDOTGatewaySpec, elasticsearchEndpoints []string, image, caBundleImage string, owner metav1.OwnerReference) Outcome {
+func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeEDOTGatewaySpec, elasticsearchEndpoints []string, image, caBundleImage string, identityTelemetryEnabled bool, owner metav1.OwnerReference) Outcome {
 	if spec == nil {
 		return degradedOutcome(ReasonInvalidConfiguration, "edot gateway configuration is required", nil)
 	}
@@ -54,6 +55,9 @@ func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spe
 	endpoints, targets, err := validatedEndpoints(elasticsearchEndpoints)
 	if err != nil {
 		return degradedOutcome(ReasonInvalidConfiguration, err.Error(), nil)
+	}
+	if err := c.ensureIngressPolicy(ctx, namespace, identityTelemetryEnabled, owner); err != nil {
+		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	key := spec.EffectiveAPIKeySecret()
 	apiKeyVersion, err := requiredSecretResourceVersion(ctx, c.client, namespace, key.Name, key.Key)
@@ -84,7 +88,7 @@ func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spe
 	if err := resources.EnsureService(ctx, c.client, telemetryService(namespace, EDOTGatewayServiceName, edotGatewayAppLabel), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := c.ensurePolicies(ctx, namespace, targets, owner); err != nil {
+	if err := c.ensureEgressPolicy(ctx, namespace, targets, owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	ready, message, err := resources.IsDeploymentReady(ctx, c.client, namespace, EDOTGatewayDeploymentName)
@@ -103,10 +107,12 @@ func (c *EDOTGatewayComponent) Delete(ctx context.Context, namespace string, own
 	return deleteOwnedResources(ctx, c.client, namespace, owner, append(edotGatewayResourceInventory(), edotGatewayLegacyInventory()...))
 }
 
-func (c *EDOTGatewayComponent) ensurePolicies(ctx context.Context, namespace string, targets []egressTarget, owner metav1.OwnerReference) error {
-	if _, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: EDOTGatewayIngressPolicyName, Owner: &owner, Spec: edotGatewayIngressPolicy(namespace)}); err != nil {
-		return err
-	}
+func (c *EDOTGatewayComponent) ensureIngressPolicy(ctx context.Context, namespace string, identityTelemetryEnabled bool, owner metav1.OwnerReference) error {
+	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: EDOTGatewayIngressPolicyName, Owner: &owner, Spec: edotGatewayIngressPolicy(namespace, identityTelemetryEnabled)})
+	return err
+}
+
+func (c *EDOTGatewayComponent) ensureEgressPolicy(ctx context.Context, namespace string, targets []egressTarget, owner metav1.OwnerReference) error {
 	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: EDOTGatewayEgressPolicyName, Owner: &owner, Spec: edotGatewayEgressPolicy(targets)})
 	return err
 }
@@ -186,8 +192,18 @@ func validateDNSName(value, field string) error {
 	return nil
 }
 
-func edotGatewayIngressPolicy(namespace string) map[string]any {
-	return map[string]any{"endpointSelector": labelsFor(edotGatewayAppLabel), "ingress": []any{map[string]any{"fromEndpoints": []any{namespaceScopedEndpoint(collectorAppLabel, namespace)}, "toPorts": []any{tcpPorts("4317", "4318")}}, map[string]any{"fromEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("13133")}}}}
+func edotGatewayIngressPolicy(namespace string, identityTelemetryEnabled bool) map[string]any {
+	ingress := []any{map[string]any{"fromEndpoints": []any{namespaceScopedEndpoint(collectorAppLabel, namespace)}, "toPorts": []any{tcpPorts("4317", "4318")}}}
+	if identityTelemetryEnabled {
+		ingress = append(ingress, map[string]any{"fromEndpoints": []any{map[string]any{"matchLabels": map[string]any{
+			"k8s:app":                          "keycloak",
+			"k8s:app.kubernetes.io/instance":   keycloakconfig.InstanceName,
+			"k8s:app.kubernetes.io/managed-by": "keycloak-operator",
+			"k8s:io.kubernetes.pod.namespace":  namespace,
+		}}}, "toPorts": []any{tcpPorts("4317")}})
+	}
+	ingress = append(ingress, map[string]any{"fromEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("13133")}})
+	return map[string]any{"endpointSelector": labelsFor(edotGatewayAppLabel), "ingress": ingress}
 }
 
 func edotGatewayEgressPolicy(targets []egressTarget) map[string]any {

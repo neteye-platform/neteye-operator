@@ -332,6 +332,135 @@ func TestAPIServerAppliesTelemetryDefaults(t *testing.T) {
 	}
 }
 
+func TestAPIServerAppliesKeycloakDatabaseDefaults(t *testing.T) {
+	c, _ := startEnvtest(t)
+	ctx := context.Background()
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: keycloak.WorkloadNamespace}}); err != nil {
+		t.Fatal(err)
+	}
+	ne := &neteye.NetEye{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform", Namespace: keycloak.WorkloadNamespace},
+		Spec: neteye.NetEyeSpec{
+			Version:                      neteye.CurrentNetEyeVersion,
+			Gateway:                      neteye.NetEyeGatewaySpec{Name: "neteye", ClassName: "cilium"},
+			InternalCertificateIssuerRef: "internal-issuer",
+			Identity: neteye.NetEyeIdentitySpec{
+				Hostname:     "keycloak.example.com",
+				DBConnection: neteye.NetEyeDBConnectionSpec{Host: "mariadb.example.com"},
+			},
+		},
+	}
+	if err := c.Create(ctx, ne); err != nil {
+		t.Fatalf("create NetEye with omitted database fields: %v", err)
+	}
+	current := &neteye.NetEye{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatal(err)
+	}
+	db := current.Spec.Identity.DBConnection
+	if db.DBName != "keycloak" || db.UsernameSecret == nil || *db.UsernameSecret != (neteye.NetEyeSecretKeySelector{Name: "keycloak-db-credentials", Key: "username"}) || db.PasswordSecret == nil || *db.PasswordSecret != (neteye.NetEyeSecretKeySelector{Name: "keycloak-db-credentials", Key: "password"}) {
+		t.Errorf("database defaults = %+v", db)
+	}
+}
+
+func TestReconcileIdentityTelemetryEnableAndDisable(t *testing.T) {
+	config := &neteye.NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"}, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{}}}
+	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
+	namespace := keycloak.WorkloadNamespace
+	for _, secret := range []struct {
+		name string
+		key  string
+	}{
+		{elasticstack.DefaultAPMApkiKeySecretName, elasticstack.DefaultAPMApkiKeySecretKey},
+		{elasticstack.DefaultRootCASecretName, "tls.crt"},
+	} {
+		if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: secret.name}, Data: map[string][]byte{secret.key: []byte("value")}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}
+	current := &neteye.NetEye{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.Identity.Telemetry = &neteye.NetEyeIdentityTelemetrySpec{}
+	if err := c.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Spec.Identity.Telemetry.LogsEnabled || current.Spec.Identity.Telemetry.MetricsEnabled {
+		t.Fatalf("identity telemetry defaults = %+v, want both false", current.Spec.Identity.Telemetry)
+	}
+	for _, flags := range []neteye.NetEyeIdentityTelemetrySpec{
+		{LogsEnabled: true, ResourceAttributes: map[string]string{"data_stream.namespace": "tenant-a", "deployment.environment": "production"}},
+		{MetricsEnabled: true, ResourceAttributes: map[string]string{"deployment.environment": "staging"}},
+		{LogsEnabled: true, MetricsEnabled: true, ResourceAttributes: map[string]string{"data_stream.namespace": "tenant-b"}},
+		{ResourceAttributes: map[string]string{"data_stream.namespace": "unused"}},
+	} {
+		if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+			t.Fatal(err)
+		}
+		*current.Spec.Identity.Telemetry = flags
+		if err := c.Update(ctx, current); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Reconcile(ctx, request); err != nil {
+			t.Fatal(err)
+		}
+		kc := requireExists(ctx, t, c, schema.GroupVersionKind{Group: "k8s.keycloak.org", Version: "v2beta1", Kind: "Keycloak"}, namespace, keycloak.InstanceName)
+		telemetry, hasEndpoint, err := unstructured.NestedMap(kc.Object, "spec", "telemetry")
+		if err != nil || hasEndpoint != (flags.LogsEnabled || flags.MetricsEnabled) {
+			t.Errorf("Keycloak telemetry present=%t, flags=%+v, err=%v", hasEndpoint, flags, err)
+		}
+		if hasEndpoint {
+			if got, want := telemetry["serviceName"], "neteye-keycloak"; got != want {
+				t.Errorf("Keycloak serviceName = %q, want %q", got, want)
+			}
+			resourceAttributes, found, err := unstructured.NestedStringMap(telemetry, "resourceAttributes")
+			if err != nil || !found {
+				t.Fatalf("read Keycloak resourceAttributes: found=%t err=%v", found, err)
+			}
+			want := map[string]string{"data_stream.namespace": "neteye_system_internal"}
+			for key, value := range flags.ResourceAttributes {
+				want[key] = value
+			}
+			if !reflect.DeepEqual(resourceAttributes, want) {
+				t.Errorf("Keycloak resourceAttributes = %#v, want %#v", resourceAttributes, want)
+			}
+		}
+		optimized, found, err := unstructured.NestedBool(kc.Object, "spec", "startOptimized")
+		if err != nil || !found || optimized {
+			t.Errorf("startOptimized = %t, found=%t, err=%v", optimized, found, err)
+		}
+		for _, policy := range []struct {
+			gvk  schema.GroupVersionKind
+			name string
+			path string
+		}{
+			{networkPolicyGVK, keycloak.EgressPolicyName, "egress"},
+			{ciliumPolicyGVK, elasticstack.EDOTGatewayIngressPolicyName, "ingress"},
+		} {
+			object := requireExists(ctx, t, c, policy.gvk, namespace, policy.name)
+			rules, found, err := unstructured.NestedSlice(object.Object, "spec", policy.path)
+			if err != nil || !found {
+				t.Fatalf("read %s rules: found=%t err=%v", policy.name, found, err)
+			}
+			want := 3
+			if policy.path == "ingress" {
+				want = 2
+			}
+			if flags.LogsEnabled || flags.MetricsEnabled {
+				want++
+			}
+			if len(rules) != want {
+				t.Errorf("%s rules = %#v, want %d", policy.name, rules, want)
+			}
+		}
+	}
+}
+
 func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeElasticStackSpec) (client.Client, *runtime.Scheme, context.Context, *neteye.NetEye, *NetEyeReconciler) {
 	t.Helper()
 	c, s := startEnvtest(t)
@@ -362,8 +491,8 @@ func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeEla
 				DBConnection: neteye.NetEyeDBConnectionSpec{
 					Host:           "mariadb.example.com",
 					DBName:         "keycloak",
-					UsernameSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"},
-					PasswordSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
+					UsernameSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"},
+					PasswordSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
 				},
 			},
 			ElasticStack: elasticConfig,
@@ -471,8 +600,8 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 				DBConnection: neteye.NetEyeDBConnectionSpec{
 					Host:           "mariadb.example.com",
 					DBName:         "keycloak",
-					UsernameSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"},
-					PasswordSecret: neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
+					UsernameSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "username"},
+					PasswordSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
 				},
 			},
 		},
