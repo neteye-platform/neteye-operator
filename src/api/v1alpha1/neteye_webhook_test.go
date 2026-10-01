@@ -270,15 +270,15 @@ func validTelemetryConfig() *NetEyeElasticStackSpec {
 }
 
 func withEndpoints(config *NetEyeElasticStackSpec, endpoints []string) *NetEyeElasticStackSpec {
-	copy := config.DeepCopy()
-	copy.ElasticsearchEndpoints = endpoints
-	return copy
+	copied := config.DeepCopy()
+	copied.ElasticsearchEndpoints = endpoints
+	return copied
 }
 
 func withEDOT(config *NetEyeElasticStackSpec, mutate func(*NetEyeEDOTGatewaySpec)) *NetEyeElasticStackSpec {
-	copy := config.DeepCopy()
-	mutate(copy.Telemetry.EDOTGateway)
-	return copy
+	copied := config.DeepCopy()
+	mutate(copied.Telemetry.EDOTGateway)
+	return copied
 }
 
 func withGatewayAPIKey(config *NetEyeElasticStackSpec, value NetEyeSecretKeySelector) *NetEyeElasticStackSpec {
@@ -286,37 +286,37 @@ func withGatewayAPIKey(config *NetEyeElasticStackSpec, value NetEyeSecretKeySele
 }
 
 func withCollectorAPIKey(config *NetEyeElasticStackSpec, value NetEyeSecretKeySelector) *NetEyeElasticStackSpec {
-	copy := config.DeepCopy()
-	copy.Telemetry.OTelCollector.APIKeySecret = &value
-	return copy
+	copied := config.DeepCopy()
+	copied.Telemetry.OTelCollector.APIKeySecret = &value
+	return copied
 }
 
 func withOverrides(config *NetEyeElasticStackSpec) *NetEyeElasticStackSpec {
-	copy := config.DeepCopy()
-	copy.Telemetry.OTelCollector.BasicAuthSecretName = "custom-collector-basicauth"
-	copy.Telemetry.OTelCollector.RootCASecretName = "custom-neteye-root-ca"
-	copy.Telemetry.OTelCollector.APIKeySecret = &NetEyeSecretKeySelector{Name: "custom-icinga-api-key", Key: "api_key"}
-	copy.Telemetry.EDOTGateway.APIKeySecret = &NetEyeSecretKeySelector{Name: "custom-elasticsearch-api-key", Key: "api_key"}
-	copy.Telemetry.EDOTGateway.RootCASecretName = "custom-neteye-root-ca"
-	return copy
+	copied := config.DeepCopy()
+	copied.Telemetry.OTelCollector.BasicAuthSecretName = "custom-collector-basicauth"
+	copied.Telemetry.OTelCollector.RootCASecretName = "custom-neteye-root-ca"
+	copied.Telemetry.OTelCollector.APIKeySecret = &NetEyeSecretKeySelector{Name: "custom-icinga-api-key", Key: "api_key"}
+	copied.Telemetry.EDOTGateway.APIKeySecret = &NetEyeSecretKeySelector{Name: "custom-elasticsearch-api-key", Key: "api_key"}
+	copied.Telemetry.EDOTGateway.RootCASecretName = "custom-neteye-root-ca"
+	return copied
 }
 
 func withBasicAuthSecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
-	copy := config.DeepCopy()
-	copy.Telemetry.OTelCollector.BasicAuthSecretName = value
-	return copy
+	copied := config.DeepCopy()
+	copied.Telemetry.OTelCollector.BasicAuthSecretName = value
+	return copied
 }
 
 func withCollectorRootCASecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
-	copy := config.DeepCopy()
-	copy.Telemetry.OTelCollector.RootCASecretName = value
-	return copy
+	copied := config.DeepCopy()
+	copied.Telemetry.OTelCollector.RootCASecretName = value
+	return copied
 }
 
 func withGatewayRootCASecret(config *NetEyeElasticStackSpec, value string) *NetEyeElasticStackSpec {
-	copy := config.DeepCopy()
-	copy.Telemetry.EDOTGateway.RootCASecretName = value
-	return copy
+	copied := config.DeepCopy()
+	copied.Telemetry.EDOTGateway.RootCASecretName = value
+	return copied
 }
 
 func TestNetEyeValidatorRejectsSecondAuthority(t *testing.T) {

@@ -31,8 +31,8 @@ const (
 	EDOTGatewayIngressPolicyName      = "neteye-otel-edot-gateway-ingress"
 	EDOTGatewayEgressPolicyName       = "neteye-otel-edot-gateway-egress"
 	edotGatewayAppLabel               = "otel-edot-gateway"
-	DefaultAPMApkiKeySecretName       = "otel-collector-apm-api-key-secret"
-	DefaultAPMApkiKeySecretKey        = "api_key"
+	DefaultAPMAPIKeySecretName        = "otel-collector-apm-api-key-secret"
+	DefaultAPMAPIKeySecretKey         = "api_key"
 )
 
 // EDOTGatewayComponent reconciles the isolated Elasticsearch-export boundary.

@@ -1,7 +1,0 @@
-exclude_paths:
-  - src/bundle/
-  - src/bin/
-  - src/config/crd/
-  - src/config/manifests/bases/
-  - src/config/manifests/kustomization.yaml
-  - src/config/.bundle-release*/

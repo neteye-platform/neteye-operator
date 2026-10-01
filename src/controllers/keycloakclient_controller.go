@@ -52,7 +52,7 @@ func (r *KeycloakClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	api, err := r.adminAPI(ctx, kcc.Namespace) // nosemgrep: trailofbits.go.invalid-usage-of-modified-variable.invalid-usage-of-modified-variable
+	api, err := r.adminAPI(ctx, kcc.Namespace)
 	if err != nil {
 		log.Error(err, "unable to build Keycloak Admin API client", "requeueAfter", r.failureRequeue())
 		if !kcc.DeletionTimestamp.IsZero() {
@@ -64,11 +64,8 @@ func (r *KeycloakClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			// leaking or force-dropping the remote client.
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
-		if r.isMissingCredentials(err) {
-			r.setStatus(ctx, req.NamespacedName, kcc, neteye.ServiceStateFailed, missingCredentialsMessage(kcc.Namespace))
-			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
-		}
-		r.setStatus(ctx, req.NamespacedName, kcc, neteye.ServiceStateNotReady, err.Error())
+		state, message := r.adminAPIFailure(err, kcc.Namespace)
+		r.setStatus(ctx, req.NamespacedName, kcc, state, message)
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
 

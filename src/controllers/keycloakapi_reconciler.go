@@ -16,6 +16,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
 )
 
@@ -72,6 +73,14 @@ func (r *KeycloakAPIReconciler) adminProviders() *keycloak.AdminProviderRegistry
 
 func (r *KeycloakAPIReconciler) isMissingCredentials(err error) bool {
 	return errors.Is(err, keycloak.ErrNoAdminCredentials)
+}
+
+// adminAPIFailure maps an adminAPI error to the status to publish for it.
+func (r *KeycloakAPIReconciler) adminAPIFailure(err error, namespace string) (neteye.ServiceState, string) {
+	if r.isMissingCredentials(err) {
+		return neteye.ServiceStateFailed, missingCredentialsMessage(namespace)
+	}
+	return neteye.ServiceStateNotReady, err.Error()
 }
 
 func missingCredentialsMessage(namespace string) string {
