@@ -125,6 +125,12 @@ type KeycloakRealmSpec struct {
 	// +kubebuilder:validation:Optional
 	DisplayNameHTML string `json:"displayNameHtml,omitempty"`
 
+	// PasswordPolicy configures the realm's Keycloak password policy. When
+	// omitted or null, the operator leaves the existing policy untouched.
+	// +kubebuilder:validation:Optional
+	// +nullable
+	PasswordPolicy *string `json:"passwordPolicy,omitempty"`
+
 	// Enabled enables the realm in Keycloak.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=true
