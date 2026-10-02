@@ -113,6 +113,9 @@ func TestDesiredRealmRepresentationDefaults(t *testing.T) {
 	if _, ok := desired["loginTheme"]; ok {
 		t.Errorf("loginTheme = %v, want absent when Theme is nil", desired["loginTheme"])
 	}
+	if _, ok := desired["passwordPolicy"]; ok {
+		t.Errorf("passwordPolicy = %v, want absent when PasswordPolicy is nil", desired["passwordPolicy"])
+	}
 
 	wantFloat := map[string]float64{
 		"eventsExpiration":             15552000,
@@ -136,7 +139,8 @@ func TestDesiredRealmRepresentationDefaults(t *testing.T) {
 
 func TestDesiredRealmRepresentationOverrides(t *testing.T) {
 	spec := neteye.KeycloakRealmSpec{
-		Realm: "neteye",
+		Realm:          "neteye",
+		PasswordPolicy: ptr.To("length(12) and digits(2)"),
 		Events: neteye.KeycloakRealmEvents{
 			EventsExpiration:      ptr.To(int64(3600)),
 			AdminEventsExpiration: ptr.To(int64(7200)),
@@ -148,6 +152,9 @@ func TestDesiredRealmRepresentationOverrides(t *testing.T) {
 		},
 	}
 	desired := desiredRealmRepresentation(spec)
+	if got := desired["passwordPolicy"]; got != "length(12) and digits(2)" {
+		t.Errorf("passwordPolicy = %v, want configured policy", got)
+	}
 
 	if got := desired["eventsExpiration"]; got != float64(3600) {
 		t.Errorf("eventsExpiration = %v, want 3600", got)
@@ -270,5 +277,45 @@ func TestReconcileRealmUpdatesDriftedBruteForceSettings(t *testing.T) {
 	}
 	if got := fake.realms["neteye"]["bruteForceProtected"]; got != true {
 		t.Errorf("bruteForceProtected = %v, want true after drift correction", got)
+	}
+}
+
+func TestReconcileRealmPasswordPolicy(t *testing.T) {
+	fake := newFakeKeycloakRealms()
+	api := fake.start(t)
+	spec := neteye.KeycloakRealmSpec{Realm: "neteye", PasswordPolicy: ptr.To("length(12) and digits(2)")}
+
+	if result, err := ReconcileRealm(context.Background(), api, spec); err != nil || !result.Created {
+		t.Fatalf("create realm: result=%+v err=%v", result, err)
+	}
+	if got := fake.realms["neteye"]["passwordPolicy"]; got != *spec.PasswordPolicy {
+		t.Errorf("created passwordPolicy = %v, want %q", got, *spec.PasswordPolicy)
+	}
+	if result, err := ReconcileRealm(context.Background(), api, spec); err != nil || result.Updated {
+		t.Fatalf("reconcile unchanged realm: result=%+v err=%v", result, err)
+	}
+
+	fake.realms["neteye"]["passwordPolicy"] = "length(8)"
+	if result, err := ReconcileRealm(context.Background(), api, spec); err != nil || !result.Updated {
+		t.Fatalf("reconcile drifted realm: result=%+v err=%v", result, err)
+	}
+	if got := fake.realms["neteye"]["passwordPolicy"]; got != *spec.PasswordPolicy {
+		t.Errorf("corrected passwordPolicy = %v, want %q", got, *spec.PasswordPolicy)
+	}
+
+	spec.PasswordPolicy = nil
+	if result, err := ReconcileRealm(context.Background(), api, spec); err != nil || result.Updated {
+		t.Fatalf("reconcile unmanaged policy: result=%+v err=%v", result, err)
+	}
+	if got := fake.realms["neteye"]["passwordPolicy"]; got != "length(12) and digits(2)" {
+		t.Errorf("unmanaged passwordPolicy = %v, want existing policy preserved", got)
+	}
+
+	spec.PasswordPolicy = ptr.To("")
+	if result, err := ReconcileRealm(context.Background(), api, spec); err != nil || !result.Updated {
+		t.Fatalf("clear password policy: result=%+v err=%v", result, err)
+	}
+	if got := fake.realms["neteye"]["passwordPolicy"]; got != "" {
+		t.Errorf("cleared passwordPolicy = %v, want empty string", got)
 	}
 }
