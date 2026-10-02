@@ -153,6 +153,12 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              passwordPolicy:
+                description: |-
+                  PasswordPolicy configures the realm's Keycloak password policy. When
+                  omitted or null, the operator leaves the existing policy untouched.
+                nullable: true
+                type: string
               realm:
                 description: Realm is the Keycloak realm name, which is immutable
                   after creation.

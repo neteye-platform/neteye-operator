@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
@@ -34,6 +35,10 @@ func TestEnsureMasterRealmDeclaresTheRealm(t *testing.T) {
 	if kcr.Spec.DisplayName != "NetEye" {
 		t.Errorf("displayName = %q, want NetEye", kcr.Spec.DisplayName)
 	}
+	wantPolicy := "length(12) and digits(2) and upperCase(1) and lowerCase(1) and specialChars(1) and passwordAge(120)"
+	if kcr.Spec.PasswordPolicy == nil || *kcr.Spec.PasswordPolicy != wantPolicy {
+		t.Errorf("passwordPolicy = %v, want %q", kcr.Spec.PasswordPolicy, wantPolicy)
+	}
 	if kcr.Spec.Theme == nil {
 		t.Fatal("theme must be set")
 	}
@@ -50,8 +55,9 @@ func TestEnsureMasterRealmKeepsAdministratorEdits(t *testing.T) {
 	edited := &neteye.KeycloakRealm{
 		ObjectMeta: metav1.ObjectMeta{Namespace: WorkloadNamespace, Name: MasterRealmResourceName},
 		Spec: neteye.KeycloakRealmSpec{
-			Realm: masterRealm,
-			Theme: &neteye.KeycloakRealmTheme{LoginTheme: "custom"},
+			Realm:          masterRealm,
+			PasswordPolicy: ptr.To("length(20)"),
+			Theme:          &neteye.KeycloakRealmTheme{LoginTheme: "custom"},
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).WithObjects(edited).Build()
@@ -68,5 +74,8 @@ func TestEnsureMasterRealmKeepsAdministratorEdits(t *testing.T) {
 	}
 	if kcr.Spec.Theme.LoginTheme != "custom" {
 		t.Errorf("loginTheme = %q, want the administrator's edit preserved", kcr.Spec.Theme.LoginTheme)
+	}
+	if kcr.Spec.PasswordPolicy == nil || *kcr.Spec.PasswordPolicy != "length(20)" {
+		t.Errorf("passwordPolicy = %v, want the administrator's edit preserved", kcr.Spec.PasswordPolicy)
 	}
 }
