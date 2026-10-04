@@ -556,9 +556,14 @@ func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeEla
 	if err := c.Status().Update(ctx, kc); err != nil {
 		t.Fatal(err)
 	}
-	// No KeycloakUser controller runs under envtest, so drive the identity
-	// readiness gates by hand: one reconcile per user, since the root user is
-	// only declared once the internal admin is Ready.
+	// No KeycloakRealm or KeycloakUser controller runs under envtest, so drive
+	// the identity readiness gates by hand: one reconcile per gate, since the
+	// master realm is declared before any account and the root user is only
+	// declared once the internal admin is Ready.
+	if _, err := r.Reconcile(ctx, request); err != nil {
+		t.Fatalf("reconcile to declare the master realm: %v", err)
+	}
+	markRealmReady(ctx, t, c, namespace, keycloak.MasterRealmResourceName)
 	if _, err := r.Reconcile(ctx, request); err != nil {
 		t.Fatalf("reconcile to declare the internal admin user: %v", err)
 	}
@@ -577,6 +582,18 @@ func markReady(ctx context.Context, t *testing.T, c client.Client, object *unstr
 	}
 	if err := c.Status().Update(ctx, object); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func markRealmReady(ctx context.Context, t *testing.T, c client.Client, namespace, name string) {
+	t.Helper()
+	realm := &neteye.KeycloakRealm{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, realm); err != nil {
+		t.Fatalf("get keycloak realm %q: %v", name, err)
+	}
+	realm.Status.Status = neteye.ServiceStateReady
+	if err := c.Status().Update(ctx, realm); err != nil {
+		t.Fatalf("mark keycloak realm %q ready: %v", name, err)
 	}
 }
 

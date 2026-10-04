@@ -5,9 +5,7 @@ package controllers
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
-	"math/big"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -26,15 +24,6 @@ import (
 // KeycloakUser resource disappears, for the resources that ask for it through
 // spec.deletionPolicy.
 const KeycloakUserFinalizer = "neteye.cloud/keycloak-user"
-
-const (
-	// generatedPasswordLength matches the 32 characters the NetEye Ansible role
-	// generates for the administrative accounts.
-	generatedPasswordLength = 32
-	// generatedPasswordAlphabet excludes symbols, as the Ansible role does, so
-	// the password survives every consumer that stores it unquoted.
-	generatedPasswordAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-)
 
 // KeycloakUserReconciler keeps Keycloak accounts matching their KeycloakUser
 // resources. As for KeycloakClient, Keycloak exposes no watch API, so drift is
@@ -89,7 +78,7 @@ func (r *KeycloakUserReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
-	credential, generated, err := r.credential(ctx, kcu)
+	credential, generated, err := r.credential(ctx, api, kcu)
 	if err != nil {
 		log.Error(err, "unable to resolve the account credential", "requeueAfter", r.failureRequeue())
 		r.setStatus(ctx, req.NamespacedName, kcu, neteye.ServiceStateFailed, err.Error())
@@ -175,7 +164,10 @@ func (r *KeycloakUserReconciler) removeFinalizer(ctx context.Context, kcu *netey
 // generated, meaning the operator still has to store it. A password already
 // present in the referenced Secret is reused, so a reconciliation never mints a
 // second password for the same account.
-func (r *KeycloakUserReconciler) credential(ctx context.Context, kcu *neteye.KeycloakUser) (keycloak.UserCredential, bool, error) {
+//
+// A generated password has to satisfy the password policy of the realm the
+// account lives in, so the policy is read from Keycloak before minting one.
+func (r *KeycloakUserReconciler) credential(ctx context.Context, api *keycloak.AdminAPI, kcu *neteye.KeycloakUser) (keycloak.UserCredential, bool, error) {
 	spec := kcu.Spec.Credential
 	if spec == nil {
 		return keycloak.UserCredential{}, false, nil
@@ -204,7 +196,11 @@ func (r *KeycloakUserReconciler) credential(ctx context.Context, kcu *neteye.Key
 		credential.Password = stored
 		return credential, false, nil
 	default:
-		password, err := generatePassword()
+		policy, err := keycloak.UserPasswordPolicy(ctx, api, kcu.Spec)
+		if err != nil {
+			return credential, false, err
+		}
+		password, err := keycloak.GeneratePassword(policy)
 		if err != nil {
 			return credential, false, err
 		}
@@ -268,17 +264,4 @@ func (r *KeycloakUserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// still runs under this predicate while status writes do not requeue.
 		For(&neteye.KeycloakUser{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Complete(r)
-}
-
-func generatePassword() (string, error) {
-	limit := big.NewInt(int64(len(generatedPasswordAlphabet)))
-	password := make([]byte, generatedPasswordLength)
-	for index := range password {
-		pick, err := rand.Int(rand.Reader, limit)
-		if err != nil {
-			return "", fmt.Errorf("generate password: %w", err)
-		}
-		password[index] = generatedPasswordAlphabet[pick.Int64()]
-	}
-	return string(password), nil
 }

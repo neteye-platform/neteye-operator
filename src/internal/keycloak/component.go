@@ -242,6 +242,28 @@ func (c *Component) IsReady(ctx context.Context, namespace string) (bool, string
 	return resources.ReadyConditionMessage(kc, "Keycloak")
 }
 
+// IsRealmReady reports whether the named KeycloakRealm has reached the Ready
+// state, meaning its configuration — the password policy included — is live in
+// Keycloak. It does not wait; callers should requeue and check again later.
+func (c *Component) IsRealmReady(ctx context.Context, namespace, name string) (bool, string, error) {
+	realm := &neteye.KeycloakRealm{}
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	if err := c.client.Get(ctx, key, realm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, fmt.Sprintf("waiting for KeycloakRealm %q to be created", name), nil
+		}
+		return false, "", fmt.Errorf("get keycloak realm %q: %w", name, err)
+	}
+	if realm.Status.Status != neteye.ServiceStateReady {
+		message := realm.Status.Message
+		if message == "" {
+			message = fmt.Sprintf("waiting for KeycloakRealm %q to be ready", name)
+		}
+		return false, message, nil
+	}
+	return true, "", nil
+}
+
 // IsUserReady reports whether the named KeycloakUser has reached the Ready
 // state. It does not wait; callers should requeue and check again later.
 func (c *Component) IsUserReady(ctx context.Context, namespace, name string) (bool, string, error) {

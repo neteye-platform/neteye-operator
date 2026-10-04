@@ -79,3 +79,61 @@ func TestEnsureMasterRealmKeepsAdministratorEdits(t *testing.T) {
 		t.Errorf("passwordPolicy = %v, want the administrator's edit preserved", kcr.Spec.PasswordPolicy)
 	}
 }
+
+func TestIsRealmReady(t *testing.T) {
+	cases := []struct {
+		name        string
+		realm       *neteye.KeycloakRealm
+		wantReady   bool
+		wantMessage string
+	}{
+		{
+			name:        "a missing realm is not ready",
+			wantMessage: `waiting for KeycloakRealm "master" to be created`,
+		},
+		{
+			name: "a realm without a status is not ready",
+			realm: &neteye.KeycloakRealm{
+				ObjectMeta: metav1.ObjectMeta{Namespace: WorkloadNamespace, Name: MasterRealmResourceName},
+			},
+			wantMessage: `waiting for KeycloakRealm "master" to be ready`,
+		},
+		{
+			name: "a failed realm reports its own message",
+			realm: &neteye.KeycloakRealm{
+				ObjectMeta: metav1.ObjectMeta{Namespace: WorkloadNamespace, Name: MasterRealmResourceName},
+				Status:     neteye.KeycloakRealmStatus{Status: neteye.ServiceStateFailed, Message: "admin API unreachable"},
+			},
+			wantMessage: "admin API unreachable",
+		},
+		{
+			name: "a ready realm is ready",
+			realm: &neteye.KeycloakRealm{
+				ObjectMeta: metav1.ObjectMeta{Namespace: WorkloadNamespace, Name: MasterRealmResourceName},
+				Status:     neteye.KeycloakRealmStatus{Status: neteye.ServiceStateReady},
+			},
+			wantReady: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := fake.NewClientBuilder().WithScheme(internalAdminScheme(t))
+			if tc.realm != nil {
+				builder = builder.WithObjects(tc.realm)
+			}
+			component := NewComponent(builder.Build(), logr.Discard())
+
+			ready, message, err := component.IsRealmReady(context.Background(), WorkloadNamespace, MasterRealmResourceName)
+			if err != nil {
+				t.Fatalf("IsRealmReady: %v", err)
+			}
+			if ready != tc.wantReady {
+				t.Errorf("ready = %t, want %t", ready, tc.wantReady)
+			}
+			if message != tc.wantMessage {
+				t.Errorf("message = %q, want %q", message, tc.wantMessage)
+			}
+		})
+	}
+}
