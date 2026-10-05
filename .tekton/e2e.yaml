@@ -127,7 +127,6 @@ spec:
                       neteye.cloud/neteye-update-upgrade: "$NETEYE_UPDATE_UPGRADE"
                       neteye.cloud/neteye-version: "$NETEYE_VERSION"
                   spec:
-                    # TODO: revert to the in-cluster Pipeline once support-update-upgrade-builds is merged to master
                     pipelineRef:
                       resolver: git
                       params:
@@ -135,8 +134,6 @@ spec:
                           value: "git-resolver"
                         - name: pathInRepo
                           value: rhel8-neteye-build/rhel8-neteye-build.yaml
-                        - name: revision
-                          value: "support-update-upgrade-builds"
                     taskRunTemplate:
                       serviceAccountName: openshift-pipelines
                     timeouts:
@@ -156,10 +153,6 @@ spec:
                         value: "neteye-ci-dummy"
                       - name: version
                         value: "$NETEYE_VERSION"
-                      - name: taskRevision
-                        value: "support-update-upgrade-builds"
-                      - name: openshiftScriptsRef
-                        value: "support-update-upgrade-build"
                       - name: neteyeOperatorChannel
                         value: "$OPERATOR_NIGHTLY_CHANNEL"
                       - name: neteyeOperatorVersion
