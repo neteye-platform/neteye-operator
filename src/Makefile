@@ -11,7 +11,7 @@ GOLANGCI_LINT_VERSION ?= v2.14.0
 KUSTOMIZE_VERSION ?= v5.7.1
 # renovate: datasource=github-releases depName=operator-framework/operator-sdk
 OPERATOR_SDK_VERSION ?= v1.42.3
-VERSION ?= 0.2.1
+VERSION ?= 0.2.2
 PACKAGE_NAME ?= neteye-operator
 LD_FLAGS ?= -X main.version=$(VERSION)
 
