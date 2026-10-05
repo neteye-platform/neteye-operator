@@ -1,12 +1,9 @@
 name: Nightly Build
 
 on:
-  # schedule:
-  #   - cron: "0 2 * * *"
-  # workflow_dispatch:
-  pull_request:
-    branches:
-      - main
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -33,6 +30,7 @@ jobs:
         with:
           # ref: main
           fetch-depth: 0
+          persist-credentials: false
 
       # This tag is only used to run the install/update/upgrade e2e
       # pipelines against; it carries no version meaning. The actual version
@@ -81,8 +79,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        # with:
-        #   ref: main
+        with:
+          # ref: main
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -118,8 +117,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        # with:
-        #   ref: main
+        with:
+          # ref: main
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -197,12 +197,15 @@ jobs:
           echo "channel=${neteye_version}-nightly" >> "$GITHUB_OUTPUT"
 
       - name: Update nightly channel
+        env:
+          NETEYE_VERSION: ${{ steps.nightly-channel.outputs.neteye-version }}
+          VERSION_TAG: ${{ needs.compute-candidate-tag.outputs.version-tag }}
         run: |
           ./operator/hack/update_catalog.py \
             --catalog ./catalog/catalog/index.yaml \
             --nightly \
-            --neteye-version "${{ steps.nightly-channel.outputs.neteye-version }}" \
-            --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle:${{ needs.compute-candidate-tag.outputs.version-tag }}"
+            --neteye-version "$NETEYE_VERSION" \
+            --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle:$VERSION_TAG"
 
       - name: Check catalog changes
         id: changes
@@ -265,8 +268,9 @@ jobs:
         if: ${{ steps.changes.outputs.changed == 'true' }}
         env:
           GH_TOKEN: ${{ steps.catalog-write-token.outputs.token }}
+          PR_NUMBER: ${{ steps.catalog-pr.outputs.pull-request-number }}
         run: |
-          pr_number="${{ steps.catalog-pr.outputs.pull-request-number }}"
+          pr_number="$PR_NUMBER"
           repo="neteye-platform/neteye-operator-catalog"
 
           # Checks are registered asynchronously after PR creation; gh errors out
@@ -291,21 +295,25 @@ jobs:
 
       - name: Report existing nightly build
         if: ${{ steps.changes.outputs.changed == 'false' }}
-        run: echo "Catalog already up to date for ${{ needs.compute-candidate-tag.outputs.tag }}."
+        env:
+          NIGHTLY_TAG: ${{ needs.compute-candidate-tag.outputs.tag }}
+        run: echo "Catalog already up to date for $NIGHTLY_TAG."
 
       - name: Trigger e2e pipeline
         env:
           PAC_CONTROLLER_URL: ${{ secrets.PAC_CONTROLLER_URL }}
           PAC_SECRET: ${{ secrets.PAC_INCOMING_SECRET }}
+          OPERATOR_CHANNEL: ${{ steps.nightly-channel.outputs.channel }}
+          VERSION_TAG: ${{ needs.compute-candidate-tag.outputs.version-tag }}
         run: |
           set -euo pipefail
 
-          operator_channel="${{ steps.nightly-channel.outputs.channel }}"
+          operator_channel="$OPERATOR_CHANNEL"
 
           response="$(curl --fail-with-body -sS -X POST "$PAC_CONTROLLER_URL/incoming" \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
-              --arg version "${{ needs.compute-candidate-tag.outputs.version-tag }}" \
+              --arg version "$VERSION_TAG" \
               --arg channel "$operator_channel" \
               --arg secret "$PAC_SECRET" \
               '{repository:"neteye-operator",
