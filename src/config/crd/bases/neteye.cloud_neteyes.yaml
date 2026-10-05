@@ -311,6 +311,21 @@ spec:
                     required:
                     - host
                     type: object
+                  enabledFeatures:
+                    description: |-
+                      EnabledFeatures lists additional Keycloak features to enable, in the
+                      Keycloak feature-name form optionally suffixed with a version
+                      (for example "token-exchange" or "admin-fine-grained-authz:v2").
+                      Features managed by the operator cannot be requested here; the telemetry
+                      features are enabled through Telemetry instead.
+                    example:
+                    - token-exchange
+                    items:
+                      minLength: 1
+                      pattern: ^[a-z][a-z0-9-]*(:v[0-9]+)?$
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
                   hostname:
                     description: Hostname is the public hostname configured for the
                       identity service.

@@ -344,8 +344,10 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 		},
 		"additionalOptions": keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry),
 	}
+	if features := keycloakFeatures(identity); len(features) > 0 {
+		spec["features"] = map[string]any{"enabled": features}
+	}
 	if identityTelemetryEnabled(identity) {
-		spec["features"] = map[string]any{"enabled": keycloakTelemetryFeatures(identity.Telemetry)}
 		spec["telemetry"] = map[string]any{
 			"endpoint":           "http://otel-edot-gateway:4317",
 			"protocol":           "grpc",
@@ -451,13 +453,40 @@ func identityTelemetryEnabled(identity neteye.NetEyeIdentitySpec) bool {
 	return identity.Telemetry != nil && (identity.Telemetry.LogsEnabled || identity.Telemetry.MetricsEnabled)
 }
 
-func keycloakTelemetryFeatures(telemetry *neteye.NetEyeIdentityTelemetrySpec) []any {
-	features := make([]any, 0, 2)
+// keycloakFeatures lists the Keycloak features to enable: the ones the operator
+// derives from the telemetry opt-in first, then the ones requested in the NetEye
+// spec. Operator-managed features are never taken from the spec; the validating
+// webhook rejects them, and skipping them keeps a stale resource consistent.
+func keycloakFeatures(identity neteye.NetEyeIdentitySpec) []any {
+	names := make([]string, 0, len(identity.EnabledFeatures)+2)
+	if identityTelemetryEnabled(identity) {
+		names = append(names, keycloakTelemetryFeatures(identity.Telemetry)...)
+	}
+	for _, feature := range identity.EnabledFeatures {
+		if keycloakconfig.IsManagedFeature(feature) {
+			continue
+		}
+		names = append(names, feature)
+	}
+	features := make([]any, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		seen[name] = struct{}{}
+		features = append(features, name)
+	}
+	return features
+}
+
+func keycloakTelemetryFeatures(telemetry *neteye.NetEyeIdentityTelemetrySpec) []string {
+	features := make([]string, 0, 2)
 	if telemetry.LogsEnabled {
-		features = append(features, "opentelemetry-logs")
+		features = append(features, keycloakconfig.FeatureOpenTelemetryLogs)
 	}
 	if telemetry.MetricsEnabled {
-		features = append(features, "opentelemetry-metrics")
+		features = append(features, keycloakconfig.FeatureOpenTelemetryMetrics)
 	}
 	return features
 }

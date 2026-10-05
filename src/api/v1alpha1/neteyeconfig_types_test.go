@@ -147,6 +147,52 @@ func TestGeneratedCRDDefaultsIdentityTelemetrySignals(t *testing.T) {
 	}
 }
 
+func TestGeneratedCRDConstrainsIdentityEnabledFeatures(t *testing.T) {
+	data, err := os.ReadFile("../../config/crd/bases/neteye.cloud_neteyes.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	crd := &unstructured.Unstructured{}
+	if err := yaml.Unmarshal(data, crd); err != nil {
+		t.Fatal(err)
+	}
+	versions, found, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	if err != nil || !found || len(versions) == 0 {
+		t.Fatalf("find CRD versions: found=%t err=%v", found, err)
+	}
+	version, ok := versions[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("CRD version has unexpected type %T", versions[0])
+	}
+	path := []string{"schema", "openAPIV3Schema", "properties", "spec", "properties", "identity", "properties", "enabledFeatures"}
+	features, found, err := unstructured.NestedMap(version, path...)
+	if err != nil || !found {
+		t.Fatalf("enabledFeatures schema: found=%t err=%v", found, err)
+	}
+	if features["type"] != "array" {
+		t.Errorf("enabledFeatures type = %#v, want array", features["type"])
+	}
+	if features["x-kubernetes-list-type"] != "set" {
+		t.Errorf("enabledFeatures list type = %#v, want set", features["x-kubernetes-list-type"])
+	}
+	items, ok := features["items"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("enabledFeatures items has unexpected type %T", features["items"])
+	}
+	if items["type"] != "string" || items["pattern"] != `^[a-z][a-z0-9-]*(:v[0-9]+)?$` {
+		t.Errorf("enabledFeatures items = %#v, want pattern-constrained strings", items)
+	}
+	identityRequired, found, err := unstructured.NestedStringSlice(version, "schema", "openAPIV3Schema", "properties", "spec", "properties", "identity", "required")
+	if err != nil || !found {
+		t.Fatalf("identity required fields: found=%t err=%v", found, err)
+	}
+	for _, field := range identityRequired {
+		if field == "enabledFeatures" {
+			t.Fatal("identity enabledFeatures must remain optional")
+		}
+	}
+}
+
 func TestIdentityTelemetryDeepCopy(t *testing.T) {
 	original := &NetEyeIdentitySpec{Telemetry: &NetEyeIdentityTelemetrySpec{LogsEnabled: true, ResourceAttributes: map[string]string{"data_stream.namespace": "custom"}}}
 	copied := original.DeepCopy()

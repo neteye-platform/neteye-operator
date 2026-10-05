@@ -972,6 +972,11 @@ func (in *NetEyeIdentitySpec) DeepCopyInto(out *NetEyeIdentitySpec) {
 		*out = make([]NetEyeKeycloakOption, len(*in))
 		copy(*out, *in)
 	}
+	if in.EnabledFeatures != nil {
+		in, out := &in.EnabledFeatures, &out.EnabledFeatures
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Telemetry != nil {
 		in, out := &in.Telemetry, &out.Telemetry
 		*out = new(NetEyeIdentityTelemetrySpec)

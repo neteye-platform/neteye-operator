@@ -96,6 +96,12 @@ func validateIdentity(neteye *NetEye) error {
 			errors = append(errors, field.Forbidden(path.Index(i).Child("name"), "option is managed by the NetEye operator"))
 		}
 	}
+	featuresPath := field.NewPath("spec", "identity", "enabledFeatures")
+	for i, feature := range neteye.Spec.Identity.EnabledFeatures {
+		if keycloakconfig.IsManagedFeature(feature) {
+			errors = append(errors, field.Forbidden(featuresPath.Index(i), "feature is managed by the NetEye operator"))
+		}
+	}
 	if telemetry := neteye.Spec.Identity.Telemetry; telemetry != nil {
 		if _, present := telemetry.ResourceAttributes["service.name"]; present {
 			errors = append(errors, field.Forbidden(field.NewPath("spec", "identity", "telemetry", "resourceAttributes").Key("service.name"), "service name is managed by the NetEye operator"))
