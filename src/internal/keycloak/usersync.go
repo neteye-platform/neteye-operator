@@ -6,6 +6,7 @@ package keycloak
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
@@ -56,11 +57,26 @@ func ReconcileUser(ctx context.Context, api *AdminAPI, spec neteye.KeycloakUserS
 	}
 
 	if live == nil {
-		userID, err := api.CreateUser(ctx, realm, desired)
+		// The password travels with the account instead of following in a
+		// second call, because Keycloak validates it against the realm password
+		// policy. A rejected inline credential fails the whole creation, so a
+		// policy violation can never leave an account behind that exists
+		// without a usable password and that no later reconciliation would fix.
+		create := desired
+		if credential.Password != "" {
+			create = maps.Clone(desired)
+			create["credentials"] = []any{map[string]any{
+				"type":      "password",
+				"value":     credential.Password,
+				"temporary": credential.Temporary,
+			}}
+		}
+		userID, err := api.CreateUser(ctx, realm, create)
 		if err != nil {
 			return result, fmt.Errorf("create keycloak user %q: %w", spec.Username, err)
 		}
 		result.UserID, result.Created = userID, true
+		result.PasswordSet = credential.Password != ""
 	} else {
 		result.UserID, result.Adopted = stringValue(live, "id"), true
 		merged := mergeRepresentation(live, desired)
@@ -72,7 +88,9 @@ func ReconcileUser(ctx context.Context, api *AdminAPI, spec neteye.KeycloakUserS
 		}
 	}
 
-	if credential.Password != "" && (result.Created || credential.Rotate) {
+	// A new account already carries its password. Only an existing one needs a
+	// separate reset, and only when a rotation was asked for.
+	if credential.Password != "" && credential.Rotate && !result.Created {
 		if err := api.ResetUserPassword(ctx, realm, result.UserID, credential.Password, credential.Temporary); err != nil {
 			return result, fmt.Errorf("set password of keycloak user %q: %w", spec.Username, err)
 		}
