@@ -4,7 +4,7 @@ metadata:
   annotations:
     alm-examples: '[{"apiVersion":"neteye.cloud/v1alpha1","kind":"NetEye","metadata":{"name":"neteye-sample"},"spec":{"version":"4.51","gateway":{"name":"neteye","className":"cilium"},"internalCertificateIssuerRef":"neteye-internal-issuer","identity":{"hostname":"keycloak.example.com","dbConnection":{"host":"mariadb.example.com","dbName":"keycloak","usernameSecret":{"name":"keycloak-db-secret","key":"username"},"passwordSecret":{"name":"keycloak-db-secret","key":"password"}}},"elasticStack":{"enabled":true,"elasticsearchEndpoints":["https://192.0.2.10:9200"],"telemetry":{"otelCollector":{},"edotGateway":{}}}}}]'
     capabilities: Basic Install
-  name: neteye-operator.v0.2.0
+  name: neteye-operator.v0.2.1
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -384,7 +384,7 @@ spec:
                   value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.4@sha256:0597fe7cad118fcaee15a8691088eff7b60fdd1501bd84fc91b90066d79c9afd
                 - name: RELATED_IMAGE_CA_BUNDLE
                   value: docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-                image: ghcr.io/neteye-platform/neteye-operator:0.2.0
+                image: ghcr.io/neteye-platform/neteye-operator:0.2.1
                 imagePullPolicy: Always
                 name: manager
                 ports:
@@ -474,7 +474,7 @@ spec:
     name: neteye-edot-gateway
   - image: docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
     name: neteye-ca-bundle
-  version: 0.2.0
+  version: 0.2.1
   webhookdefinitions:
   - admissionReviewVersions:
     - v1
