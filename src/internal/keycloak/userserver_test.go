@@ -23,6 +23,9 @@ type fakeKeycloakUsers struct {
 	groups     map[string]representation // group path -> representation
 	groupMap   map[string][]string       // user id -> group paths
 	resetCalls int
+	// rejectCredential stands in for the realm password policy: when it reports
+	// a password as invalid, the write is refused the way Keycloak refuses one.
+	rejectCredential func(password string) bool
 }
 
 func newFakeKeycloakUsers(realm string) *fakeKeycloakUsers {
@@ -61,6 +64,21 @@ func (f *fakeKeycloakUsers) start(t *testing.T) *AdminAPI {
 	return NewAdminAPI(server.URL, AdminCredentials{Username: "admin", Password: "secret"})
 }
 
+// inlineCredential returns the first credential a create payload carries, in
+// the same shape the reset-password endpoint receives, or nil when the payload
+// carries none.
+func inlineCredential(user representation) representation {
+	credentials, ok := user["credentials"].([]any)
+	if !ok || len(credentials) == 0 {
+		return nil
+	}
+	credential, ok := credentials[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return representation(credential)
+}
+
 func (f *fakeKeycloakUsers) userByUsername(username string) representation {
 	for _, user := range f.users {
 		if stringValue(user, "username") == username {
@@ -92,7 +110,22 @@ func (f *fakeKeycloakUsers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case segments[0] == "users" && len(segments) == 1 && r.Method == http.MethodPost:
 		user := decode(r)
+		// Keycloak accepts the password inline on creation and never returns it
+		// from the user endpoints, so record it as a credential and drop it from
+		// the stored representation.
+		credential := inlineCredential(user)
+		// A password the policy refuses fails the whole creation, so no account
+		// is left behind without a credential.
+		if credential != nil && f.rejectCredential != nil && f.rejectCredential(stringValue(credential, "value")) {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "invalidPasswordMinSpecialCharsMessage"})
+			return
+		}
+		delete(user, "credentials")
 		f.withUser(user)
+		if credential != nil {
+			f.passwords["user-"+stringValue(user, "username")] = credential
+		}
 		w.WriteHeader(http.StatusCreated)
 
 	case segments[0] == "users" && len(segments) == 2 && r.Method == http.MethodPut:
@@ -106,8 +139,15 @@ func (f *fakeKeycloakUsers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 
 	case segments[0] == "users" && len(segments) == 3 && segments[2] == "reset-password":
-		f.passwords[segments[1]] = decode(r)
+		credential := decode(r)
 		f.resetCalls++
+		// The policy governs every credential write, a reset included.
+		if f.rejectCredential != nil && f.rejectCredential(stringValue(credential, "value")) {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "invalidPasswordMinSpecialCharsMessage"})
+			return
+		}
+		f.passwords[segments[1]] = credential
 		w.WriteHeader(http.StatusNoContent)
 
 	case segments[0] == "roles" && len(segments) == 2 && r.Method == http.MethodGet:

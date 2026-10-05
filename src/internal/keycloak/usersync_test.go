@@ -5,6 +5,7 @@ package keycloak
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
@@ -148,5 +149,65 @@ func TestDeleteUserIsIdempotent(t *testing.T) {
 	}
 	if err := DeleteUser(context.Background(), api, spec); err != nil {
 		t.Fatalf("DeleteUser on a missing account: %v", err)
+	}
+}
+
+func TestReconcileUserSetsThePasswordOnCreationWithoutASeparateReset(t *testing.T) {
+	fake := newFakeKeycloakUsers("master")
+	api := fake.start(t)
+
+	spec := neteye.KeycloakUserSpec{Username: "svc"}
+	result, err := ReconcileUser(context.Background(), api, spec, UserCredential{Password: "Svc-Pass42x"}) // #nosec G101 -- False positive
+	if err != nil {
+		t.Fatalf("ReconcileUser: %v", err)
+	}
+	if !result.Created || !result.PasswordSet {
+		t.Fatalf("expected a created account carrying its password, got %+v", result)
+	}
+	// The password has to travel with the creation: a separate reset-password
+	// call is what used to leave a credential-less account behind when the
+	// realm policy refused the password.
+	if fake.resetCalls != 0 {
+		t.Errorf("reset-password calls = %d, want the password to be set inline on creation", fake.resetCalls)
+	}
+	if got := stringValue(fake.passwords[result.UserID], "value"); got != "Svc-Pass42x" {
+		t.Errorf("stored password = %q, want the created one", got)
+	}
+	// Keycloak never echoes credentials back, so they must not linger on the
+	// stored representation and be mistaken for drift later.
+	if _, ok := fake.users[result.UserID]["credentials"]; ok {
+		t.Error("the stored account representation still carries credentials")
+	}
+}
+
+func TestReconcileUserCreationFailsAtomicallyWhenThePolicyRefusesThePassword(t *testing.T) {
+	fake := newFakeKeycloakUsers("master")
+	fake.rejectCredential = func(password string) bool { return !strings.ContainsAny(password, "-._~") }
+	api := fake.start(t)
+
+	spec := neteye.KeycloakUserSpec{Username: "svc"}
+	result, err := ReconcileUser(context.Background(), api, spec, UserCredential{Password: "NoSymbols42x"})
+	if err == nil {
+		t.Fatal("expected the creation to fail when the policy refuses the password")
+	}
+	if result.Created || result.PasswordSet {
+		t.Errorf("result = %+v, want nothing reported as created", result)
+	}
+	if fake.userByUsername("svc") != nil {
+		t.Fatal("a refused password must not leave an account behind")
+	}
+
+	// Because nothing was created, the next pass still takes the create path
+	// and can repair itself with a compliant password. The old create-then-reset
+	// order left an adopted account that no later reconciliation would fix.
+	result, err = ReconcileUser(context.Background(), api, spec, UserCredential{Password: "test-password"})
+	if err != nil {
+		t.Fatalf("ReconcileUser after a refused password: %v", err)
+	}
+	if !result.Created || !result.PasswordSet {
+		t.Fatalf("expected the retry to create the account with its password, got %+v", result)
+	}
+	if got := stringValue(fake.passwords[result.UserID], "value"); got != "test-password" {
+		t.Errorf("stored password = %q, want the compliant one", got)
 	}
 }

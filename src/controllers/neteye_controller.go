@@ -436,10 +436,35 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		return progressingResult(identityComponentID, "ServiceNotReady", keycloakMessage, r.waitForProgressingRequeue())
 	}
 
-	// The instance is up, so the Admin API is reachable and the KeycloakUser
-	// controller can make progress on the administrative account the platform
-	// owns. Declaring it here is what replaces the Ansible role creating it with
-	// the bootstrap admin.
+	// The realm configuration comes before any account, because it carries the
+	// password policy every generated password has to satisfy. Creating the
+	// accounts first would mint them under whatever policy the realm happens to
+	// have, leaving credentials that violate the policy the operator declares:
+	// Keycloak only validates a password when it is written and never
+	// re-validates a stored one. The KeycloakRealm controller reaches Keycloak
+	// with the bootstrap admin, so this does not depend on the internal admin
+	// account existing yet.
+	if err := r.KeycloakComponent.EnsureMasterRealm(ctx, keycloak.WorkloadNamespace); err != nil {
+		log.Error(err, "failed to declare the master Keycloak realm configuration", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the master Keycloak realm configuration: %v", err), image)
+		return degradedResult(identityComponentID, "EnsureMasterRealmFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
+	}
+	masterRealmReady, masterRealmMessage, err := r.KeycloakComponent.IsRealmReady(ctx, keycloak.WorkloadNamespace, keycloak.MasterRealmResourceName)
+	if err != nil {
+		log.Error(err, "failed to check the master Keycloak realm readiness", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to check the master Keycloak realm readiness: %v", err), image)
+		return degradedResult(identityComponentID, "CheckMasterRealmReadinessFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
+	}
+	if !masterRealmReady {
+		log.V(1).Info("master realm is not ready", "reason", masterRealmMessage, "requeueAfter", r.waitForProgressingRequeue())
+		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, masterRealmMessage, image)
+		return progressingResult(identityComponentID, "MasterRealmNotReady", masterRealmMessage, r.waitForProgressingRequeue())
+	}
+
+	// The instance is up and the realm policy is live, so the Admin API is
+	// reachable and the KeycloakUser controller can make progress on the
+	// administrative account the platform owns. Declaring it here is what
+	// replaces the Ansible role creating it with the bootstrap admin.
 	if err := r.KeycloakComponent.EnsureInternalAdminUser(ctx, keycloak.WorkloadNamespace); err != nil {
 		log.Error(err, "failed to declare the Keycloak internal admin user", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the Keycloak internal admin user: %v", err), image)
@@ -475,12 +500,6 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		log.V(1).Info("root user is not ready", "reason", rootUserMessage, "requeueAfter", r.waitForProgressingRequeue())
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateNotReady, rootUserMessage, image)
 		return progressingResult(identityComponentID, "RootUserNotReady", rootUserMessage, r.waitForProgressingRequeue())
-	}
-
-	if err := r.KeycloakComponent.EnsureMasterRealm(ctx, keycloak.WorkloadNamespace); err != nil {
-		log.Error(err, "failed to declare the master Keycloak realm configuration", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
-		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to declare the master Keycloak realm configuration: %v", err), image)
-		return degradedResult(identityComponentID, "EnsureMasterRealmFailed", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue(), err)
 	}
 
 	if err := r.KeycloakComponent.EnsureNetEyeClient(ctx, keycloak.WorkloadNamespace); err != nil {

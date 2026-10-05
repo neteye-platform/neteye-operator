@@ -29,13 +29,23 @@ type stubKeycloakUsers struct {
 	passwords map[string]string         // user id -> password
 	roles     map[string][]string       // user id -> realm role names
 	deleted   []string
+	// passwordPolicy is the realm policy a generated password has to satisfy.
+	passwordPolicy string
+	// rejectCredential stands in for the realm password policy: when it reports
+	// a password as invalid, the write is refused the way Keycloak refuses one.
+	rejectCredential func(password string) bool
 }
+
+// stubMasterPasswordPolicy is the policy the operator applies to the master
+// realm, so the tests generate passwords under the rules of a real install.
+const stubMasterPasswordPolicy = "length(12) and digits(2) and upperCase(1) and lowerCase(1) and specialChars(1) and passwordAge(120)" // #nosec G101 -- False positive
 
 func newStubKeycloakUsers() *stubKeycloakUsers {
 	return &stubKeycloakUsers{
-		users:     map[string]map[string]any{},
-		passwords: map[string]string{},
-		roles:     map[string][]string{},
+		users:          map[string]map[string]any{},
+		passwords:      map[string]string{},
+		roles:          map[string][]string{},
+		passwordPolicy: stubMasterPasswordPolicy,
 	}
 }
 
@@ -48,6 +58,9 @@ func (s *stubKeycloakUsers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(r.URL.Path, "/protocol/openid-connect/token"):
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "token", "expires_in": 60})
 
+	case r.Method == http.MethodGet && len(segments) == 3 && segments[1] == "realms":
+		_ = json.NewEncoder(w).Encode(map[string]any{"realm": last, "passwordPolicy": s.passwordPolicy})
+
 	case r.Method == http.MethodGet && last == "users":
 		found := []map[string]any{}
 		if user, ok := s.users[r.URL.Query().Get("username")]; ok {
@@ -59,6 +72,22 @@ func (s *stubKeycloakUsers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body := map[string]any{}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		username, _ := body["username"].(string)
+		// Keycloak takes the password inline on creation and never echoes it
+		// back from the user endpoints.
+		if credentials, ok := body["credentials"].([]any); ok && len(credentials) > 0 {
+			if credential, ok := credentials[0].(map[string]any); ok {
+				password, _ := credential["value"].(string)
+				// A refused password fails the whole creation, leaving no
+				// account behind.
+				if s.rejectCredential != nil && s.rejectCredential(password) {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalidPasswordMinSpecialCharsMessage"})
+					return
+				}
+				s.passwords["user-"+username] = password
+			}
+		}
+		delete(body, "credentials")
 		body["id"] = "user-" + username
 		s.users[username] = body
 		w.WriteHeader(http.StatusCreated)
@@ -170,11 +199,36 @@ func TestKeycloakUserReconcileCreatesUserAndStoresGeneratedPassword(t *testing.T
 		t.Fatalf("the generated password was not stored: %v", err)
 	}
 	password := string(secret.Data["password"])
-	if len(password) != generatedPasswordLength {
-		t.Errorf("stored password length = %d, want %d", len(password), generatedPasswordLength)
+	if len(password) != keycloak.DefaultGeneratedPasswordLength {
+		t.Errorf("stored password length = %d, want %d", len(password), keycloak.DefaultGeneratedPasswordLength)
 	}
 	if stub.passwords["user-neteye-internal-keycloak-admin"] != password {
 		t.Error("the stored password differs from the one set on the account")
+	}
+	// The realm policy requires a special character and two digits. A password
+	// that ignores it is rejected by Keycloak with
+	// invalidPasswordMinSpecialCharsMessage, leaving the account without a
+	// usable credential.
+	for _, required := range []struct {
+		class     string
+		character string
+		minimum   int
+	}{
+		{"specialChars", "-._~", 1},
+		{"digits", "0123456789", 2},
+		{"upperCase", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", 1},
+		{"lowerCase", "abcdefghijklmnopqrstuvwxyz", 1},
+	} {
+		count := 0
+		for i := range len(password) {
+			if strings.IndexByte(required.character, password[i]) >= 0 {
+				count++
+			}
+		}
+		if count < required.minimum {
+			t.Errorf("generated password %q has %d %s, want >= %d as required by %q",
+				password, count, required.class, required.minimum, stub.passwordPolicy)
+		}
 	}
 
 	updated := &neteye.KeycloakUser{}
@@ -350,5 +404,58 @@ func TestKeycloakUserDeleteWithoutTenantCredentialsReleasesFinalizer(t *testing.
 	updated := &neteye.KeycloakUser{}
 	if err := c.Get(context.Background(), requestFor(kcu).NamespacedName, updated); err == nil && containsString(updated.Finalizers, KeycloakUserFinalizer) {
 		t.Error("finalizer was not removed")
+	}
+}
+
+func TestKeycloakUserReconcileRecoversAfterThePolicyRefusesTheGeneratedPassword(t *testing.T) {
+	stub := newStubKeycloakUsers()
+	refuse := true
+	stub.rejectCredential = func(string) bool { return refuse }
+	kcu := keycloakUserCR("neteye-tenant-shared")
+	r, c := newKeycloakUserReconciler(t, stub, adminSecret(keycloak.WorkloadNamespace), kcu)
+
+	// First pass: Keycloak refuses the password, so the creation fails as a
+	// whole and no account is left behind.
+	if _, err := r.Reconcile(context.Background(), requestFor(kcu)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stub.users["neteye-internal-keycloak-admin"]; ok {
+		t.Fatal("a refused password must not leave an account behind")
+	}
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: kcu.Namespace, Name: "neteye-internal-keycloak-admin"}
+	if err := c.Get(context.Background(), key, secret); err == nil {
+		t.Error("no password should be stored when Keycloak refused it")
+	}
+	failed := &neteye.KeycloakUser{}
+	if err := c.Get(context.Background(), requestFor(kcu).NamespacedName, failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status.Status != neteye.ServiceStateFailed {
+		t.Errorf("status = %q, want the refusal reported as Failed", failed.Status.Status)
+	}
+
+	// Second pass: with the password accepted the account is created from
+	// scratch, because the first failure left nothing to adopt.
+	refuse = false
+	if _, err := r.Reconcile(context.Background(), requestFor(kcu)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stub.users["neteye-internal-keycloak-admin"]; !ok {
+		t.Fatal("expected the account to be created on the retry")
+	}
+	if err := c.Get(context.Background(), key, secret); err != nil {
+		t.Fatalf("the generated password was not stored: %v", err)
+	}
+	password := string(secret.Data["password"])
+	if password == "" || stub.passwords["user-neteye-internal-keycloak-admin"] != password {
+		t.Error("the stored password differs from the one set on the account")
+	}
+	recovered := &neteye.KeycloakUser{}
+	if err := c.Get(context.Background(), requestFor(kcu).NamespacedName, recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status.Status != neteye.ServiceStateReady {
+		t.Errorf("status = %q (%s), want Ready", recovered.Status.Status, recovered.Status.Message)
 	}
 }
