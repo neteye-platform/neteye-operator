@@ -74,6 +74,9 @@ func desiredRealmRepresentation(spec neteye.KeycloakRealmSpec) representation {
 	// outside this resource.
 	desired["displayNameHtml"] = spec.DisplayNameHTML
 	desired["rememberMe"] = boolValue(spec.RememberMe, true)
+	if spec.PasswordPolicy != nil {
+		desired["passwordPolicy"] = *spec.PasswordPolicy
+	}
 
 	applyEvents(desired, spec.Events)
 	applyBruteForceProtection(desired, spec.BruteForceProtection)

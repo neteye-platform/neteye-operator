@@ -10,6 +10,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
@@ -22,14 +23,15 @@ const (
 	// masterRealmTheme is the Keycloak theme every NetEye installation uses.
 	masterRealmTheme = "neteye"
 	// masterRealmDisplayName is the realm display name shown in the admin console.
-	masterRealmDisplayName = "NetEye"
+	masterRealmDisplayName    = "NetEye"
+	masterRealmPasswordPolicy = "length(12) and digits(2) and upperCase(1) and lowerCase(1) and specialChars(1) and passwordAge(120)" // #nosec G101 -- False positive
 )
 
-// EnsureMasterRealm declares the master realm's Events, BruteForceProtection,
-// and Theme configuration as a KeycloakRealm, so the KeycloakRealm controller
-// reconciles it without anyone applying a manifest by hand. NetEye's
-// single-tenant setup is the master realm itself, the same realm
-// EnsureNetEyeClient declares the NetEye client in.
+// EnsureMasterRealm declares the master realm's password policy, Events,
+// BruteForceProtection, and Theme configuration as a KeycloakRealm, so the
+// KeycloakRealm controller reconciles it without anyone applying a manifest
+// by hand. NetEye's single-tenant setup is the master realm itself, the same
+// realm EnsureNetEyeClient declares the NetEye client in.
 //
 // It only creates the resource when it is missing: an administrator who
 // edits the CR keeps their changes, which would not survive an unconditional
@@ -69,8 +71,9 @@ func (c *Component) EnsureMasterRealm(ctx context.Context, namespace string) err
 // schema enforces on every realm.
 func masterRealmSpec() neteye.KeycloakRealmSpec {
 	return neteye.KeycloakRealmSpec{
-		Realm:       masterRealm,
-		DisplayName: masterRealmDisplayName,
+		Realm:          masterRealm,
+		DisplayName:    masterRealmDisplayName,
+		PasswordPolicy: ptr.To(masterRealmPasswordPolicy),
 		Theme: &neteye.KeycloakRealmTheme{
 			LoginTheme:   masterRealmTheme,
 			AdminTheme:   masterRealmTheme,

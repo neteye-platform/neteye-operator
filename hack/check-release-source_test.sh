@@ -10,55 +10,55 @@ work=""
 remote=""
 
 new_repo() {
-  local name="$1"
-  remote="$tmp_root/$name.git"
-  work="$tmp_root/$name"
-  git init --bare --quiet "$remote"
-  git init --quiet --initial-branch=main "$work"
-  git -C "$work" config user.name "Release Test"
-  git -C "$work" config user.email "release-test@example.com"
-  git -C "$work" config commit.gpgsign false
-  printf 'base\n' > "$work/content"
-  git -C "$work" add content
-  git -C "$work" commit --quiet -m base
-  git -C "$work" remote add origin "$remote"
-  git -C "$work" push --quiet --set-upstream origin main
+    local name="$1"
+    remote="$tmp_root/$name.git"
+    work="$tmp_root/$name"
+    git init --bare --quiet "$remote"
+    git init --quiet --initial-branch=main "$work"
+    git -C "$work" config user.name "Release Test"
+    git -C "$work" config user.email "release-test@example.com"
+    git -C "$work" config commit.gpgsign false
+    printf 'base\n' >"$work/content"
+    git -C "$work" add content
+    git -C "$work" commit --quiet -m base
+    git -C "$work" remote add origin "$remote"
+    git -C "$work" push --quiet --set-upstream origin main
 }
 
 commit_on_branch() {
-  local branch="$1"
-  local content="$2"
-  git -C "$work" switch --quiet -c "$branch"
-  printf '%s\n' "$content" >> "$work/content"
-  git -C "$work" add content
-  git -C "$work" commit --quiet -m "$content"
-  git -C "$work" push --quiet --set-upstream origin "$branch"
+    local branch="$1"
+    local content="$2"
+    git -C "$work" switch --quiet -c "$branch"
+    printf '%s\n' "$content" >>"$work/content"
+    git -C "$work" add content
+    git -C "$work" commit --quiet -m "$content"
+    git -C "$work" push --quiet --set-upstream origin "$branch"
 }
 
 expect_success() {
-  local name="$1"
-  local tag="$2"
-  if output=$(cd "$work" && "$validator" --tag "$tag" 2>&1); then
-    printf 'ok - %s\n' "$name"
-  else
-    printf 'not ok - %s\n%s\n' "$name" "$output" >&2
-    return 1
-  fi
+    local name="$1"
+    local tag="$2"
+    if output=$(cd "$work" && "$validator" --tag "$tag" 2>&1); then
+        printf 'ok - %s\n' "$name"
+    else
+        printf 'not ok - %s\n%s\n' "$name" "$output" >&2
+        return 1
+    fi
 }
 
 expect_failure() {
-  local name="$1"
-  local tag="$2"
-  local expected="$3"
-  if output=$(cd "$work" && "$validator" --tag "$tag" 2>&1); then
-    printf 'not ok - %s (unexpected success)\n' "$name" >&2
-    return 1
-  elif [[ $output == *"$expected"* ]]; then
-    printf 'ok - %s\n' "$name"
-  else
-    printf 'not ok - %s (missing %q)\n%s\n' "$name" "$expected" "$output" >&2
-    return 1
-  fi
+    local name="$1"
+    local tag="$2"
+    local expected="$3"
+    if output=$(cd "$work" && "$validator" --tag "$tag" 2>&1); then
+        printf 'not ok - %s (unexpected success)\n' "$name" >&2
+        return 1
+    elif [[ $output == *"$expected"* ]]; then
+        printf 'ok - %s\n' "$name"
+    else
+        printf 'not ok - %s (missing %q)\n%s\n' "$name" "$expected" "$output" >&2
+        return 1
+    fi
 }
 
 new_repo main-tag
@@ -82,7 +82,7 @@ expect_failure "tag on wrong release train" v1.2.3 "must be reachable"
 
 new_repo missing-train
 git -C "$work" switch --quiet -c feature
-printf 'feature\n' >> "$work/content"
+printf 'feature\n' >>"$work/content"
 git -C "$work" commit --quiet -am feature
 git -C "$work" tag -a v1.2.4 -m v1.2.4
 expect_failure "missing matching release train" v1.2.4 "must be reachable"

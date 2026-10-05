@@ -377,7 +377,7 @@ type NetEyeGatewaySpec struct {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.4", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.156.0", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.3", CABundleImage: "docker.io/alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.5@sha256:1ca9daaa85414c135259c15042462899ec5d804c93cdf16bd94ccb51de2e0c66", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.4@sha256:0597fe7cad118fcaee15a8691088eff7b60fdd1501bd84fc91b90066d79c9afd", CABundleImage: "docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"},
 }
 
 const (
@@ -389,8 +389,8 @@ const (
 	RelatedImageEDOTGatewayEnv = "RELATED_IMAGE_EDOT_GATEWAY"
 	// RelatedImageCABundleEnv overrides the CA-bundle init-container image packaged with the operator.
 	RelatedImageCABundleEnv = "RELATED_IMAGE_CA_BUNDLE"
-	CurrentNetEyeVersion    = "4.50"
-	PreviousNetEyeVersion   = "4.49"
+	CurrentNetEyeVersion    = "4.51"
+	PreviousNetEyeVersion   = "4.50"
 )
 
 // ComponentsForVersion returns the component image set for the given NetEye
@@ -444,12 +444,12 @@ func IsLatestVersion(version string) bool {
 
 // NetEyeSpec defines the desired state of NetEyeConfig.
 type NetEyeSpec struct {
-	// Version is the NetEye product version string, e.g. "4.50".
+	// Version is the NetEye product version string, e.g. "4.51".
 	// It is used to resolve the correct component images (Keycloak, etc.).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+$`
-	// +kubebuilder:example="4.50"
+	// +kubebuilder:example="4.51"
 	Version string `json:"version"`
 
 	// Gateway configures the Gateway API Gateway and default routes managed by

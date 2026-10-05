@@ -1,0 +1,8 @@
+rules:
+  secrets-inherit:
+    ignore:
+      # The common-* wrappers delegate to repo-commons, which authenticates as
+      # the NetEye GitHub App via secrets.NETEYE_APP_PRIVATE_KEY.
+      - common-cron-checks.yaml
+      - common-manual-checks.yaml
+      - common-pull-request-checks.yaml

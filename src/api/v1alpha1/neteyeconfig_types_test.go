@@ -27,11 +27,11 @@ func TestNetEyeEDOTGatewaySpecDeepCopy(t *testing.T) {
 			},
 		},
 	}
-	copy := original.DeepCopy()
-	copy.Telemetry.OTelCollector.BasicAuthSecretName = "other-basic-auth"
-	copy.ElasticsearchEndpoints[0] = "https://192.0.2.20:9200"
-	copy.Telemetry.EDOTGateway.APIKeySecret.Name = "other-api-key"
-	copy.Telemetry.EDOTGateway.RootCASecretName = "other-root-ca"
+	copied := original.DeepCopy()
+	copied.Telemetry.OTelCollector.BasicAuthSecretName = "other-basic-auth"
+	copied.ElasticsearchEndpoints[0] = "https://192.0.2.20:9200"
+	copied.Telemetry.EDOTGateway.APIKeySecret.Name = "other-api-key"
+	copied.Telemetry.EDOTGateway.RootCASecretName = "other-root-ca"
 
 	if original.Telemetry.OTelCollector.BasicAuthSecretName != "basic-auth" {
 		t.Error("DeepCopy shared collector configuration")
@@ -149,10 +149,10 @@ func TestGeneratedCRDDefaultsIdentityTelemetrySignals(t *testing.T) {
 
 func TestIdentityTelemetryDeepCopy(t *testing.T) {
 	original := &NetEyeIdentitySpec{Telemetry: &NetEyeIdentityTelemetrySpec{LogsEnabled: true, ResourceAttributes: map[string]string{"data_stream.namespace": "custom"}}}
-	copy := original.DeepCopy()
-	copy.Telemetry.LogsEnabled = false
-	copy.Telemetry.MetricsEnabled = true
-	copy.Telemetry.ResourceAttributes["data_stream.namespace"] = "other"
+	copied := original.DeepCopy()
+	copied.Telemetry.LogsEnabled = false
+	copied.Telemetry.MetricsEnabled = true
+	copied.Telemetry.ResourceAttributes["data_stream.namespace"] = "other"
 	if !original.Telemetry.LogsEnabled || original.Telemetry.MetricsEnabled || original.Telemetry.ResourceAttributes["data_stream.namespace"] != "custom" {
 		t.Fatal("identity telemetry deepcopy shares fields with original")
 	}

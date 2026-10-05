@@ -91,8 +91,8 @@ checks.
 OLM channels are specific to a NetEye release line and its maturity. For
 example:
 
-- `stable-4.50`
-- `experimental-4.51`
+- `stable-4.51`
+- `experimental-4.52`
 
 A channel is never changed to represent a different NetEye release line.
 Updates within a channel may contain compatible operator fixes and compatible

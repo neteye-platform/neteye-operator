@@ -163,7 +163,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
 	prerequisites := []client.Object{
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultIcingaApiKeySecretName}, Data: map[string][]byte{elasticstack.DefaultIcingaApiKeySecretKey: []byte("key")}},
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultAPMApkiKeySecretName}, Data: map[string][]byte{elasticstack.DefaultAPMApkiKeySecretKey: []byte("key")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultAPMAPIKeySecretName}, Data: map[string][]byte{elasticstack.DefaultAPMAPIKeySecretKey: []byte("key")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultBasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("user:hash")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultRootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("certificate")}},
 	}
@@ -363,6 +363,42 @@ func TestAPIServerAppliesKeycloakDatabaseDefaults(t *testing.T) {
 	}
 }
 
+func TestAPIServerAcceptsNullableKeycloakRealmPasswordPolicy(t *testing.T) {
+	c, _ := startEnvtest(t)
+	ctx := context.Background()
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: keycloak.WorkloadNamespace}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, policy := range []struct {
+		name  string
+		value any
+	}{
+		{name: "policy-null", value: nil},
+		{name: "policy-string", value: "length(12) and digits(2)"},
+	} {
+		realm := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "neteye.cloud/v1alpha1",
+			"kind":       "KeycloakRealm",
+			"metadata": map[string]any{
+				"name": policy.name, "namespace": keycloak.WorkloadNamespace,
+			},
+			"spec": map[string]any{"realm": policy.name, "passwordPolicy": policy.value},
+		}}
+		if err := c.Create(ctx, realm); err != nil {
+			t.Fatalf("create realm with passwordPolicy %v: %v", policy.value, err)
+		}
+		stored := &unstructured.Unstructured{}
+		stored.SetGroupVersionKind(realm.GroupVersionKind())
+		if err := c.Get(ctx, client.ObjectKeyFromObject(realm), stored); err != nil {
+			t.Fatal(err)
+		}
+		got, found, err := unstructured.NestedFieldNoCopy(stored.Object, "spec", "passwordPolicy")
+		if err != nil || !found || got != policy.value {
+			t.Errorf("passwordPolicy = %v (found=%t, err=%v), want %v", got, found, err, policy.value)
+		}
+	}
+}
+
 func TestReconcileIdentityTelemetryEnableAndDisable(t *testing.T) {
 	config := &neteye.NetEyeElasticStackSpec{Enabled: true, ElasticsearchEndpoints: []string{"https://192.0.2.10:9200"}, Telemetry: &neteye.NetEyeTelemetrySpec{OTelCollector: &neteye.NetEyeOtelCollectorSpec{}, EDOTGateway: &neteye.NetEyeEDOTGatewaySpec{}}}
 	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, config)
@@ -371,7 +407,7 @@ func TestReconcileIdentityTelemetryEnableAndDisable(t *testing.T) {
 		name string
 		key  string
 	}{
-		{elasticstack.DefaultAPMApkiKeySecretName, elasticstack.DefaultAPMApkiKeySecretKey},
+		{elasticstack.DefaultAPMAPIKeySecretName, elasticstack.DefaultAPMAPIKeySecretKey},
 		{elasticstack.DefaultRootCASecretName, "tls.crt"},
 	} {
 		if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: secret.name}, Data: map[string][]byte{secret.key: []byte("value")}}); err != nil {

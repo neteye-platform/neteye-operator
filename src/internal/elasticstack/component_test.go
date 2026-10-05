@@ -6,6 +6,7 @@ package elasticstack
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -190,7 +191,7 @@ func TestEDOTGatewayRemovesIdentityIngressWithoutCredentials(t *testing.T) {
 		t.Fatalf("enabled ingress rules = %#v", rules)
 	}
 	apiKey := &corev1.Secret{}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: DefaultAPMApkiKeySecretName}, apiKey); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: DefaultAPMAPIKeySecretName}, apiKey); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Delete(context.Background(), apiKey); err != nil {
@@ -574,7 +575,7 @@ func TestEDOTGatewayRejectsInvalidPrerequisitesAndEndpoints(t *testing.T) {
 		{"malformed host endpoint", []string{"https://bad_host:9200"}, &neteye.NetEyeEDOTGatewaySpec{}, nil},
 		{"invalid endpoint port", []string{"https://192.0.2.1:65536"}, &neteye.NetEyeEDOTGatewaySpec{}, nil},
 		{"empty secret selector", []string{"https://192.0.2.1"}, &neteye.NetEyeEDOTGatewaySpec{APIKeySecret: &neteye.NetEyeSecretKeySelector{}}, nil},
-		{"missing key", []string{"https://192.0.2.1"}, &neteye.NetEyeEDOTGatewaySpec{}, []client.Object{rootCA(namespace), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultAPMApkiKeySecretName}}}},
+		{"missing key", []string{"https://192.0.2.1"}, &neteye.NetEyeEDOTGatewaySpec{}, []client.Object{rootCA(namespace), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultAPMAPIKeySecretName}}}},
 		{"negative replicas", []string{"https://192.0.2.1"}, &neteye.NetEyeEDOTGatewaySpec{Replicas: -1}, gatewayPrerequisites(namespace)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -729,7 +730,7 @@ func TestComponentsReportReadinessAndDeleteOnlyOwnedResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertPresent(t, c, namespace, EDOTGatewayConfigMapName, &corev1.ConfigMap{})
-	assertPresent(t, c, namespace, DefaultAPMApkiKeySecretName, &corev1.Secret{})
+	assertPresent(t, c, namespace, DefaultAPMAPIKeySecretName, &corev1.Secret{})
 }
 
 func assertPipelineReferences(t *testing.T, document string, expectElasticsearch bool) {
@@ -860,12 +861,15 @@ func stringListEquals(values []any, target []string) bool {
 	if len(values) != len(target) {
 		return false
 	}
-	for i := range values {
-		if values[i] != target[i] {
+	got := make([]string, 0, len(values))
+	for _, value := range values {
+		s, ok := value.(string)
+		if !ok {
 			return false
 		}
+		got = append(got, s)
 	}
-	return true
+	return slices.Equal(got, target)
 }
 
 func deploymentAnnotations(t *testing.T, c client.Client, namespace, name string) map[string]string {
@@ -968,7 +972,7 @@ func collectorPrerequisites(namespace string) []client.Object {
 }
 
 func gatewayPrerequisites(namespace string) []client.Object {
-	return []client.Object{&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultAPMApkiKeySecretName}, Data: map[string][]byte{DefaultAPMApkiKeySecretKey: []byte("key")}}, rootCA(namespace)}
+	return []client.Object{&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: DefaultAPMAPIKeySecretName}, Data: map[string][]byte{DefaultAPMAPIKeySecretKey: []byte("key")}}, rootCA(namespace)}
 }
 
 func basicAuth(namespace string, data map[string][]byte) *corev1.Secret {
