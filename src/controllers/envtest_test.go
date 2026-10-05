@@ -106,6 +106,14 @@ func TestReconcileKeycloakCustomConfiguration(t *testing.T) {
 		t.Errorf("Keycloak env = %#v, want %#v", env, wantEnv)
 	}
 
+	features, found, err := unstructured.NestedStringSlice(kc.Object, "spec", "features", "enabled")
+	if err != nil || !found {
+		t.Fatalf("read Keycloak features: found=%t err=%v", found, err)
+	}
+	if !reflect.DeepEqual(features, []string{"token-exchange"}) {
+		t.Errorf("Keycloak features = %#v, want %#v", features, []string{"token-exchange"})
+	}
+
 	options, found, err := unstructured.NestedSlice(kc.Object, "spec", "additionalOptions")
 	if err != nil || !found {
 		t.Fatalf("read Keycloak additionalOptions: found=%t err=%v", found, err)
@@ -524,6 +532,7 @@ func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeEla
 				AdditionalOptions: []neteye.NetEyeKeycloakOption{
 					{Name: "spi-connections-http-client--default--connection-pool-size", Value: "20"},
 				},
+				EnabledFeatures: []string{"token-exchange"},
 				DBConnection: neteye.NetEyeDBConnectionSpec{
 					Host:           "mariadb.example.com",
 					DBName:         "keycloak",

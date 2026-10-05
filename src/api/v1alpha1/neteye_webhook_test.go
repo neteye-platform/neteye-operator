@@ -187,7 +187,7 @@ func TestNetEyeValidatorRejectsManagedKeycloakOptions(t *testing.T) {
 		{name: "custom option", optionName: "spi-connections-http-client--default--connection-pool-size"},
 		{name: "relative path", optionName: "http-relative-path", wantErr: true},
 		{name: "proxy headers", optionName: "proxy-headers", wantErr: true},
-		{name: "cluster name", optionName: "spi-cache-embedded--default--cluster-name", wantErr: true},
+		{name: "cluster name", optionName: "cache-embedded-cluster-name", wantErr: true},
 		{name: "telemetry logs", optionName: "telemetry-logs-enabled", wantErr: true},
 		{name: "telemetry metrics", optionName: "telemetry-metrics-enabled", wantErr: true},
 		{name: "metrics", optionName: "metrics-enabled", wantErr: true},
@@ -203,6 +203,29 @@ func TestNetEyeValidatorRejectsManagedKeycloakOptions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			obj := netEyeWithVersion(CurrentNetEyeVersion)
 			obj.Spec.Identity.AdditionalOptions = []NetEyeKeycloakOption{{Name: tt.optionName, Value: "custom"}}
+			_, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNetEyeValidatorRejectsManagedKeycloakFeatures(t *testing.T) {
+	tests := []struct {
+		name     string
+		features []string
+		wantErr  bool
+	}{
+		{name: "custom features", features: []string{"token-exchange", "admin-fine-grained-authz:v2"}},
+		{name: "telemetry logs", features: []string{"opentelemetry-logs"}, wantErr: true},
+		{name: "telemetry metrics", features: []string{"opentelemetry-metrics"}, wantErr: true},
+		{name: "mixed", features: []string{"token-exchange", "opentelemetry-metrics"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := netEyeWithVersion(CurrentNetEyeVersion)
+			obj.Spec.Identity.EnabledFeatures = tt.features
 			_, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)

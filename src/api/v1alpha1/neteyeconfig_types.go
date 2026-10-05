@@ -163,6 +163,18 @@ type NetEyeIdentitySpec struct {
 	// +listMapKey=name
 	AdditionalOptions []NetEyeKeycloakOption `json:"additionalOptions,omitempty"`
 
+	// EnabledFeatures lists additional Keycloak features to enable, in the
+	// Keycloak feature-name form optionally suffixed with a version
+	// (for example "token-exchange" or "admin-fine-grained-authz:v2").
+	// Features managed by the operator cannot be requested here; the telemetry
+	// features are enabled through Telemetry instead.
+	// +kubebuilder:validation:Optional
+	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:Pattern=`^[a-z][a-z0-9-]*(:v[0-9]+)?$`
+	// +kubebuilder:example={"token-exchange"}
+	EnabledFeatures []string `json:"enabledFeatures,omitempty"`
+
 	// Telemetry configures opt-in identity service telemetry export to the shared
 	// EDOT Gateway. Each signal is disabled by default.
 	// +kubebuilder:validation:Optional
