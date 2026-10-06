@@ -57,6 +57,18 @@ spec:
           spec:
             description: NetEyeSpec defines the desired state of NetEyeConfig.
             properties:
+              deletionPolicy:
+                default: Retain
+                description: |-
+                  DeletionPolicy decides what happens to the resources owned by this NetEye
+                  installation when this resource is deleted. Retain preserves
+                  data-bearing resources and anything a retained workload needs to keep
+                  serving; Delete removes every owned resource. Referenced resources that
+                  NetEye does not own are never deleted.
+                enum:
+                - Retain
+                - Delete
+                type: string
               elasticStack:
                 description: |-
                   ElasticStack configures the shared telemetry pipeline. Its telemetry group

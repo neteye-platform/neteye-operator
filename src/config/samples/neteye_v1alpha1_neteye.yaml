@@ -5,6 +5,12 @@ metadata:
   namespace: neteye-tenant-shared
 spec:
   version: "4.51"
+  # Retain (the default) preserves data-bearing resources and anything a
+  # retained workload needs to keep serving when this resource is deleted;
+  # Delete removes every owned resource. Referenced resources such as the
+  # external database, the cert-manager Issuer, and credential Secrets are
+  # never deleted by either policy.
+  deletionPolicy: Retain
   gateway:
     name: neteye
     className: cilium

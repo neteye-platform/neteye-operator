@@ -603,3 +603,30 @@ func nativeNetworkPolicyGVK() schema.GroupVersionKind {
 func ciliumNetworkPolicyGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}
 }
+
+// OwnedResources is the identity component's deletion inventory, in reverse
+// dependency order: the route stops new traffic first, then the delegated
+// Keycloak custom resource, then the policies and certificate it needed.
+//
+// Everything here is retained under a Retain policy. The Keycloak instance is a
+// delegated custom resource, so retaining it is what lets the Keycloak Operator
+// keep reconciling the workload that holds the installation's identity data,
+// and a retained instance is only usable while its TLS certificate, network
+// policies, and route survive with it.
+//
+// Two groups are deliberately absent. The KeycloakRealm, KeycloakUser,
+// KeycloakClient, and KeycloakAuthFlow resources carry no NetEye owner
+// reference, so they already outlive the NetEye resource under both policies
+// and keep their own deletion policies for the objects they own inside
+// Keycloak. The external database, the cert-manager Issuer, and the credential
+// Secrets are referenced rather than owned, and are never deleted by NetEye.
+func (c *Component) OwnedResources(namespace string) []resources.OwnedResource {
+	return []resources.OwnedResource{
+		{GVK: resources.HTTPRouteGVK(), Namespace: namespace, Name: HTTPRouteName, Retention: resources.RetainWhenRetaining},
+		{GVK: keycloakGVK(), Namespace: namespace, Name: InstanceName, Retention: resources.RetainWhenRetaining},
+		{GVK: nativeNetworkPolicyGVK(), Namespace: namespace, Name: IngressPolicyName, Retention: resources.RetainWhenRetaining},
+		{GVK: nativeNetworkPolicyGVK(), Namespace: namespace, Name: EgressPolicyName, Retention: resources.RetainWhenRetaining},
+		{GVK: ciliumNetworkPolicyGVK(), Namespace: namespace, Name: HostPolicyName, Retention: resources.RetainWhenRetaining},
+		{GVK: resources.CertificateGVK(), Namespace: namespace, Name: TLSCertificateName, Retention: resources.RetainWhenRetaining},
+	}
+}
