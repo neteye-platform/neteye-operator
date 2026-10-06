@@ -84,7 +84,11 @@ func reconcileExisting(ctx context.Context, c client.Client, key types.Namespace
 			if err != nil {
 				return err
 			}
-			ownerChanged = changed
+			// Re-adopting a retained object and dropping its marker are one
+			// ownership change, so they must land in the same update. Both
+			// calls have to run, which rules out a short-circuiting ||.
+			markerCleared := ClearRetainedMarker(live)
+			ownerChanged = changed || markerCleared
 		}
 
 		specChanged := !reflect.DeepEqual(currentSpec, obj.Spec)

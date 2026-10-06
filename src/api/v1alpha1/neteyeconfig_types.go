@@ -454,6 +454,34 @@ func IsLatestVersion(version string) bool {
 	return version == CurrentNetEyeVersion
 }
 
+// NetEyeDeletionPolicy decides what happens to the Kubernetes resources owned
+// by a NetEye installation when the NetEye resource is deleted.
+type NetEyeDeletionPolicy string
+
+const (
+	// NetEyeDeletionPolicyRetain preserves resources that hold installation
+	// data, and resources a retained workload still needs in order to keep
+	// serving. Retained resources are detached from the NetEye resource rather
+	// than deleted, so Kubernetes garbage collection cannot remove them once
+	// the owner is gone. It is the default because deleting a custom resource
+	// must not cause unexpected data loss.
+	NetEyeDeletionPolicyRetain NetEyeDeletionPolicy = "Retain"
+	// NetEyeDeletionPolicyDelete removes every resource owned by the NetEye
+	// installation, including data-bearing resources. Resources that NetEye
+	// only references, such as externally supplied Secrets and the cert-manager
+	// Issuer, are never deleted by either policy.
+	NetEyeDeletionPolicyDelete NetEyeDeletionPolicy = "Delete"
+)
+
+// EffectiveDeletionPolicy returns the deletion policy for objects that
+// bypassed admission defaulting. An unset policy is never treated as Delete.
+func (s *NetEyeSpec) EffectiveDeletionPolicy() NetEyeDeletionPolicy {
+	if s == nil || s.DeletionPolicy != NetEyeDeletionPolicyDelete {
+		return NetEyeDeletionPolicyRetain
+	}
+	return NetEyeDeletionPolicyDelete
+}
+
 // NetEyeSpec defines the desired state of NetEyeConfig.
 type NetEyeSpec struct {
 	// Version is the NetEye product version string, e.g. "4.51".
@@ -463,6 +491,16 @@ type NetEyeSpec struct {
 	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+$`
 	// +kubebuilder:example="4.51"
 	Version string `json:"version"`
+
+	// DeletionPolicy decides what happens to the resources owned by this NetEye
+	// installation when this resource is deleted. Retain preserves
+	// data-bearing resources and anything a retained workload needs to keep
+	// serving; Delete removes every owned resource. Referenced resources that
+	// NetEye does not own are never deleted.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=Retain;Delete
+	// +kubebuilder:default=Retain
+	DeletionPolicy NetEyeDeletionPolicy `json:"deletionPolicy,omitempty"`
 
 	// Gateway configures the Gateway API Gateway and default routes managed by
 	// NetEye.

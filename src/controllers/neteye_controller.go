@@ -65,15 +65,15 @@ type NetEyeReconciler struct {
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch
-// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes;grpcroutes,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=configmaps;services,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=k8s.keycloak.org,resources=keycloaks,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=k8s.keycloak.org,resources=keycloaks,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=olm.operatorframework.io,resources=clusterextensions,verbs=get;list;watch;create;update
-// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create;update;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;list;watch;create;update;delete
 
@@ -97,6 +97,16 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		return ctrl.Result{}, err
 	}
 
+	// The finalizer is added before the status scaffold below, because
+	// patching the resource refreshes it from the API server and would discard
+	// an in-memory status that had already been prepared.
+	if ne.GetDeletionTimestamp().IsZero() {
+		if err := r.ensureFinalizer(ctx, ne); err != nil {
+			log.Error(err, "unable to add the NetEye cleanup finalizer")
+			return ctrl.Result{}, fmt.Errorf("add NetEye finalizer: %w", err)
+		}
+	}
+
 	ne.Status.ObservedGeneration = ne.GetGeneration()
 	// Reset the phase so severity comparisons in setPhase are scoped to this
 	// reconcile only; otherwise a stale Failed phase from a previous
@@ -114,6 +124,10 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 			reconcileErr = errors.Join(reconcileErr, statusErr)
 		}
 	}()
+
+	if !ne.GetDeletionTimestamp().IsZero() {
+		return r.reconcileDelete(ctx, ne)
+	}
 
 	if !neteye.IsLatestVersion(ne.Spec.Version) && neteye.IsPreviousVersion(ne.Spec.Version) {
 		log.Info("NetEye version is not the latest", "currentVersion", ne.Spec.Version, "latestVersion", neteye.CurrentNetEyeVersion, "requeueAfter", r.failureRequeue())

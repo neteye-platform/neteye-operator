@@ -13,6 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
 const (
@@ -102,10 +104,37 @@ func deleteOwnedResources(ctx context.Context, c client.Client, namespace string
 }
 
 func controlledBy(object client.Object, owner metav1.OwnerReference) bool {
-	for _, reference := range object.GetOwnerReferences() {
-		if reference.UID == owner.UID && reference.Controller != nil && *reference.Controller {
-			return true
+	return resources.ControlledBy(object, owner)
+}
+
+// ownedResources converts a managed-resource inventory into the shared deletion
+// inventory. Telemetry resources hold no installation data and are rebuilt from
+// the NetEye resource, so both deletion policies remove them.
+func ownedResources(namespace string, inventories ...[]managedResource) []resources.OwnedResource {
+	var owned []resources.OwnedResource
+	for _, inventory := range inventories {
+		for i := len(inventory) - 1; i >= 0; i-- {
+			owned = append(owned, resources.OwnedResource{
+				GVK:       inventory[i].gvk,
+				Namespace: namespace,
+				Name:      inventory[i].name,
+				Retention: resources.RecreatableOnDelete,
+			})
 		}
 	}
-	return false
+	return owned
+}
+
+// OwnedResources is the OTel Collector's deletion inventory, in reverse
+// dependency order. Its basic-auth, API-key, and CA Secrets are referenced
+// rather than owned and are never deleted by NetEye.
+func (c *OTelCollectorComponent) OwnedResources(namespace string) []resources.OwnedResource {
+	return ownedResources(namespace, collectorResourceInventory(), collectorLegacyInventory())
+}
+
+// OwnedResources is the EDOT Gateway's deletion inventory, in reverse
+// dependency order. Its Elasticsearch API-key and CA Secrets are referenced
+// rather than owned and are never deleted by NetEye.
+func (c *EDOTGatewayComponent) OwnedResources(namespace string) []resources.OwnedResource {
+	return ownedResources(namespace, edotGatewayResourceInventory(), edotGatewayLegacyInventory())
 }
