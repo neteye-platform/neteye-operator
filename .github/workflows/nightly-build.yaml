@@ -161,7 +161,7 @@ jobs:
           app-id: ${{ vars.NETEYE_APP_ID }}
           private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: neteye-operator-catalog
+          repositories: neteye-catalog
           permission-contents: read
 
       - name: Checkout operator
@@ -174,7 +174,7 @@ jobs:
       - name: Checkout catalog
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: neteye-platform/neteye-operator-catalog
+          repository: neteye-platform/neteye-catalog
           token: ${{ steps.catalog-read-token.outputs.token }}
           path: catalog
           ref: main
@@ -241,7 +241,7 @@ jobs:
           app-id: ${{ vars.NETEYE_APP_ID }}
           private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: neteye-operator-catalog
+          repositories: neteye-catalog
           permission-contents: write
           permission-pull-requests: write
           permission-checks: read
@@ -271,7 +271,7 @@ jobs:
           PR_NUMBER: ${{ steps.catalog-pr.outputs.pull-request-number }}
         run: |
           pr_number="$PR_NUMBER"
-          repo="neteye-platform/neteye-operator-catalog"
+          repo="neteye-platform/neteye-catalog"
 
           # Checks are registered asynchronously after PR creation; gh errors out
           # instead of waiting when none exist yet, so poll until one appears.
