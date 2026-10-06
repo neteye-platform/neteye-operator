@@ -1,4 +1,7 @@
 name: Release
+run-name: >-
+  NetEye operator release ${{ github.event.client_payload.neteye_version || inputs.neteye-version || 'manual' }}
+  ${{ github.event.client_payload.source_pipeline_run || github.run_id }}
 
 on:
   workflow_dispatch:
@@ -10,6 +13,8 @@ on:
         description: "NetEye release line for the catalog channel, e.g. 4.50. Defaults to the latest API version."
         required: false
         default: latest
+  repository_dispatch:
+    types: [neteye-release]
   # fired by PAC's own GitHub Check Run for the "neteye-operator-e2e" PipelineRun; no
   # dispatch call from Tekton needed
   check_run:
@@ -24,9 +29,10 @@ jobs:
     name: Bump version and push release tag
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # only proceed for a manual dispatch, or a successful PAC E2E check
+    # proceed for a manual dispatch, the NetEye release pipeline, or a successful PAC E2E check
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'repository_dispatch' && github.event.action == 'neteye-release') ||
       (github.event.check_run.app.slug == 'wp-pipeline-as-code' &&
        startsWith(github.event.check_run.name, 'TektonCI / neteye-operator-e2e') &&
        github.event.check_run.conclusion == 'success')
@@ -40,6 +46,8 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: neteye-operator
           permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,6 +68,96 @@ jobs:
           git config user.name "neteye-steward[bot]"
           git config user.email "265889471+neteye-steward[bot]@users.noreply.github.com"
 
+      - name: Capture previous stable release tag
+        id: baseline
+        run: |
+          last_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | head -n1)"
+          if [[ -z "$last_tag" ]]; then
+            echo "error: no previous stable release tag found" >&2
+            exit 1
+          fi
+          echo "tag=$last_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare and merge NetEye support PR
+        if: ${{ github.event_name == 'repository_dispatch' && github.event.action == 'neteye-release' }}
+        id: support-pr
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+          NETEYE_VERSION: ${{ github.event.client_payload.neteye_version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$NETEYE_VERSION" =~ ^([0-9]+\.[0-9]+)(-sr[0-9]+)?$ ]]; then
+            echo "invalid NetEye release version: $NETEYE_VERSION" >&2
+            exit 1
+          fi
+          line="${BASH_REMATCH[1]}"
+          minor="${line##*.}"
+          branch="fix/bump-current-neteye-version-to-${minor}"
+          title="fix: bump current neteye version to ${minor}"
+
+          pr="$(gh api "repos/${REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+            --jq "[.[] | select(.head.ref == \"${branch}\" and .title == \"${title}\")] | first // empty")"
+          if [[ -z "$pr" ]]; then
+            git switch -c "$branch"
+            python3 hack/update_neteye_support.py "$line"
+            make bundle
+            if git diff --quiet; then
+              echo "Operator already supports NetEye $line"
+              echo "pull-request-number=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            git config user.name "neteye-steward[bot]"
+            git config user.email "265889471+neteye-steward[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "$title"
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" "HEAD:${branch}"
+            pr="$(gh api "repos/${REPOSITORY}/pulls" \
+              -f title="$title" \
+              -f head="$branch" \
+              -f base=main \
+              -f body="Update the operator support window and generated bundle metadata for NetEye ${line}, following NetEye release preparation.")"
+          fi
+
+          pr_number="$(jq -er '.number' <<<"$pr")"
+          commit_sha="$(jq -er '.head.sha' <<<"$pr")"
+          checks_url="repos/${REPOSITORY}/commits/${commit_sha}/check-runs"
+          checks_ready=false
+          for attempt in $(seq 1 60); do
+            checks="$(gh api "$checks_url")"
+            check_count="$(jq '.check_runs | length' <<<"$checks")"
+            pending_count="$(jq '[.check_runs[] | select(.status != "completed")] | length' <<<"$checks")"
+            failed_count="$(
+              jq '[.check_runs[] | select(.status == "completed" and (.conclusion | IN("success","neutral","skipped") | not))] | length' <<<"$checks"
+            )"
+            if (( failed_count > 0 )); then
+              echo "Operator support PR #$pr_number has failing checks" >&2
+              exit 1
+            fi
+            if (( check_count > 0 && pending_count == 0 )); then
+              checks_ready=true
+              break
+            fi
+            echo "Waiting for operator support PR #$pr_number checks ($attempt/60)"
+            sleep 10
+          done
+          if [[ "$checks_ready" != true ]]; then
+            echo "Timed out waiting for checks on operator support PR #$pr_number" >&2
+            exit 1
+          fi
+
+          merge_result="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}/merge" \
+            -X PUT -f merge_method=squash)"
+          if [[ "$(jq -r '.merged' <<<"$merge_result")" != true ]]; then
+            echo "GitHub did not merge operator support PR #$pr_number" >&2
+            exit 1
+          fi
+          git fetch "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" main
+          git reset --hard FETCH_HEAD
+          echo "pull-request-number=$pr_number" >> "$GITHUB_OUTPUT"
+
       # Bump type is derived from the labels of PRs merged to main since the
       # last stable release tag: "feature" -> minor, everything else
       # (bugfix/dependencies/major/unlabeled) -> patch, except "feature"
@@ -70,26 +168,21 @@ jobs:
         if: ${{ steps.input.outputs.version == '' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
+          EVENT_ACTION: ${{ github.event.action }}
         run: |
-          # Use the newest release tag as the baseline. This repository may only
-          # have prerelease tags initially, so accept and normalize those too.
-          last_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' | head -n1)"
-          if [[ -z "$last_tag" ]]; then
-            echo "error: no previous release tag found" >&2
-            exit 1
+          IFS='.' read -r major minor patch <<<"${BASELINE_TAG#v}"
+          if [[ "$GITHUB_EVENT_NAME" == repository_dispatch && "$EVENT_ACTION" == neteye-release ]]; then
+            bump="minor"
+          else
+            since="$(git log -1 --format=%aI "$BASELINE_TAG")"
+            labels="$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base main \
+              --search "merged:>=${since}" --json labels --jq '.[].labels[].name')"
+            bump="patch"
+            grep -qx 'feature' <<<"$labels" && bump="minor"
+            grep -qx 'major' <<<"$labels" && bump="minor"
           fi
-          last_version="${last_tag#v}"
-          last_version="${last_version%%-*}"
-          since="$(git log -1 --format=%aI "$last_tag")"
 
-          labels="$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base main \
-            --search "merged:>=${since}" --json labels --jq '.[].labels[].name')"
-
-          bump="patch"
-          grep -qx 'feature' <<<"$labels" && bump="minor"
-          grep -qx 'major' <<<"$labels" && bump="minor"
-
-          IFS='.' read -r major minor patch <<<"$last_version"
           if [[ "$bump" == minor ]]; then
             version="${major}.$((minor + 1)).0"
           else
@@ -132,7 +225,7 @@ jobs:
       - name: Resolve NetEye version
         id: neteye-version
         env:
-          NETEYE_VERSION_INPUT: ${{ inputs.neteye-version || 'latest' }}
+          NETEYE_VERSION_INPUT: ${{ inputs.neteye-version || github.event.client_payload.neteye_version || 'latest' }}
         run: |
           if [[ "$NETEYE_VERSION_INPUT" == "latest" ]]; then
             neteye_version="$(curl --fail-with-body -sS --max-time 10 \
@@ -312,3 +405,17 @@ jobs:
           # --admin bypasses the base branch protection merge restriction; checks
           # above already gate the merge.
           gh pr merge "$pr_number" --repo "$repo" --squash --delete-branch --admin
+
+      - name: Publish GitHub release
+        if: ${{ steps.catalog-changes.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
+          BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
+        run: |
+          gh release create "v$VERSION" --repo "$REPOSITORY" \
+            --verify-tag \
+            --title "v$VERSION" \
+            --generate-notes \
+            --notes-start-tag "$BASELINE_TAG"
