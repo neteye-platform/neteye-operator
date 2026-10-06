@@ -22,6 +22,8 @@ type NetEyeComponents struct {
 	// Full image reference for the CA-bundle init container shared by the OTel
 	// Collector and EDOT Gateway deployments.
 	CABundleImage string
+	// Full image reference for the PermissionSync container.
+	PermissionSyncImage string
 }
 
 // NetEyeSecretKeySelector identifies one key inside a Secret in the NetEye CR
@@ -385,11 +387,458 @@ type NetEyeGatewaySpec struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
+// PermissionSync defaults. Every value PermissionSync accepts as a deployment
+// bound is exposed with the value the operator would otherwise have fixed, so
+// a NetEye resource describes the whole runtime instead of hiding part of it.
+// The relations between them are validated, because PermissionSync aborts
+// startup on an impossible combination rather than degrading one component.
+const (
+	DefaultPermissionSyncReplicas         int32 = 2
+	DefaultPermissionSyncLogLevel               = "info"
+	DefaultPermissionSyncRootCAName             = "neteye-root-ca"
+	DefaultPermissionSyncProviderEndpoint       = "https://httpd.neteyelocal/neteye/api/v2/permission-provider/desired-state"
+	DefaultPermissionSyncGLPIEndpoint           = "https://glpi.neteyelocal/apirest.php"
+	DefaultPermissionSyncGLPISecretName         = "permissionsync-glpi-credentials"
+	DefaultPermissionSyncGLPIAppTokenKey        = "app_token"  // #nosec G101 -- Secret key name, not a credential
+	DefaultPermissionSyncGLPIUserTokenKey       = "user_token" // #nosec G101 -- Secret key name, not a credential
+
+	DefaultPermissionSyncOverallDeadlineMilliseconds   int64 = 10000
+	DefaultPermissionSyncInboundAdmissionLimit         int64 = 64
+	DefaultPermissionSyncSynchronizationCapacity       int64 = 16
+	DefaultPermissionSyncShutdownGraceMilliseconds     int64 = 20000
+	DefaultPermissionSyncMetadataTimeoutMilliseconds   int64 = 3000
+	DefaultPermissionSyncCacheFreshnessMilliseconds    int64 = 300000
+	DefaultPermissionSyncCacheStaleIfErrorMilliseconds int64 = 600000
+	DefaultPermissionSyncClockSkewMilliseconds         int64 = 30000
+	DefaultPermissionSyncOperationTimeoutMilliseconds  int64 = 5000
+	// MaxPermissionSyncSynchronizationCapacity is PermissionSync's own product
+	// ceiling; a higher value is a startup abort, not a clamp.
+	MaxPermissionSyncSynchronizationCapacity int64 = 1024
+	// MaxPermissionSyncClockSkewMilliseconds is PermissionSync's bounded skew
+	// allowance.
+	MaxPermissionSyncClockSkewMilliseconds int64 = 300000
+
+	// PermissionSyncGLPIAdapter is the only Target Adapter identifier
+	// PermissionSync compiles in today.
+	PermissionSyncGLPIAdapter = "glpi"
+)
+
+// NetEyePermissionSyncSpec configures the PermissionSync service. The
+// operator also provisions the Keycloak objects a technical caller needs for
+// every declared target; see the PermissionSync ADR for what stays outside the
+// operator's boundary.
+type NetEyePermissionSyncSpec struct {
+	// Replicas is the number of PermissionSync replicas to deploy. The service
+	// is stateless, so any healthy replica can serve any request.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=2
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// LogLevel is the bounded log-level threshold of PermissionSync's
+	// structured JSON log output. The format and its redaction rules are fixed.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=error;warn;info;debug;trace
+	// +kubebuilder:default=info
+	LogLevel string `json:"logLevel,omitempty"`
+
+	// RootCASecretName selects the Secret whose tls.crt is trusted, in addition
+	// to the system roots, when PermissionSync connects to the identity
+	// service, the Permission Provider, and GLPI. Set it to the empty string to
+	// trust only the system roots.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=neteye-root-ca
+	RootCASecretName *string `json:"rootCASecretName,omitempty"`
+
+	// Provider configures the process-wide Permission Provider PermissionSync
+	// reads a user's desired permissions from. It is always the NetEye
+	// deployment's own API, so the section defaults to it and an installation
+	// never has to name it.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={}
+	Provider NetEyePermissionSyncProviderSpec `json:"provider,omitempty"`
+
+	// GLPI configures the one process-wide GLPI backend. It is required as soon
+	// as a target selects the glpi adapter; without it such a target stays
+	// recognized but unavailable.
+	// +kubebuilder:validation:Optional
+	GLPI *NetEyePermissionSyncGLPISpec `json:"glpi,omitempty"`
+
+	// Targets declares the logical target routes PermissionSync serves. A
+	// logical target is matched exactly against the suffix of the caller's
+	// permissionsync:<target> scope, and the login-sync authenticator derives
+	// that target from the Keycloak client the user logs in to, so each entry
+	// must be named after that client.
+	// +kubebuilder:validation:Optional
+	// +listType=map
+	// +listMapKey=logicalTarget
+	Targets []NetEyePermissionSyncTarget `json:"targets,omitempty"`
+
+	// Request bounds one synchronization request and the inbound capacity
+	// around it.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={}
+	Request NetEyePermissionSyncRequestSpec `json:"request,omitempty"`
+
+	// Shutdown bounds the graceful shutdown of in-flight requests.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={}
+	Shutdown NetEyePermissionSyncShutdownSpec `json:"shutdown,omitempty"`
+
+	// Authentication bounds technical-caller token verification. The issuer,
+	// the audience, and the signing-algorithm allowlist are not configurable:
+	// they are the integration contract, derived from the identity service.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={}
+	Authentication NetEyePermissionSyncAuthenticationSpec `json:"authentication,omitempty"`
+
+	// OperationTimeoutMilliseconds bounds one Permission Provider or GLPI
+	// operation. It must be positive and no greater than the overall request
+	// deadline.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=5000
+	OperationTimeoutMilliseconds int64 `json:"operationTimeoutMilliseconds,omitempty"`
+}
+
+// NetEyePermissionSyncRequestSpec bounds one synchronization request. Like the
+// Keycloak realm's always-enforced blocks, every field defaults to the value
+// the operator would otherwise have fixed, so an omitted section is still
+// fully configured.
+type NetEyePermissionSyncRequestSpec struct {
+	// OverallDeadlineMilliseconds is the one absolute deadline for a
+	// synchronization request. It starts when the request is accepted and
+	// covers admission waiting, body collection, authentication, validation,
+	// routing, capacity, Provider, and Adapter work. Configure it below the
+	// caller's own HTTP timeout.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=10000
+	OverallDeadlineMilliseconds int64 `json:"overallDeadlineMilliseconds,omitempty"`
+
+	// InboundAdmissionLimit bounds both how many synchronization requests may
+	// be admitted at once and how many more may wait for admission. A request
+	// arriving when both bounds are full is refused at the transport boundary
+	// and receives no response, so saturation adds no caller-facing status.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=64
+	InboundAdmissionLimit int64 `json:"inboundAdmissionLimit,omitempty"`
+
+	// SynchronizationCapacity bounds how many selected-target
+	// synchronizations run concurrently. It bounds resource use only: it is
+	// not an ordering or exclusion primitive, and concurrent requests for the
+	// same user are allowed and unordered.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1024
+	// +kubebuilder:default=16
+	SynchronizationCapacity int64 `json:"synchronizationCapacity,omitempty"`
+}
+
+// NetEyePermissionSyncShutdownSpec bounds graceful shutdown.
+type NetEyePermissionSyncShutdownSpec struct {
+	// GraceMilliseconds is how long already admitted requests may finish after
+	// shutdown begins. It must be at least the overall request deadline, so
+	// every compliant request accepted before shutdown has time to return. The
+	// pod's termination grace period covers this plus PermissionSync's fixed
+	// post-grace phases and is not configurable here.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=20000
+	GraceMilliseconds int64 `json:"graceMilliseconds,omitempty"`
+}
+
+// NetEyePermissionSyncAuthenticationSpec bounds token verification.
+type NetEyePermissionSyncAuthenticationSpec struct {
+	// MetadataOperationTimeoutMilliseconds bounds one JWKS or OIDC discovery
+	// retrieval. It must be positive and no greater than the overall request
+	// deadline.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=3000
+	MetadataOperationTimeoutMilliseconds int64 `json:"metadataOperationTimeoutMilliseconds,omitempty"`
+
+	// CacheFreshnessMilliseconds is how long retained verification material
+	// counts as fresh.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=300000
+	CacheFreshnessMilliseconds int64 `json:"cacheFreshnessMilliseconds,omitempty"`
+
+	// CacheStaleIfErrorMilliseconds is the additional bounded window in which
+	// still-usable material may verify a token while the metadata source is
+	// unavailable. Readiness stays true for that whole window. Zero disables
+	// the grace, which makes readiness depend on the metadata source being
+	// reachable within the freshness window.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=600000
+	CacheStaleIfErrorMilliseconds *int64 `json:"cacheStaleIfErrorMilliseconds,omitempty"`
+
+	// ClockSkewMilliseconds is the bounded clock skew allowance applied to
+	// token time claims.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=300000
+	// +kubebuilder:default=30000
+	ClockSkewMilliseconds *int64 `json:"clockSkewMilliseconds,omitempty"`
+}
+
+// NetEyePermissionSyncProviderSpec configures the Generic REST Permission
+// Provider, the only Provider implementation PermissionSync supports.
+type NetEyePermissionSyncProviderSpec struct {
+	// Endpoint is one complete HTTPS request URI, with no query or fragment.
+	// PermissionSync appends nothing to it. It defaults to the NetEye
+	// deployment's own permission API, which is where every installation reads
+	// a user's desired permissions from; override it only for a deployment
+	// that serves that API somewhere else.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Pattern=`^https://[^\s?#]+$`
+	// +kubebuilder:default="https://httpd.neteyelocal/neteye/api/v2/permission-provider/desired-state"
+	Endpoint string `json:"endpoint,omitempty"`
+}
+
+// NetEyePermissionSyncGLPISpec configures the GLPI Target Adapter's backend.
+type NetEyePermissionSyncGLPISpec struct {
+	// Endpoint is the GLPI REST API entry point. It defaults to the GLPI the
+	// NetEye deployment provides.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Pattern=`^https://[^\s?#]+$`
+	// +kubebuilder:default="https://glpi.neteyelocal/apirest.php"
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// CredentialsSecret selects the user-managed Secret holding the GLPI app
+	// token and the service account's user token. The Secret must exist in the
+	// shared NetEye namespace.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={name:permissionsync-glpi-credentials,appTokenKey:app_token,userTokenKey:user_token}
+	CredentialsSecret *NetEyePermissionSyncGLPICredentials `json:"credentialsSecret,omitempty"`
+
+	// AuthenticationSource is the GLPI authentication source used when creating
+	// a missing GLPI user. When omitted, GLPI's own defaults apply.
+	// +kubebuilder:validation:Optional
+	AuthenticationSource *NetEyePermissionSyncGLPIAuthenticationSource `json:"authenticationSource,omitempty"`
+}
+
+// NetEyePermissionSyncGLPICredentials identifies the two keys inside the
+// user-managed GLPI credentials Secret.
+type NetEyePermissionSyncGLPICredentials struct {
+	// Name is the name of the Secret carrying both tokens.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// AppTokenKey is the key holding the GLPI application token.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:default=app_token
+	AppTokenKey string `json:"appTokenKey,omitempty"`
+
+	// UserTokenKey is the key holding the GLPI service account's user token.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:default=user_token
+	UserTokenKey string `json:"userTokenKey,omitempty"`
+}
+
+// NetEyePermissionSyncGLPIAuthenticationSource selects the GLPI authentication
+// source for users the adapter creates. Both fields form one coherent
+// selection and are therefore required together.
+//
+// They are pointers so that omitting one is rejected instead of being sent to
+// GLPI as an explicit zero: a non-pointer integer always serializes, which
+// would satisfy the schema's required check with a value nobody chose.
+type NetEyePermissionSyncGLPIAuthenticationSource struct {
+	// AuthType is the GLPI authtype value.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:example=3
+	AuthType *int64 `json:"authType"`
+
+	// AuthsID is the GLPI auths_id value.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:example=2
+	AuthsID *int64 `json:"authsId"`
+}
+
+// NetEyePermissionSyncTarget routes one logical target to one Target Adapter.
+type NetEyePermissionSyncTarget struct {
+	// LogicalTarget is the logical target identifier, which must satisfy
+	// PermissionSync's target grammar and name the Keycloak login client the
+	// login-sync authenticator derives the target from.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`
+	// +kubebuilder:example="glpi"
+	LogicalTarget string `json:"logicalTarget"`
+
+	// Adapter is the Target Adapter serving this logical target.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=glpi
+	Adapter string `json:"adapter"`
+}
+
+// EffectiveReplicas returns the PermissionSync replica count for objects that
+// bypassed admission defaulting.
+func (s *NetEyePermissionSyncSpec) EffectiveReplicas() int32 {
+	if s == nil || s.Replicas == 0 {
+		return DefaultPermissionSyncReplicas
+	}
+	return s.Replicas
+}
+
+// EffectiveLogLevel returns the PermissionSync log level for objects that
+// bypassed admission defaulting.
+func (s *NetEyePermissionSyncSpec) EffectiveLogLevel() string {
+	if s == nil || s.LogLevel == "" {
+		return DefaultPermissionSyncLogLevel
+	}
+	return s.LogLevel
+}
+
+// EffectiveRootCASecretName returns the trusted-CA Secret name. An explicitly
+// empty value keeps the system roots as the only trust anchors, while an
+// absent one falls back to the default Secret.
+func (s *NetEyePermissionSyncSpec) EffectiveRootCASecretName() string {
+	if s == nil || s.RootCASecretName == nil {
+		return DefaultPermissionSyncRootCAName
+	}
+	return *s.RootCASecretName
+}
+
+// EffectiveCredentialsSecret returns the GLPI credentials Secret selector for
+// objects that bypassed admission defaulting.
+func (s *NetEyePermissionSyncGLPISpec) EffectiveCredentialsSecret() NetEyePermissionSyncGLPICredentials {
+	credentials := NetEyePermissionSyncGLPICredentials{Name: DefaultPermissionSyncGLPISecretName}
+	if s != nil && s.CredentialsSecret != nil {
+		credentials = *s.CredentialsSecret
+	}
+	if credentials.AppTokenKey == "" {
+		credentials.AppTokenKey = DefaultPermissionSyncGLPIAppTokenKey
+	}
+	if credentials.UserTokenKey == "" {
+		credentials.UserTokenKey = DefaultPermissionSyncGLPIUserTokenKey
+	}
+	return credentials
+}
+
+// EffectiveEndpoint returns the Permission Provider endpoint for objects that
+// bypassed admission defaulting.
+func (s *NetEyePermissionSyncProviderSpec) EffectiveEndpoint() string {
+	if s == nil || s.Endpoint == "" {
+		return DefaultPermissionSyncProviderEndpoint
+	}
+	return s.Endpoint
+}
+
+// EffectiveEndpoint returns the GLPI endpoint for objects that bypassed
+// admission defaulting.
+func (s *NetEyePermissionSyncGLPISpec) EffectiveEndpoint() string {
+	if s == nil || s.Endpoint == "" {
+		return DefaultPermissionSyncGLPIEndpoint
+	}
+	return s.Endpoint
+}
+
+// EffectiveOverallDeadlineMilliseconds returns the request deadline.
+func (s *NetEyePermissionSyncRequestSpec) EffectiveOverallDeadlineMilliseconds() int64 {
+	if s == nil || s.OverallDeadlineMilliseconds == 0 {
+		return DefaultPermissionSyncOverallDeadlineMilliseconds
+	}
+	return s.OverallDeadlineMilliseconds
+}
+
+// EffectiveInboundAdmissionLimit returns the inbound admission limit.
+func (s *NetEyePermissionSyncRequestSpec) EffectiveInboundAdmissionLimit() int64 {
+	if s == nil || s.InboundAdmissionLimit == 0 {
+		return DefaultPermissionSyncInboundAdmissionLimit
+	}
+	return s.InboundAdmissionLimit
+}
+
+// EffectiveSynchronizationCapacity returns the synchronization capacity.
+func (s *NetEyePermissionSyncRequestSpec) EffectiveSynchronizationCapacity() int64 {
+	if s == nil || s.SynchronizationCapacity == 0 {
+		return DefaultPermissionSyncSynchronizationCapacity
+	}
+	return s.SynchronizationCapacity
+}
+
+// EffectiveGraceMilliseconds returns the shutdown grace period.
+func (s *NetEyePermissionSyncShutdownSpec) EffectiveGraceMilliseconds() int64 {
+	if s == nil || s.GraceMilliseconds == 0 {
+		return DefaultPermissionSyncShutdownGraceMilliseconds
+	}
+	return s.GraceMilliseconds
+}
+
+// EffectiveMetadataOperationTimeoutMilliseconds returns the metadata timeout.
+func (s *NetEyePermissionSyncAuthenticationSpec) EffectiveMetadataOperationTimeoutMilliseconds() int64 {
+	if s == nil || s.MetadataOperationTimeoutMilliseconds == 0 {
+		return DefaultPermissionSyncMetadataTimeoutMilliseconds
+	}
+	return s.MetadataOperationTimeoutMilliseconds
+}
+
+// EffectiveCacheFreshnessMilliseconds returns the cache freshness window.
+func (s *NetEyePermissionSyncAuthenticationSpec) EffectiveCacheFreshnessMilliseconds() int64 {
+	if s == nil || s.CacheFreshnessMilliseconds == 0 {
+		return DefaultPermissionSyncCacheFreshnessMilliseconds
+	}
+	return s.CacheFreshnessMilliseconds
+}
+
+// EffectiveCacheStaleIfErrorMilliseconds returns the stale-if-error window. It
+// is a pointer field because zero is a meaningful value, not an unset one.
+func (s *NetEyePermissionSyncAuthenticationSpec) EffectiveCacheStaleIfErrorMilliseconds() int64 {
+	if s == nil || s.CacheStaleIfErrorMilliseconds == nil {
+		return DefaultPermissionSyncCacheStaleIfErrorMilliseconds
+	}
+	return *s.CacheStaleIfErrorMilliseconds
+}
+
+// EffectiveClockSkewMilliseconds returns the clock skew allowance. It is a
+// pointer field because zero means "no allowance", not "unset".
+func (s *NetEyePermissionSyncAuthenticationSpec) EffectiveClockSkewMilliseconds() int64 {
+	if s == nil || s.ClockSkewMilliseconds == nil {
+		return DefaultPermissionSyncClockSkewMilliseconds
+	}
+	return *s.ClockSkewMilliseconds
+}
+
+// EffectiveOperationTimeoutMilliseconds returns the Provider and GLPI
+// operation timeout.
+func (s *NetEyePermissionSyncSpec) EffectiveOperationTimeoutMilliseconds() int64 {
+	if s == nil || s.OperationTimeoutMilliseconds == 0 {
+		return DefaultPermissionSyncOperationTimeoutMilliseconds
+	}
+	return s.OperationTimeoutMilliseconds
+}
+
+// LogicalTargets returns the declared logical targets in spec order.
+func (s *NetEyePermissionSyncSpec) LogicalTargets() []string {
+	if s == nil {
+		return nil
+	}
+	targets := make([]string, 0, len(s.Targets))
+	for _, target := range s.Targets {
+		targets = append(targets, target.LogicalTarget)
+	}
+	return targets
+}
+
+// permissionSyncImage is the PermissionSync release this operator line ships,
+// pinned by immutable digest as ADR-0003 requires. The mutable "latest" tag is
+// never referenced here. RELATED_IMAGE_PERMISSIONSYNC overrides it for
+// development bundles.
+const permissionSyncImage = "ghcr.io/neteye-platform/permissionsync:0.1.0@sha256:d52ca3dc298291d79edb7ba7b5ea67726ef9ff1dd2b636da7a9ad05c4b90563a"
+
 // netEyeVersionMap maps a NetEye version string to its component image set.
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.6@sha256:e58681c26f89d305d87a38ce20b81bfb8dfd47fc5d6068ebec2a609bf89c3ce2", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.4@sha256:0597fe7cad118fcaee15a8691088eff7b60fdd1501bd84fc91b90066d79c9afd", CABundleImage: "docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.6@sha256:e58681c26f89d305d87a38ce20b81bfb8dfd47fc5d6068ebec2a609bf89c3ce2", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.4@sha256:0597fe7cad118fcaee15a8691088eff7b60fdd1501bd84fc91b90066d79c9afd", CABundleImage: "docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6", PermissionSyncImage: permissionSyncImage},
 }
 
 const (
@@ -401,8 +850,10 @@ const (
 	RelatedImageEDOTGatewayEnv = "RELATED_IMAGE_EDOT_GATEWAY"
 	// RelatedImageCABundleEnv overrides the CA-bundle init-container image packaged with the operator.
 	RelatedImageCABundleEnv = "RELATED_IMAGE_CA_BUNDLE"
-	CurrentNetEyeVersion    = "4.51"
-	PreviousNetEyeVersion   = "4.50"
+	// RelatedImagePermissionSyncEnv overrides the PermissionSync image packaged with the operator.
+	RelatedImagePermissionSyncEnv = "RELATED_IMAGE_PERMISSIONSYNC"
+	CurrentNetEyeVersion          = "4.51"
+	PreviousNetEyeVersion         = "4.50"
 )
 
 // ComponentsForVersion returns the component image set for the given NetEye
@@ -424,6 +875,9 @@ func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	}
 	if image := strings.TrimSpace(os.Getenv(RelatedImageCABundleEnv)); image != "" {
 		c.CABundleImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImagePermissionSyncEnv)); image != "" {
+		c.PermissionSyncImage = image
 	}
 	return c, ok
 }
@@ -486,6 +940,13 @@ type NetEyeSpec struct {
 	// OTel Collector and EDOT Gateway. Images are resolved from release data.
 	// +kubebuilder:validation:Optional
 	ElasticStack *NetEyeElasticStackSpec `json:"elasticStack,omitempty"`
+
+	// PermissionSync configures the PermissionSync service, which reconciles a
+	// user's desired permissions with a selected target on login. The service
+	// is part of every NetEye deployment and cannot be switched off, so this
+	// section is required; its image is resolved from release data.
+	// +kubebuilder:validation:Required
+	PermissionSync NetEyePermissionSyncSpec `json:"permissionSync"`
 }
 
 // ServiceState is the per-service state reported in NetEyeServiceStatus.Status.
@@ -540,6 +1001,9 @@ type NetEyeServicesStatus struct {
 	// Identity reports the observed state of identity services such as Keycloak.
 	Identity     *NetEyeServiceStatus      `json:"identity,omitempty"`
 	ElasticStack *NetEyeElasticStackStatus `json:"elasticStack,omitempty"`
+
+	// PermissionSync reports the observed state of the PermissionSync service.
+	PermissionSync *NetEyeServiceStatus `json:"permissionSync,omitempty"`
 }
 
 // NetEyeStatus defines the observed state of NetEyeConfig.

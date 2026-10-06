@@ -17,6 +17,43 @@ Reconciliation is version-aware — a validating webhook guards the declared
 product `version` and its allowed upgrade transitions — and reports progress
 through the resource `status`.
 
+### PermissionSync
+
+The PermissionSync component synchronizes a user's permissions with a selected
+target when that user logs in. It is part of every NetEye deployment and
+cannot be switched off, so `spec.permissionSync` is required. The operator
+renders PermissionSync's single configuration document into a Secret it owns,
+deploys the service as a ClusterIP workload in the shared namespace, and
+provisions the Keycloak side of the contract: one `permissionsync:<target>`
+client scope per declared target, each carrying the PermissionSync audience,
+and the confidential `login-sync` client whose service account the Keycloak
+login-sync authenticator authenticates as.
+
+A logical target must be named after the Keycloak login client it serves,
+because the authenticator derives the target from that client's `clientId`.
+The GLPI credentials and the trusted-CA Secret stay user-managed and must
+exist in the shared namespace before the component can become ready.
+
+Every deployment bound — request deadline, inbound admission limit,
+synchronization capacity, shutdown grace, verification cache policy, clock
+skew, and operation timeout — is a field with the operator's own value as its
+default, and endpoints the platform itself provides default to it: the
+Permission Provider to
+`https://httpd.neteyelocal/neteye/api/v2/permission-provider/desired-state`
+and GLPI to `https://glpi.neteyelocal/apirest.php`. The
+relations between the bounds are validated at admission, because
+PermissionSync aborts startup on an impossible combination rather than
+degrading one component.
+
+Two steps remain manual on purpose: configuring the login-sync authenticator
+itself with the client secret Keycloak generated for `login-sync`, and placing
+its execution in the browser flow. Until both are done the component reports
+Ready while no login is synchronized. Note that the listener terminates no
+TLS, so that configuration currently has to allow the authenticator to post to
+a plaintext in-cluster endpoint. See
+[ADR-0005](docs/adr/0005-permissionsync-component-and-caller-provisioning.md)
+for the full boundary and for what that gap costs.
+
 ## Documentation and support
 
 This repository contains the operator only. NetEye itself is a commercial

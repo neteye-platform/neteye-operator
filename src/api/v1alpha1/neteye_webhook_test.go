@@ -10,6 +10,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -356,6 +357,107 @@ func TestNetEyeValidatorRejectsSecondAuthority(t *testing.T) {
 	if _, err := validator.ValidateCreate(context.Background(), candidate); err == nil {
 		t.Fatal("ValidateCreate() accepted a second NetEye authority")
 	}
+}
+
+func TestNetEyeValidatorValidatesPermissionSyncConfiguration(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  *NetEyePermissionSyncSpec
+		wantErr bool
+	}{
+		{name: "empty section is valid", config: &NetEyePermissionSyncSpec{}},
+		{name: "without a target is valid", config: &NetEyePermissionSyncSpec{}},
+		{name: "fully configured", config: validPermissionSyncConfig()},
+		{name: "target with the default provider is valid", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) { c.Provider = NetEyePermissionSyncProviderSpec{} })},
+		{name: "glpi target requires the glpi backend", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) { c.GLPI = nil }), wantErr: true},
+		{name: "provider endpoint must be HTTPS", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.Provider.Endpoint = "http://neteye.example.com/permissions"
+		}), wantErr: true},
+		{name: "provider endpoint must be absolute", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.Provider.Endpoint = "/permissions"
+		}), wantErr: true},
+		{name: "provider endpoint must carry no query", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.Provider.Endpoint = "https://neteye.example.com/permissions?tenant=a"
+		}), wantErr: true},
+		{name: "provider endpoint must carry no fragment", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.Provider.Endpoint = "https://neteye.example.com/permissions#fragment"
+		}), wantErr: true},
+		{name: "glpi endpoint must carry no fragment", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.GLPI.Endpoint = "https://glpi.example.com/apirest.php#fragment"
+		}), wantErr: true},
+		{name: "glpi endpoint must be HTTPS", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.GLPI.Endpoint = "http://glpi.example.com/apirest.php"
+		}), wantErr: true},
+		{name: "glpi endpoint host must be an IP or DNS name", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.GLPI.Endpoint = "https://bad_host/apirest.php"
+		}), wantErr: true},
+		{name: "credentials secret name is required when supplied", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.GLPI.CredentialsSecret = &NetEyePermissionSyncGLPICredentials{}
+		}), wantErr: true},
+		{name: "malformed credentials secret name rejected", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.GLPI.CredentialsSecret = &NetEyePermissionSyncGLPICredentials{Name: "bad_name"}
+		}), wantErr: true},
+		{name: "malformed credentials key rejected", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.GLPI.CredentialsSecret = &NetEyePermissionSyncGLPICredentials{Name: "glpi-credentials", AppTokenKey: "bad key"}
+		}), wantErr: true},
+		{name: "explicitly empty root CA selects the system roots", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.RootCASecretName = ptr.To("")
+		})},
+		{name: "malformed root CA name rejected", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.RootCASecretName = ptr.To("bad_name")
+		}), wantErr: true},
+		{name: "glpi endpoint may be omitted for the platform default", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.GLPI.Endpoint = ""
+		})},
+		{name: "grace below the deadline rejected", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.Request.OverallDeadlineMilliseconds = 10000
+			c.Shutdown.GraceMilliseconds = 9999
+		}), wantErr: true},
+		{name: "metadata timeout above the deadline rejected", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.Request.OverallDeadlineMilliseconds = 2000
+			c.Shutdown.GraceMilliseconds = 2000
+			c.Authentication.MetadataOperationTimeoutMilliseconds = 2001
+		}), wantErr: true},
+		{name: "operation timeout above the deadline rejected", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.Request.OverallDeadlineMilliseconds = 2000
+			c.Shutdown.GraceMilliseconds = 2000
+			c.OperationTimeoutMilliseconds = 2001
+		}), wantErr: true},
+		{name: "a shorter but coherent set is accepted", config: permissionSyncWithout(func(c *NetEyePermissionSyncSpec) {
+			c.Request.OverallDeadlineMilliseconds = 3000
+			c.Shutdown.GraceMilliseconds = 3000
+			c.Authentication.MetadataOperationTimeoutMilliseconds = 1000
+			c.OperationTimeoutMilliseconds = 1500
+		})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := netEyeWithVersion(CurrentNetEyeVersion)
+			obj.Spec.PermissionSync = *tt.config
+			_, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			_, err = (&NetEyeValidator{}).ValidateUpdate(context.Background(), netEyeWithVersion(CurrentNetEyeVersion), obj)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateUpdate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func validPermissionSyncConfig() *NetEyePermissionSyncSpec {
+	return &NetEyePermissionSyncSpec{
+		Provider: NetEyePermissionSyncProviderSpec{Endpoint: "https://neteye.example.com/neteye/api/permissions"},
+		GLPI:     &NetEyePermissionSyncGLPISpec{Endpoint: "https://glpi.example.com/apirest.php"},
+		Targets:  []NetEyePermissionSyncTarget{{LogicalTarget: "glpi", Adapter: PermissionSyncGLPIAdapter}},
+	}
+}
+
+func permissionSyncWithout(change func(*NetEyePermissionSyncSpec)) *NetEyePermissionSyncSpec {
+	config := validPermissionSyncConfig()
+	change(config)
+	return config
 }
 
 func netEyeWithVersion(version string) *NetEye {

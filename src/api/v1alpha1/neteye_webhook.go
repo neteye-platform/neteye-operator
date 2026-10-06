@@ -51,6 +51,9 @@ func (v *NetEyeValidator) ValidateCreate(ctx context.Context, obj *NetEye) (admi
 	if err := validateElasticStack(obj); err != nil {
 		return nil, err
 	}
+	if err := validatePermissionSync(obj); err != nil {
+		return nil, err
+	}
 	if obj.Spec.Version == CurrentNetEyeVersion {
 		return nil, v.validateSingleAuthority(ctx, obj)
 	}
@@ -70,6 +73,9 @@ func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *Ne
 		return nil, err
 	}
 	if err := validateElasticStack(newObj); err != nil {
+		return nil, err
+	}
+	if err := validatePermissionSync(newObj); err != nil {
 		return nil, err
 	}
 	oldVersion := oldObj.Spec.Version
@@ -153,6 +159,116 @@ func validateElasticStack(neteye *NetEye) error {
 	return nil
 }
 
+// validatePermissionSync enforces the PermissionSync rules the CRD schema
+// cannot express: that every declared route has a usable adapter backend, and
+// that the runtime bounds form a combination PermissionSync will start with.
+// A route whose backend is missing stays recognized but unavailable inside
+// PermissionSync, which would leave the logins it serves silently
+// unreconciled, so it is refused at admission instead. The Provider is always
+// configured, so it needs no such rule.
+func validatePermissionSync(neteye *NetEye) error {
+	path := field.NewPath("spec", "permissionSync")
+	spec := neteye.Spec.PermissionSync
+	var errors field.ErrorList
+	// An explicitly empty value selects the system trust store only, so only a
+	// non-empty name has to be a usable Secret name.
+	if spec.RootCASecretName != nil && *spec.RootCASecretName != "" {
+		if err := validateDNSHostname(path.Child("rootCASecretName"), *spec.RootCASecretName); err != nil {
+			errors = append(errors, err)
+		}
+	}
+	if err := validatePermissionSyncEndpoint(path.Child("provider", "endpoint"), spec.Provider.EffectiveEndpoint()); err != nil {
+		errors = append(errors, err)
+	}
+	if spec.GLPI != nil {
+		if err := validatePermissionSyncEndpoint(path.Child("glpi", "endpoint"), spec.GLPI.EffectiveEndpoint()); err != nil {
+			errors = append(errors, err)
+		}
+		errors = append(errors, validatePermissionSyncCredentials(path.Child("glpi", "credentialsSecret"), spec.GLPI.CredentialsSecret)...)
+	}
+	errors = append(errors, validatePermissionSyncBounds(path, &spec)...)
+	for _, target := range spec.Targets {
+		if target.Adapter == PermissionSyncGLPIAdapter && spec.GLPI == nil {
+			errors = append(errors, field.Required(path.Child("glpi"), fmt.Sprintf("must be set when target %q selects the glpi adapter", target.LogicalTarget)))
+			break
+		}
+	}
+	if len(errors) > 0 {
+		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, errors)
+	}
+	return nil
+}
+
+// validatePermissionSyncBounds enforces the cross-field relations the CRD
+// schema cannot express. Each one is a value PermissionSync validates at
+// startup: violating it aborts the process rather than degrading a component,
+// so it is refused at admission with the field that is wrong.
+func validatePermissionSyncBounds(path *field.Path, spec *NetEyePermissionSyncSpec) field.ErrorList {
+	var errors field.ErrorList
+	deadline := spec.Request.EffectiveOverallDeadlineMilliseconds()
+	if grace := spec.Shutdown.EffectiveGraceMilliseconds(); grace < deadline {
+		errors = append(errors, field.Invalid(path.Child("shutdown", "graceMilliseconds"), grace,
+			fmt.Sprintf("must be at least request.overallDeadlineMilliseconds (%d)", deadline)))
+	}
+	for _, bound := range []struct {
+		path  *field.Path
+		value int64
+	}{
+		{path.Child("authentication", "metadataOperationTimeoutMilliseconds"), spec.Authentication.EffectiveMetadataOperationTimeoutMilliseconds()},
+		{path.Child("operationTimeoutMilliseconds"), spec.EffectiveOperationTimeoutMilliseconds()},
+	} {
+		if bound.value > deadline {
+			errors = append(errors, field.Invalid(bound.path, bound.value,
+				fmt.Sprintf("must not exceed request.overallDeadlineMilliseconds (%d)", deadline)))
+		}
+	}
+	return errors
+}
+
+// validatePermissionSyncEndpoint requires what PermissionSync requires of an
+// endpoint: one absolute HTTPS request URI with no query or fragment.
+func validatePermissionSyncEndpoint(path *field.Path, value string) *field.Error {
+	if err := validateHTTPSURL(path, value); err != nil {
+		return err
+	}
+	// url.Parse, not url.ParseRequestURI: the latter never splits off a
+	// fragment, so it would report every "#..." as part of the path and let
+	// the value through.
+	u, err := url.Parse(value)
+	if err != nil || u.RawQuery != "" || u.Fragment != "" {
+		return field.Invalid(path, value, "must not contain a query or fragment")
+	}
+	return nil
+}
+
+func validatePermissionSyncCredentials(path *field.Path, credentials *NetEyePermissionSyncGLPICredentials) field.ErrorList {
+	if credentials == nil {
+		return nil
+	}
+	var errors field.ErrorList
+	if strings.TrimSpace(credentials.Name) == "" {
+		errors = append(errors, field.Required(path.Child("name"), "must be set when credentialsSecret is supplied"))
+	} else if err := validateDNSHostname(path.Child("name"), credentials.Name); err != nil {
+		errors = append(errors, err)
+	}
+	for _, key := range []struct {
+		path  *field.Path
+		value string
+	}{{path.Child("appTokenKey"), credentials.AppTokenKey}, {path.Child("userTokenKey"), credentials.UserTokenKey}} {
+		if key.value == "" {
+			continue
+		}
+		if strings.TrimSpace(key.value) != key.value {
+			errors = append(errors, field.Invalid(key.path, key.value, "must not contain surrounding whitespace"))
+			continue
+		}
+		if issues := validation.IsConfigMapKey(key.value); len(issues) > 0 {
+			errors = append(errors, field.Invalid(key.path, key.value, strings.Join(issues, ", ")))
+		}
+	}
+	return errors
+}
+
 func validateEDOTGateway(path *field.Path, config *NetEyeEDOTGatewaySpec) field.ErrorList {
 	var errors field.ErrorList
 	errors = append(errors, validateAPIKeySecret(path.Child("apiKeySecret"), config.APIKeySecret)...)
@@ -217,7 +333,7 @@ func validateHTTPSURL(path *field.Path, value string) *field.Error {
 func validateDNSHostname(path *field.Path, value string) *field.Error {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return field.Required(path, "is required when elasticStack is enabled")
+		return field.Required(path, "must not be empty")
 	}
 	if value != trimmed {
 		return field.Invalid(path, value, "must not contain surrounding whitespace")

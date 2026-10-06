@@ -401,6 +401,269 @@ spec:
                 example: neteye-internal-issuer
                 minLength: 1
                 type: string
+              permissionSync:
+                description: |-
+                  PermissionSync configures the PermissionSync service, which reconciles a
+                  user's desired permissions with a selected target on login. The service
+                  is part of every NetEye deployment and cannot be switched off, so this
+                  section is required; its image is resolved from release data.
+                properties:
+                  authentication:
+                    default: {}
+                    description: |-
+                      Authentication bounds technical-caller token verification. The issuer,
+                      the audience, and the signing-algorithm allowlist are not configurable:
+                      they are the integration contract, derived from the identity service.
+                    properties:
+                      cacheFreshnessMilliseconds:
+                        default: 300000
+                        description: |-
+                          CacheFreshnessMilliseconds is how long retained verification material
+                          counts as fresh.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      cacheStaleIfErrorMilliseconds:
+                        default: 600000
+                        description: |-
+                          CacheStaleIfErrorMilliseconds is the additional bounded window in which
+                          still-usable material may verify a token while the metadata source is
+                          unavailable. Readiness stays true for that whole window. Zero disables
+                          the grace, which makes readiness depend on the metadata source being
+                          reachable within the freshness window.
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      clockSkewMilliseconds:
+                        default: 30000
+                        description: |-
+                          ClockSkewMilliseconds is the bounded clock skew allowance applied to
+                          token time claims.
+                        format: int64
+                        maximum: 300000
+                        minimum: 0
+                        type: integer
+                      metadataOperationTimeoutMilliseconds:
+                        default: 3000
+                        description: |-
+                          MetadataOperationTimeoutMilliseconds bounds one JWKS or OIDC discovery
+                          retrieval. It must be positive and no greater than the overall request
+                          deadline.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                    type: object
+                  glpi:
+                    description: |-
+                      GLPI configures the one process-wide GLPI backend. It is required as soon
+                      as a target selects the glpi adapter; without it such a target stays
+                      recognized but unavailable.
+                    properties:
+                      authenticationSource:
+                        description: |-
+                          AuthenticationSource is the GLPI authentication source used when creating
+                          a missing GLPI user. When omitted, GLPI's own defaults apply.
+                        properties:
+                          authType:
+                            description: AuthType is the GLPI authtype value.
+                            example: 3
+                            format: int64
+                            type: integer
+                          authsId:
+                            description: AuthsID is the GLPI auths_id value.
+                            example: 2
+                            format: int64
+                            type: integer
+                        required:
+                        - authType
+                        - authsId
+                        type: object
+                      credentialsSecret:
+                        default:
+                          appTokenKey: app_token
+                          name: permissionsync-glpi-credentials
+                          userTokenKey: user_token
+                        description: |-
+                          CredentialsSecret selects the user-managed Secret holding the GLPI app
+                          token and the service account's user token. The Secret must exist in the
+                          shared NetEye namespace.
+                        properties:
+                          appTokenKey:
+                            default: app_token
+                            description: AppTokenKey is the key holding the GLPI application
+                              token.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the name of the Secret carrying both
+                              tokens.
+                            minLength: 1
+                            type: string
+                          userTokenKey:
+                            default: user_token
+                            description: UserTokenKey is the key holding the GLPI
+                              service account's user token.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      endpoint:
+                        default: https://glpi.neteyelocal/apirest.php
+                        description: |-
+                          Endpoint is the GLPI REST API entry point. It defaults to the GLPI the
+                          NetEye deployment provides.
+                        pattern: ^https://[^\s?#]+$
+                        type: string
+                    type: object
+                  logLevel:
+                    default: info
+                    description: |-
+                      LogLevel is the bounded log-level threshold of PermissionSync's
+                      structured JSON log output. The format and its redaction rules are fixed.
+                    enum:
+                    - error
+                    - warn
+                    - info
+                    - debug
+                    - trace
+                    type: string
+                  operationTimeoutMilliseconds:
+                    default: 5000
+                    description: |-
+                      OperationTimeoutMilliseconds bounds one Permission Provider or GLPI
+                      operation. It must be positive and no greater than the overall request
+                      deadline.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  provider:
+                    default: {}
+                    description: |-
+                      Provider configures the process-wide Permission Provider PermissionSync
+                      reads a user's desired permissions from. It is always the NetEye
+                      deployment's own API, so the section defaults to it and an installation
+                      never has to name it.
+                    properties:
+                      endpoint:
+                        default: https://httpd.neteyelocal/neteye/api/v2/permission-provider/desired-state
+                        description: |-
+                          Endpoint is one complete HTTPS request URI, with no query or fragment.
+                          PermissionSync appends nothing to it. It defaults to the NetEye
+                          deployment's own permission API, which is where every installation reads
+                          a user's desired permissions from; override it only for a deployment
+                          that serves that API somewhere else.
+                        pattern: ^https://[^\s?#]+$
+                        type: string
+                    type: object
+                  replicas:
+                    default: 2
+                    description: |-
+                      Replicas is the number of PermissionSync replicas to deploy. The service
+                      is stateless, so any healthy replica can serve any request.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  request:
+                    default: {}
+                    description: |-
+                      Request bounds one synchronization request and the inbound capacity
+                      around it.
+                    properties:
+                      inboundAdmissionLimit:
+                        default: 64
+                        description: |-
+                          InboundAdmissionLimit bounds both how many synchronization requests may
+                          be admitted at once and how many more may wait for admission. A request
+                          arriving when both bounds are full is refused at the transport boundary
+                          and receives no response, so saturation adds no caller-facing status.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      overallDeadlineMilliseconds:
+                        default: 10000
+                        description: |-
+                          OverallDeadlineMilliseconds is the one absolute deadline for a
+                          synchronization request. It starts when the request is accepted and
+                          covers admission waiting, body collection, authentication, validation,
+                          routing, capacity, Provider, and Adapter work. Configure it below the
+                          caller's own HTTP timeout.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      synchronizationCapacity:
+                        default: 16
+                        description: |-
+                          SynchronizationCapacity bounds how many selected-target
+                          synchronizations run concurrently. It bounds resource use only: it is
+                          not an ordering or exclusion primitive, and concurrent requests for the
+                          same user are allowed and unordered.
+                        format: int64
+                        maximum: 1024
+                        minimum: 1
+                        type: integer
+                    type: object
+                  rootCASecretName:
+                    default: neteye-root-ca
+                    description: |-
+                      RootCASecretName selects the Secret whose tls.crt is trusted, in addition
+                      to the system roots, when PermissionSync connects to the identity
+                      service, the Permission Provider, and GLPI. Set it to the empty string to
+                      trust only the system roots.
+                    type: string
+                  shutdown:
+                    default: {}
+                    description: Shutdown bounds the graceful shutdown of in-flight
+                      requests.
+                    properties:
+                      graceMilliseconds:
+                        default: 20000
+                        description: |-
+                          GraceMilliseconds is how long already admitted requests may finish after
+                          shutdown begins. It must be at least the overall request deadline, so
+                          every compliant request accepted before shutdown has time to return. The
+                          pod's termination grace period covers this plus PermissionSync's fixed
+                          post-grace phases and is not configurable here.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                    type: object
+                  targets:
+                    description: |-
+                      Targets declares the logical target routes PermissionSync serves. A
+                      logical target is matched exactly against the suffix of the caller's
+                      permissionsync:<target> scope, and the login-sync authenticator derives
+                      that target from the Keycloak client the user logs in to, so each entry
+                      must be named after that client.
+                    items:
+                      description: NetEyePermissionSyncTarget routes one logical target
+                        to one Target Adapter.
+                      properties:
+                        adapter:
+                          description: Adapter is the Target Adapter serving this
+                            logical target.
+                          enum:
+                          - glpi
+                          type: string
+                        logicalTarget:
+                          description: |-
+                            LogicalTarget is the logical target identifier, which must satisfy
+                            PermissionSync's target grammar and name the Keycloak login client the
+                            login-sync authenticator derives the target from.
+                          example: glpi
+                          maxLength: 64
+                          minLength: 1
+                          pattern: ^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$
+                          type: string
+                      required:
+                      - adapter
+                      - logicalTarget
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - logicalTarget
+                    x-kubernetes-list-type: map
+                type: object
               version:
                 description: |-
                   Version is the NetEye product version string, e.g. "4.51".
@@ -413,6 +676,7 @@ spec:
             - gateway
             - identity
             - internalCertificateIssuerRef
+            - permissionSync
             - version
             type: object
           status:
@@ -485,6 +749,23 @@ spec:
                   identity:
                     description: Identity reports the observed state of identity services
                       such as Keycloak.
+                    properties:
+                      message:
+                        description: Message is a human-readable status message for
+                          this service.
+                        type: string
+                      resolvedImage:
+                        description: ResolvedImage is the container image resolved
+                          for this service.
+                        type: string
+                      status:
+                        description: ServiceState is the per-service state reported
+                          in NetEyeServiceStatus.Status.
+                        type: string
+                    type: object
+                  permissionSync:
+                    description: PermissionSync reports the observed state of the
+                      PermissionSync service.
                     properties:
                       message:
                         description: Message is a human-readable status message for

@@ -15,7 +15,7 @@ spec:
               verbs: [create, delete, get, list, patch, update, watch]
             - apiGroups: [""]
               resources: [secrets]
-              verbs: [create, get, list, update, watch]
+              verbs: [create, delete, get, list, update, watch]
             - apiGroups: [""]
               resources: [pods, pods/log]
               verbs: [get, list, watch]
@@ -136,6 +136,10 @@ spec:
                       - {
                         name: RELATED_IMAGE_CA_BUNDLE,
                         value: docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6,
+                      }
+                      - {
+                        name: RELATED_IMAGE_PERMISSIONSYNC,
+                        value: ghcr.io/neteye-platform/permissionsync:0.1.0@sha256:d52ca3dc298291d79edb7ba7b5ea67726ef9ff1dd2b636da7a9ad05c4b90563a,
                       }
                     securityContext:
                       {

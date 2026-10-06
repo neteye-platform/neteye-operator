@@ -23,6 +23,7 @@ import (
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
+	"github.com/neteye-platform/neteye-operator/internal/permissionsync"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -162,7 +163,7 @@ func TestReconcileClusterAuthorityFailurePreventsManagedResourceMutations(t *tes
 			return underlying.Update(ctx, object, options...)
 		},
 	}).Build()
-	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard()), OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c), EDOTGatewayComponent: elasticstack.NewEDOTGatewayComponent(c)}
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard()), OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c), EDOTGatewayComponent: elasticstack.NewEDOTGatewayComponent(c), PermissionSyncComponent: permissionsync.NewComponent(c)}
 
 	result, err := reconcileNetEye(t, r, ne)
 	if !errors.Is(err, authorityFailure) {
@@ -226,7 +227,7 @@ func TestReconcileJoinsSystemicAndStatusUpdateFailures(t *testing.T) {
 			return statusFailure
 		},
 	}).Build()
-	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard()), OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c), EDOTGatewayComponent: elasticstack.NewEDOTGatewayComponent(c)}
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard()), OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c), EDOTGatewayComponent: elasticstack.NewEDOTGatewayComponent(c), PermissionSyncComponent: permissionsync.NewComponent(c)}
 
 	_, err := reconcileNetEye(t, r, ne)
 	if !errors.Is(err, authorityFailure) || !errors.Is(err, statusFailure) {

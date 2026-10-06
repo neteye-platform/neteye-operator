@@ -21,6 +21,7 @@ import (
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/keycloakconfig"
+	"github.com/neteye-platform/neteye-operator/internal/permissionsyncconfig"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -442,6 +443,11 @@ func keycloakEgressNetworkPolicySpec(databasePort int32, telemetryEnabled bool) 
 	if telemetryEnabled {
 		egress = append(egress, map[string]any{"to": []any{namespaceAndPodSelector(WorkloadNamespace, map[string]any{"app": "otel-edot-gateway"})}, "ports": []any{networkPort(4317, "TCP")}})
 	}
+	// The login-sync authenticator posts the synchronization request from
+	// inside Keycloak, so PermissionSync is only reachable for it when this
+	// egress exception exists alongside the namespace-wide default deny. It is
+	// unconditional: the component is part of every NetEye deployment.
+	egress = append(egress, map[string]any{"to": []any{namespaceAndPodSelector(WorkloadNamespace, map[string]any{"app": permissionsyncconfig.WorkloadAppLabel})}, "ports": []any{networkPort(permissionsyncconfig.ListenerPort, "TCP")}})
 	return map[string]any{
 		"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()},
 		"policyTypes": []any{"Egress"},

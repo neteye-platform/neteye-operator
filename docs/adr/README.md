@@ -71,3 +71,5 @@ The following statuses are used:
 | [ADR-0001](0001-neteye-resource-scope-and-ownership.md) | NetEye Resource Scope and Ownership | Singleton `NetEye`, tenants, resource ownership, and deletion policy | Accepted |
 | [ADR-0002](0002-reconciliation-and-resource-application.md) | Reconciliation and Resource Application | Server-Side Apply, field ownership, delegated resources, readiness, and component status | Accepted |
 | [ADR-0003](0003-neteye-and-operator-version-model.md) | NetEye and Operator Version Model | Product and operator versions, OLM channels, upgrade authorization, and resolved images | Accepted |
+| [ADR-0004](0004-automated-neteye-line-release.md) | Automated Operator Release for New NetEye Lines | Pipeline-dispatched operator release for a new NetEye line, its stable channel, and the maintenance branch | Accepted |
+| [ADR-0005](0005-permissionsync-component-and-caller-provisioning.md) | PermissionSync Component and Caller Provisioning | PermissionSync component lifecycle, its configuration document, and the Keycloak objects its technical caller uses | Accepted |

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/permissionsyncconfig"
 )
 
 func TestIdentityReplicas(t *testing.T) {
@@ -395,8 +396,8 @@ func TestKeycloakNetworkPolicies(t *testing.T) {
 		t.Errorf("policyTypes = %#v, want only Egress", got)
 	}
 	rules := egress["egress"].([]any)
-	if len(rules) != 3 {
-		t.Fatalf("egress rule count = %d, want 3", len(rules))
+	if len(rules) != 4 {
+		t.Fatalf("egress rule count = %d, want 4", len(rules))
 	}
 	if _, found := rules[0].(map[string]any)["to"]; found {
 		t.Error("database egress must not constrain an external hostname by CIDR")
@@ -407,8 +408,21 @@ func TestKeycloakNetworkPolicies(t *testing.T) {
 	if !reflect.DeepEqual(rules[2].(map[string]any)["ports"], []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}) {
 		t.Errorf("intra-cluster ports = %#v", rules[2].(map[string]any)["ports"])
 	}
+	// The exception that lets the login-sync authenticator reach
+	// PermissionSync is unconditional: the component is part of every
+	// deployment, so without it the request dies on the default deny.
+	permissionSyncRule := map[string]any{
+		"to":    []any{namespaceAndPodSelector(WorkloadNamespace, map[string]any{"app": permissionsyncconfig.WorkloadAppLabel})},
+		"ports": []any{networkPort(permissionsyncconfig.ListenerPort, "TCP")},
+	}
+	if !reflect.DeepEqual(rules[3], permissionSyncRule) {
+		t.Errorf("permissionsync egress rule = %#v", rules[3])
+	}
 	telemetryRules := keycloakEgressNetworkPolicySpec(3306, true)["egress"].([]any)
-	if len(telemetryRules) != 4 || !reflect.DeepEqual(telemetryRules[3], map[string]any{"to": []any{namespaceAndPodSelector(WorkloadNamespace, map[string]any{"app": "otel-edot-gateway"})}, "ports": []any{networkPort(4317, "TCP")}}) {
+	if len(telemetryRules) != 5 || !reflect.DeepEqual(telemetryRules[3], map[string]any{"to": []any{namespaceAndPodSelector(WorkloadNamespace, map[string]any{"app": "otel-edot-gateway"})}, "ports": []any{networkPort(4317, "TCP")}}) {
 		t.Errorf("telemetry egress rule = %#v", telemetryRules)
+	}
+	if !reflect.DeepEqual(telemetryRules[4], permissionSyncRule) {
+		t.Errorf("permissionsync egress rule with telemetry enabled = %#v", telemetryRules[4])
 	}
 }

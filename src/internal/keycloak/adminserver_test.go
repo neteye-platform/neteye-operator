@@ -21,14 +21,16 @@ import (
 type fakeKeycloak struct {
 	realm string
 
-	clients      map[string]representation   // client UUID -> client representation
-	mappers      map[string][]representation // client UUID -> protocol mappers
-	scopes       map[string]map[string][]string
-	realmScopes  map[string]string   // scope name -> scope id
-	clientRoles  map[string][]string // client UUID -> role names it defines
-	accountRoles map[string][]string // "userID/clientUUID" -> assigned role names
-	tokenIssued  int
-	requestPaths []string
+	clients       map[string]representation   // client UUID -> client representation
+	mappers       map[string][]representation // client UUID -> protocol mappers
+	scopes        map[string]map[string][]string
+	realmScopes   map[string]string         // scope name -> scope id
+	createdScopes []representation          // client scopes created through the API
+	scopeReps     map[string]representation // scope id -> full representation
+	clientRoles   map[string][]string       // client UUID -> role names it defines
+	accountRoles  map[string][]string       // "userID/clientUUID" -> assigned role names
+	tokenIssued   int
+	requestPaths  []string
 }
 
 func newFakeKeycloak(realm string, realmScopes ...string) *fakeKeycloak {
@@ -40,9 +42,18 @@ func newFakeKeycloak(realm string, realmScopes ...string) *fakeKeycloak {
 		realmScopes:  map[string]string{},
 		clientRoles:  map[string][]string{},
 		accountRoles: map[string][]string{},
+		scopeReps:    map[string]representation{},
 	}
 	for _, name := range realmScopes {
-		f.realmScopes[name] = "scope-" + name
+		// A scope the realm lists is always readable in a real Keycloak, so the
+		// fake seeds a conforming representation rather than a name alone.
+		f.seedClientScope(name, representation{
+			"protocol": openIDConnect,
+			"attributes": map[string]any{
+				clientScopeTokenScopeAttribute: "true",
+				clientScopeConsentAttribute:    "false",
+			},
+		})
 	}
 	return f
 }
@@ -80,6 +91,27 @@ func (f *fakeKeycloak) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	segments := strings.Split(rest, "/")
 
 	switch {
+	case segments[0] == "client-scopes" && len(segments) == 1 && r.Method == http.MethodPost:
+		scope := decode(r)
+		name := stringValue(scope, "name")
+		id := "scope-" + name
+		f.realmScopes[name] = id
+		f.scopeReps[id] = withID(scope, id)
+		f.createdScopes = append(f.createdScopes, scope)
+		w.WriteHeader(http.StatusCreated)
+
+	case segments[0] == "client-scopes" && len(segments) == 2 && r.Method == http.MethodGet:
+		scope, found := f.scopeReps[segments[1]]
+		if !found {
+			http.Error(w, "unknown client scope", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, scope)
+
+	case segments[0] == "client-scopes" && len(segments) == 2 && r.Method == http.MethodPut:
+		f.scopeReps[segments[1]] = withID(decode(r), segments[1])
+		w.WriteHeader(http.StatusNoContent)
+
 	case segments[0] == "client-scopes" && len(segments) == 1:
 		scopes := []representation{}
 		for name, id := range f.realmScopes {
@@ -182,6 +214,16 @@ func (f *fakeKeycloak) serveScopes(w http.ResponseWriter, r *http.Request, segme
 	default:
 		http.Error(w, "unexpected client scope request", http.StatusNotFound)
 	}
+}
+
+// seedClientScope registers a client scope that already exists in the realm,
+// so the adoption path can be exercised.
+func (f *fakeKeycloak) seedClientScope(name string, scope representation) string {
+	id := "scope-" + name
+	scope["name"] = name
+	f.realmScopes[name] = id
+	f.scopeReps[id] = withID(scope, id)
+	return id
 }
 
 func (f *fakeKeycloak) scopeName(scopeID string) string {

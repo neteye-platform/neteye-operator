@@ -26,6 +26,8 @@ import (
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
+	"github.com/neteye-platform/neteye-operator/internal/permissionsync"
+	"github.com/neteye-platform/neteye-operator/internal/permissionsyncconfig"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -51,9 +53,10 @@ type NetEyeReconciler struct {
 	// It is released here when a NetEye CR goes away, so a deleted tenant does
 	// not keep its admin password and token in memory until the registry's idle
 	// eviction happens to run. Optional: when nil, nothing is forgotten.
-	AdminProviders         *keycloak.AdminProviderRegistry
-	OTelCollectorComponent *elasticstack.OTelCollectorComponent
-	EDOTGatewayComponent   *elasticstack.EDOTGatewayComponent
+	AdminProviders          *keycloak.AdminProviderRegistry
+	OTelCollectorComponent  *elasticstack.OTelCollectorComponent
+	EDOTGatewayComponent    *elasticstack.EDOTGatewayComponent
+	PermissionSyncComponent *permissionsync.Component
 
 	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
 	WaitForProgressingRequeueAfter time.Duration
@@ -69,7 +72,8 @@ type NetEyeReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes;grpcroutes,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=configmaps;services,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakclients,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=k8s.keycloak.org,resources=keycloaks,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=olm.operatorframework.io,resources=clusterextensions,verbs=get;list;watch;create;update
@@ -104,8 +108,9 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	ne.Status.Phase = ""
 	ne.Status.Message = ""
 	ne.Status.ServicesStatus = neteye.NetEyeServicesStatus{
-		Identity:     identityStatus(neteye.ServiceStateUnknown, "", ""),
-		ElasticStack: &neteye.NetEyeElasticStackStatus{Status: neteye.ServiceStateUnknown, OTelCollector: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}, EDOTGateway: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}},
+		Identity:       identityStatus(neteye.ServiceStateUnknown, "", ""),
+		ElasticStack:   &neteye.NetEyeElasticStackStatus{Status: neteye.ServiceStateUnknown, OTelCollector: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}, EDOTGateway: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}},
+		PermissionSync: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown},
 	}
 	defer func() {
 		if err := r.updateStatus(ctx, req.NamespacedName, ne.Status); err != nil {
@@ -141,6 +146,10 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		setPhase(ne, neteye.PhaseFailed, "telemetry components are not initialized")
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("telemetry components are not initialized")
 	}
+	if r.PermissionSyncComponent == nil {
+		setPhase(ne, neteye.PhaseFailed, "permissionsync component is not initialized")
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("permissionsync component is not initialized")
+	}
 	log.V(1).Info("Components loaded", "version", ne.Spec.Version)
 
 	if err := r.ensureClusterAuthority(ctx, ne); err != nil {
@@ -158,7 +167,10 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared default-deny network policy: %w", err)
 	}
 
-	graph, err := newLifecycleGraph([]lifecycleNode{{ID: identityComponentID}, {ID: otelCollectorComponentID}, {ID: edotGatewayComponentID}})
+	// PermissionSync depends on the identity component: its caller provisioning
+	// needs a reachable Admin API, and the service verifies tokens the identity
+	// service issues.
+	graph, err := newLifecycleGraph([]lifecycleNode{{ID: identityComponentID}, {ID: otelCollectorComponentID}, {ID: edotGatewayComponentID}, {ID: permissionSyncComponentID, Dependencies: []componentID{identityComponentID}}})
 	if err != nil {
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		return ctrl.Result{}, fmt.Errorf("construct component lifecycle graph: %w", err)
@@ -171,10 +183,18 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		edotGatewayComponentID: func() (componentResult, error) {
 			return r.reconcileEDOTGateway(ctx, ne, components.EDOTGatewayImage, components.CABundleImage)
 		},
+		permissionSyncComponentID: func() (componentResult, error) {
+			return r.reconcilePermissionSync(ctx, ne, components.PermissionSyncImage)
+		},
 	})
 	if err != nil {
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		return ctrl.Result{}, err
+	}
+	// PermissionSync is the one component with a dependency, so it is the one
+	// that can be blocked without its reconciler reporting anything.
+	if result, found := results[permissionSyncComponentID]; found && result.State == componentStateBlocked {
+		ne.Status.ServicesStatus.PermissionSync = permissionSyncStatus(neteye.ServiceStateNotReady, result.Message, components.PermissionSyncImage)
 	}
 	state, message := aggregateElasticStackStatus(ne.Status.ServicesStatus.ElasticStack.OTelCollector, ne.Status.ServicesStatus.ElasticStack.EDOTGateway)
 	ne.Status.ServicesStatus.ElasticStack.Status, ne.Status.ServicesStatus.ElasticStack.Message = state, message
@@ -232,6 +252,77 @@ func (r *NetEyeReconciler) reconcileEDOTGateway(ctx context.Context, ne *neteye.
 	outcome := r.EDOTGatewayComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, image, caBundleImage, identityTelemetryEnabled(ne.Spec.Identity), owner)
 	ne.Status.ServicesStatus.ElasticStack.EDOTGateway = elasticStackServiceStatus(phaseToServiceState(outcome.Phase), outcome.Message, image)
 	return mapTelemetryOutcome(edotGatewayComponentID, outcome, r.waitForProgressingRequeue(), r.failureRequeue())
+}
+
+// reconcilePermissionSync reconciles the PermissionSync service and the
+// Keycloak objects its technical caller authenticates with.
+func (r *NetEyeReconciler) reconcilePermissionSync(ctx context.Context, ne *neteye.NetEye, image string) (componentResult, error) {
+	log := ctrl.LoggerFrom(ctx)
+	owner, ns := ownerReferenceFor(ne), keycloak.WorkloadNamespace
+	spec := &ne.Spec.PermissionSync
+	// The component validates the configuration and renders nothing from one
+	// it refuses, so it runs first: provisioning client scopes named after an
+	// unvalidated target would write objects into Keycloak that the rest of
+	// this reconciliation then rejects, and the operator never removes them.
+	outcome := r.PermissionSyncComponent.Ensure(ctx, ns, spec, ne.Spec.Identity.Hostname, image, owner)
+	ne.Status.ServicesStatus.PermissionSync = permissionSyncStatus(permissionSyncServiceState(outcome.Phase), outcome.Message, image)
+	if outcome.Phase == permissionsync.PhaseDegraded {
+		return mapPermissionSyncOutcome(outcome, r.waitForProgressingRequeue(), r.failureRequeue())
+	}
+	// The configuration is usable, so the caller can be provisioned even while
+	// the workload is still rolling out: its client scopes are what make a
+	// declared logical target reachable at all, and they do not depend on the
+	// service already serving.
+	if err := r.KeycloakComponent.EnsurePermissionSyncCaller(ctx, ns, spec.LogicalTargets()); err != nil {
+		message := fmt.Sprintf("failed to provision the PermissionSync caller in Keycloak: %v", err)
+		log.Error(err, "failed to provision the PermissionSync caller in Keycloak", "namespace", ns, "requeueAfter", r.failureRequeue())
+		ne.Status.ServicesStatus.PermissionSync = permissionSyncStatus(neteye.ServiceStateFailed, message, image)
+		return degradedResult(permissionSyncComponentID, "EnsureCallerFailed", message, r.failureRequeue(), err)
+	}
+	if outcome.Phase != permissionsync.PhaseReady {
+		return mapPermissionSyncOutcome(outcome, r.waitForProgressingRequeue(), r.failureRequeue())
+	}
+	callerReady, callerMessage, err := r.KeycloakComponent.IsClientReady(ctx, ns, permissionsyncconfig.CallerClientResourceName)
+	if err != nil {
+		message := fmt.Sprintf("failed to check the PermissionSync caller Keycloak client readiness: %v", err)
+		log.Error(err, "failed to check the PermissionSync caller Keycloak client readiness", "namespace", ns, "requeueAfter", r.failureRequeue())
+		ne.Status.ServicesStatus.PermissionSync = permissionSyncStatus(neteye.ServiceStateFailed, message, image)
+		return degradedResult(permissionSyncComponentID, "CheckCallerReadinessFailed", message, r.failureRequeue(), err)
+	}
+	if !callerReady {
+		log.V(1).Info("PermissionSync caller Keycloak client is not ready", "reason", callerMessage, "requeueAfter", r.waitForProgressingRequeue())
+		ne.Status.ServicesStatus.PermissionSync = permissionSyncStatus(neteye.ServiceStateNotReady, callerMessage, image)
+		return progressingResult(permissionSyncComponentID, "CallerNotReady", callerMessage, r.waitForProgressingRequeue())
+	}
+	return readyResult(permissionSyncComponentID, outcome.Reason, outcome.Message)
+}
+
+func mapPermissionSyncOutcome(outcome permissionsync.Outcome, progressingRequeue, failureRequeue time.Duration) (componentResult, error) {
+	switch outcome.Phase {
+	case permissionsync.PhaseReady:
+		return readyResult(permissionSyncComponentID, outcome.Reason, outcome.Message)
+	case permissionsync.PhaseProgressing:
+		return progressingResult(permissionSyncComponentID, outcome.Reason, outcome.Message, progressingRequeue)
+	case permissionsync.PhaseDegraded:
+		return degradedResult(permissionSyncComponentID, outcome.Reason, outcome.Message, failureRequeue, outcome.Err)
+	default:
+		return componentResult{}, fmt.Errorf("component %q returned invalid phase %q", permissionSyncComponentID, outcome.Phase)
+	}
+}
+
+func permissionSyncServiceState(phase permissionsync.Phase) neteye.ServiceState {
+	switch phase {
+	case permissionsync.PhaseReady:
+		return neteye.ServiceStateReady
+	case permissionsync.PhaseProgressing:
+		return neteye.ServiceStateNotReady
+	default:
+		return neteye.ServiceStateFailed
+	}
+}
+
+func permissionSyncStatus(state neteye.ServiceState, message, image string) *neteye.NetEyeServiceStatus {
+	return &neteye.NetEyeServiceStatus{Status: state, Message: message, ResolvedImage: image}
 }
 
 func identityTelemetryEnabled(identity neteye.NetEyeIdentitySpec) bool {

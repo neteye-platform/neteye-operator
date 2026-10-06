@@ -27,6 +27,7 @@ import (
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
+	"github.com/neteye-platform/neteye-operator/internal/permissionsync"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -479,22 +480,23 @@ func TestReconcileIdentityTelemetryEnableAndDisable(t *testing.T) {
 			t.Errorf("startOptimized = %t, found=%t, err=%v", optimized, found, err)
 		}
 		for _, policy := range []struct {
-			gvk  schema.GroupVersionKind
-			name string
-			path string
+			gvk schema.GroupVersionKind
+			// baseRules is the rule count with identity telemetry disabled.
+			// The identity egress baseline includes the unconditional
+			// exception that lets the login-sync authenticator reach
+			// PermissionSync, which every deployment runs.
+			baseRules  int
+			name, path string
 		}{
-			{networkPolicyGVK, keycloak.EgressPolicyName, "egress"},
-			{ciliumPolicyGVK, elasticstack.EDOTGatewayIngressPolicyName, "ingress"},
+			{networkPolicyGVK, 4, keycloak.EgressPolicyName, "egress"},
+			{ciliumPolicyGVK, 2, elasticstack.EDOTGatewayIngressPolicyName, "ingress"},
 		} {
 			object := requireExists(ctx, t, c, policy.gvk, namespace, policy.name)
 			rules, found, err := unstructured.NestedSlice(object.Object, "spec", policy.path)
 			if err != nil || !found {
 				t.Fatalf("read %s rules: found=%t err=%v", policy.name, found, err)
 			}
-			want := 3
-			if policy.path == "ingress" {
-				want = 2
-			}
+			want := policy.baseRules
 			if flags.LogsEnabled || flags.MetricsEnabled {
 				want++
 			}
@@ -546,7 +548,7 @@ func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeEla
 	if err := c.Create(ctx, ne); err != nil {
 		t.Fatal(err)
 	}
-	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard()), OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c), EDOTGatewayComponent: elasticstack.NewEDOTGatewayComponent(c)}
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard()), OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c), EDOTGatewayComponent: elasticstack.NewEDOTGatewayComponent(c), PermissionSyncComponent: permissionsync.NewComponent(c)}
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}
 	if _, err := r.Reconcile(ctx, request); err != nil {
 		t.Fatal(err)
@@ -673,12 +675,13 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	}
 
 	r := &NetEyeReconciler{
-		Client:                 c,
-		Log:                    logr.Discard(),
-		Scheme:                 s,
-		KeycloakComponent:      keycloak.NewComponent(c, logr.Discard()),
-		OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c),
-		EDOTGatewayComponent:   elasticstack.NewEDOTGatewayComponent(c),
+		Client:                  c,
+		Log:                     logr.Discard(),
+		Scheme:                  s,
+		KeycloakComponent:       keycloak.NewComponent(c, logr.Discard()),
+		OTelCollectorComponent:  elasticstack.NewOTelCollectorComponent(c),
+		EDOTGatewayComponent:    elasticstack.NewEDOTGatewayComponent(c),
+		PermissionSyncComponent: permissionsync.NewComponent(c),
 	}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "platform"}}
 

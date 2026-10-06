@@ -46,3 +46,48 @@ spec:
     telemetry:
       otelCollector: {}
       edotGateway: {}
+  # PermissionSync reconciles a user's permissions with a selected target on
+  # login. The section is required: the service is part of every NetEye
+  # deployment and cannot be switched off. The operator also provisions the
+  # Keycloak client scopes and caller client the login-sync authenticator needs.
+  permissionSync:
+    replicas: 2
+    logLevel: info
+    provider:
+      # Defaults to the NetEye deployment's own permission API; override it
+      # only for a deployment that serves that API somewhere else.
+      endpoint: https://httpd.neteyelocal/neteye/api/v2/permission-provider/desired-state
+    glpi:
+      # Defaults to the GLPI the NetEye deployment provides; override it only
+      # for a GLPI that lives somewhere else.
+      endpoint: https://glpi.neteyelocal/apirest.php
+      # Omit authenticationSource to rely on GLPI's own defaults for the users
+      # the adapter creates; when present, both fields are required together.
+      #
+      # authenticationSource:
+      #   authType: 3
+      #   authsId: 2
+      credentialsSecret:
+        name: permissionsync-glpi-credentials
+        appTokenKey: app_token
+        userTokenKey: user_token
+    # A logical target must be named after the Keycloak login client it serves.
+    targets:
+      - logicalTarget: glpi
+        adapter: glpi
+    # Every bound below defaults to the value shown. The relations between them
+    # are validated at admission, because PermissionSync refuses to start on an
+    # impossible combination: the shutdown grace must cover one whole request,
+    # and no child timeout may outlive the overall deadline.
+    request:
+      overallDeadlineMilliseconds: 10000
+      inboundAdmissionLimit: 64
+      synchronizationCapacity: 16
+    shutdown:
+      graceMilliseconds: 20000
+    authentication:
+      metadataOperationTimeoutMilliseconds: 3000
+      cacheFreshnessMilliseconds: 300000
+      cacheStaleIfErrorMilliseconds: 600000
+      clockSkewMilliseconds: 30000
+    operationTimeoutMilliseconds: 5000
