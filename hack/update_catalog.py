@@ -4,6 +4,7 @@ import argparse
 import os
 import re
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import requests
@@ -23,10 +24,12 @@ NIGHTLY_TAG_PATTERN = re.compile(r"^(?P<version>.+)-nightly-(?P<hash>[0-9a-f]{7,
 NIGHTLY_IMAGE_PATTERN = re.compile(
     r"^ghcr\.io/neteye-platform/neteye-operator-bundle:(.+-nightly-[0-9a-f]{7,40})$"
 )
+NIGHTLY_VERSION_PATTERN = re.compile(r"-nightly-[0-9a-f]{7,40}$")
+NIGHTLY_BUNDLES_FILE = "nightly.yaml"
 
 
-def document_field(document: str, field: str) -> str | None:
-    match = re.search(rf"^{re.escape(field)}: (.+)$", document, re.MULTILINE)
+def document_field(document: str, field_name: str) -> str | None:
+    match = re.search(rf"^{re.escape(field_name)}: (.+)$", document, re.MULTILINE)
     return match.group(1) if match else None
 
 
@@ -75,6 +78,8 @@ def compare_semver(left: str, right: str) -> int:
 
 
 def atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode if path.exists() else None
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -84,11 +89,36 @@ def atomic_write(path: Path, content: str) -> None:
             temporary_file.write(content)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
-        os.chmod(temporary_path, path.stat().st_mode)
+        os.chmod(temporary_path, 0o644 if mode is None else mode)
         os.replace(temporary_path, path)
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+
+def is_nightly_version(version: str) -> bool:
+    return NIGHTLY_VERSION_PATTERN.search(version) is not None
+
+
+def bundle_document(version: str, image: str) -> str:
+    return "\n".join(
+        [
+            "schema: olm.bundle",
+            f"name: {PACKAGE_NAME}.{version}",
+            f"package: {PACKAGE_NAME}",
+            f"image: {image}",
+            "properties:",
+            "  - type: olm.gvk",
+            "    value:",
+            "      group: operators.coreos.com",
+            "      kind: ClusterServiceVersion",
+            "      version: v1alpha1",
+            "  - type: olm.package",
+            "    value:",
+            f"      packageName: {PACKAGE_NAME}",
+            f"      version: {version}",
+        ]
+    )
 
 
 def fetch_latest_neteye_version() -> str:
@@ -102,18 +132,208 @@ def fetch_latest_neteye_version() -> str:
     return re.sub(r"-sr[0-9]+$", "", payload["version"])
 
 
-def read_operator_version() -> str:
-    makefile_path = Path(__file__).resolve().parent.parent / "src" / "Makefile"
-    match = re.search(
-        r"^VERSION \?= (\S+)$", makefile_path.read_text(encoding="utf-8"), re.MULTILINE
-    )
-    if not match:
-        raise ValueError(f"VERSION not found in {makefile_path}")
-    return match.group(1)
+@dataclass
+class Entry:
+    """One item of an olm.channel `entries` list."""
+
+    name: str
+    replaces: str | None = None
+    skips: list[str] = field(default_factory=list)
+
+    @property
+    def version(self) -> str:
+        return self.name.removeprefix(f"{PACKAGE_NAME}.")
+
+
+@dataclass
+class Channel:
+    """An olm.channel blob, stored as one file in the catalog tree."""
+
+    name: str
+    entries: list[Entry] = field(default_factory=list)
+    package: str = PACKAGE_NAME
+
+    @classmethod
+    def parse(cls, document: str, name: str) -> "Channel":
+        if re.search(r"^    skipRange:", document, re.MULTILINE):
+            raise ValueError(
+                f"channel {name} uses unsupported skipRange entries; "
+                "use explicit replaces or skips edges"
+            )
+        package = document_field(document, "package")
+        if package is None:
+            raise ValueError(f"channel {name} document is missing package")
+        entries: list[Entry] = []
+        for line in document.splitlines():
+            if match := re.fullmatch(r"  - name: (\S+)", line):
+                entries.append(Entry(match.group(1)))
+            elif match := re.fullmatch(r"    replaces: (\S+)", line):
+                entries[-1].replaces = match.group(1)
+            elif match := re.fullmatch(r"      - (\S+)", line):
+                entries[-1].skips.append(match.group(1))
+        return cls(name=name, entries=entries, package=package)
+
+    def render(self) -> str:
+        lines = [
+            "schema: olm.channel",
+            f"package: {self.package}",
+            f"name: {self.name}",
+            "entries:",
+        ]
+        for entry in self.entries:
+            lines.append(f"  - name: {entry.name}")
+            if entry.replaces:
+                lines.append(f"    replaces: {entry.replaces}")
+            if entry.skips:
+                lines.append("    skips:")
+                lines += [f"      - {skip}" for skip in entry.skips]
+        return "\n".join(lines) + "\n"
+
+    def head(self) -> Entry | None:
+        """The single entry that no other entry replaces or skips."""
+        if not self.entries:
+            return None
+        replaced = {entry.replaces for entry in self.entries if entry.replaces}
+        skipped = {skip for entry in self.entries for skip in entry.skips}
+        heads = [
+            entry
+            for entry in self.entries
+            if entry.name not in replaced and entry.name not in skipped
+        ]
+        if len(heads) != 1:
+            raise ValueError(
+                f"expected exactly one {self.name} channel head, found: "
+                f"{', '.join(sorted(entry.name for entry in heads)) or 'none'}"
+            )
+        return heads[0]
+
+    def validate_entry_versions(self) -> None:
+        for entry in self.entries:
+            if not entry.name.startswith(f"{PACKAGE_NAME}."):
+                raise ValueError(
+                    f"unexpected bundle in {self.name} channel: {entry.name}"
+                )
+            if not valid_semver(entry.version):
+                raise ValueError(
+                    f"invalid bundle version in {self.name} channel: {entry.version}"
+                )
+
+
+class Catalog:
+    """A file-based catalog tree: <root>/<package>/{package.yaml,channels,bundles}."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.package_dir = root / PACKAGE_NAME
+        self.package_file = self.package_dir / "package.yaml"
+        self.channels_dir = self.package_dir / "channels"
+        self.bundles_dir = self.package_dir / "bundles"
+        self.nightly_bundles_file = self.bundles_dir / NIGHTLY_BUNDLES_FILE
+
+    def read_package(self) -> str:
+        if not self.package_file.is_file():
+            raise ValueError(f"missing package document: {self.package_file}")
+        return self.package_file.read_text(encoding="utf-8")
+
+    def set_default_channel(self, channel: str) -> None:
+        document = self.read_package()
+        updated, count = re.subn(
+            r"^defaultChannel: \S+$",
+            f"defaultChannel: {channel}",
+            document,
+            flags=re.MULTILINE,
+        )
+        if count != 1:
+            raise ValueError(f"expected one defaultChannel in {self.package_file}")
+        if updated != document:
+            atomic_write(self.package_file, updated)
+
+    def channel_names(self) -> list[str]:
+        if not self.channels_dir.is_dir():
+            return []
+        return sorted(path.stem for path in self.channels_dir.glob("*.yaml"))
+
+    def channel_text(self, name: str) -> str | None:
+        path = self.channels_dir / f"{name}.yaml"
+        if not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8")
+
+    def read_channel(self, name: str) -> Channel | None:
+        document = self.channel_text(name)
+        if document is None:
+            return None
+        return Channel.parse(document, name)
+
+    def write_channel(self, channel: Channel) -> None:
+        atomic_write(self.channels_dir / f"{channel.name}.yaml", channel.render())
+
+    def nightly_documents(self) -> list[str]:
+        """Every olm.bundle blob in the shared nightly file, in order."""
+        if not self.nightly_bundles_file.is_file():
+            return []
+        text = self.nightly_bundles_file.read_text(encoding="utf-8").rstrip("\n")
+        return text.split("\n---\n") if text else []
+
+    def bundle_path(self, version: str) -> Path:
+        """The file holding this bundle.
+
+        Releases are permanent and get a file each, so their history is
+        reviewable on its own. Nightlies are high-volume and share one
+        multi-document file, which keeps the directory from growing by a file
+        per night. The release workflow never writes that file and the nightly
+        workflow never writes a release file, so the two cannot conflict.
+        """
+        if is_nightly_version(version):
+            return self.nightly_bundles_file
+        return self.bundles_dir / f"{version}.yaml"
+
+    def bundle_image(self, version: str) -> str | None:
+        name = f"{PACKAGE_NAME}.{version}"
+        if is_nightly_version(version):
+            documents = [
+                document
+                for document in self.nightly_documents()
+                if document_field(document, "name") == name
+            ]
+            if not documents:
+                return None
+            if len(documents) > 1:
+                raise ValueError(f"multiple bundle documents found for {name}")
+        else:
+            path = self.bundle_path(version)
+            if not path.is_file():
+                return None
+            documents = [path.read_text(encoding="utf-8")]
+        image = document_field(documents[0], "image")
+        if image is None:
+            raise ValueError(f"bundle document has no image: {name}")
+        return image
+
+    def write_bundle(self, version: str, image: str) -> None:
+        document = bundle_document(version, image)
+        if is_nightly_version(version):
+            documents = self.nightly_documents() + [document]
+            atomic_write(self.nightly_bundles_file, "\n---\n".join(documents) + "\n")
+        else:
+            atomic_write(self.bundle_path(version), document + "\n")
+
+
+def bundle_is_new(catalog: Catalog, version: str, bundle_image: str) -> bool:
+    """False when the bundle already exists with exactly this image."""
+    existing = catalog.bundle_image(version)
+    if existing is None:
+        return True
+    if existing != bundle_image:
+        raise ValueError(
+            f"{PACKAGE_NAME}.{version} already references {existing}; "
+            "refusing to replace it"
+        )
+    return False
 
 
 def update_catalog(
-    catalog_path: Path,
+    catalog_root: Path,
     version: str,
     bundle_image: str,
     neteye_version: str | None = None,
@@ -123,145 +343,37 @@ def update_catalog(
     if not BUNDLE_IMAGE_PATTERN.fullmatch(bundle_image):
         raise ValueError(f"bundle image must be pinned by GHCR digest: {bundle_image}")
 
-    channel = (
+    catalog = Catalog(catalog_root)
+    catalog.read_package()
+    channel_name = (
         f"{neteye_version}-stable"
         if neteye_version
         else ("alpha" if "-" in version else "stable")
     )
     bundle_name = f"{PACKAGE_NAME}.{version}"
-    original = catalog_path.read_text(encoding="utf-8")
-    documents = original.rstrip("\n").split("\n---\n")
 
-    package_documents = [
-        document
-        for document in documents
-        if document_field(document, "schema") == "olm.package"
-        and document_field(document, "name") == PACKAGE_NAME
-    ]
-    if len(package_documents) != 1:
-        raise ValueError(f"expected exactly one {PACKAGE_NAME} package document")
-
-    existing_bundles = [
-        document
-        for document in documents
-        if document_field(document, "schema") == "olm.bundle"
-        and document_field(document, "name") == bundle_name
-    ]
-    if existing_bundles:
-        if len(existing_bundles) != 1:
-            raise ValueError(f"multiple bundle documents found for {bundle_name}")
-        existing_image = document_field(existing_bundles[0], "image")
-        if existing_image != bundle_image:
-            raise ValueError(
-                f"{bundle_name} already references {existing_image}; refusing to replace it"
-            )
+    if not bundle_is_new(catalog, version, bundle_image):
         return False
 
-    channel_indexes = [
-        index
-        for index, document in enumerate(documents)
-        if document_field(document, "schema") == "olm.channel"
-        and document_field(document, "package") == PACKAGE_NAME
-        and document_field(document, "name") == channel
-    ]
-    if len(channel_indexes) > 1:
-        raise ValueError(f"expected at most one {PACKAGE_NAME} {channel} channel")
-    if channel_indexes:
-        channel_index = channel_indexes[0]
-        channel_document = documents[channel_index]
-    else:
-        channel_index = len(documents)
-        channel_document = "\n".join(
-            [
-                "schema: olm.channel",
-                f"package: {PACKAGE_NAME}",
-                f"name: {channel}",
-                "entries:",
-            ]
-        )
-        documents.append(channel_document)
+    channel = catalog.read_channel(channel_name) or Channel(channel_name)
+    if any(entry.name == bundle_name for entry in channel.entries):
+        raise ValueError(f"channel {channel_name} already contains {bundle_name}")
+    channel.validate_entry_versions()
 
-    if neteye_version:
-        package_index = next(
-            index
-            for index, document in enumerate(documents)
-            if document_field(document, "schema") == "olm.package"
-            and document_field(document, "name") == PACKAGE_NAME
-        )
-        documents[package_index] = re.sub(
-            r"^defaultChannel: \S+$",
-            f"defaultChannel: {channel}",
-            documents[package_index],
-            flags=re.MULTILINE,
+    head = channel.head()
+    if head is not None and compare_semver(version, head.version) <= 0:
+        raise ValueError(
+            f"release {version} must be newer than {channel_name} channel version "
+            f"{head.version}"
         )
 
-    previous_entries = re.findall(r"^  - name: (\S+)$", channel_document, re.MULTILINE)
-    if bundle_name in previous_entries:
-        raise ValueError(f"channel {channel} already contains {bundle_name}")
-
-    prefix = f"{PACKAGE_NAME}."
-    for entry in previous_entries:
-        if not entry.startswith(prefix):
-            raise ValueError(f"unexpected bundle in {channel} channel: {entry}")
-        entry_version = entry.removeprefix(prefix)
-        if not valid_semver(entry_version):
-            raise ValueError(
-                f"invalid bundle version in {channel} channel: {entry_version}"
-            )
-
-    previous_version = None
-    if previous_entries:
-        if re.search(r"^    skipRange:", channel_document, re.MULTILINE):
-            raise ValueError(
-                f"channel {channel} uses unsupported skipRange entries; "
-                "use explicit replaces or skips edges"
-            )
-        replaced_entries = set(
-            re.findall(r"^    replaces: (\S+)$", channel_document, re.MULTILINE)
-        )
-        skipped_entries = set(
-            re.findall(r"^      - (\S+)$", channel_document, re.MULTILINE)
-        )
-        channel_heads = set(previous_entries) - replaced_entries - skipped_entries
-        if len(channel_heads) != 1:
-            raise ValueError(
-                f"expected exactly one {channel} channel head, found: "
-                f"{', '.join(sorted(channel_heads)) or 'none'}"
-            )
-        previous_entry = channel_heads.pop()
-        previous_version = previous_entry.removeprefix(prefix)
-        if compare_semver(version, previous_version) <= 0:
-            raise ValueError(
-                f"release {version} must be newer than {channel} channel version "
-                f"{previous_version}"
-            )
-
-    entry_lines = [f"  - name: {bundle_name}"]
-    if previous_version is not None:
-        entry_lines.append(f"    replaces: {PACKAGE_NAME}.{previous_version}")
-    documents[channel_index] = f"{channel_document}\n" + "\n".join(entry_lines)
-
-    bundle_document = "\n".join(
-        [
-            "schema: olm.bundle",
-            f"name: {bundle_name}",
-            f"package: {PACKAGE_NAME}",
-            f"image: {bundle_image}",
-            "properties:",
-            "  - type: olm.gvk",
-            "    value:",
-            "      group: operators.coreos.com",
-            "      kind: ClusterServiceVersion",
-            "      version: v1alpha1",
-            "  - type: olm.package",
-            "    value:",
-            f"      packageName: {PACKAGE_NAME}",
-            f"      version: {version}",
-        ]
+    channel.entries.append(
+        Entry(bundle_name, replaces=head.name if head is not None else None)
     )
-    documents.append(bundle_document)
-
-    atomic_write(catalog_path, "\n---\n".join(documents) + "\n")
+    catalog.write_channel(channel)
+    catalog.write_bundle(version, bundle_image)
+    if neteye_version:
+        catalog.set_default_channel(channel_name)
     return True
 
 
@@ -272,7 +384,7 @@ def release_minor(version: str) -> str:
 
 
 def update_catalog_backport(
-    catalog_path: Path, version: str, bundle_image: str
+    catalog_root: Path, version: str, bundle_image: str
 ) -> bool:
     """Add a bugfix release to every channel whose head is on the same minor line."""
     if not valid_semver(version):
@@ -280,105 +392,55 @@ def update_catalog_backport(
     if not BUNDLE_IMAGE_PATTERN.fullmatch(bundle_image):
         raise ValueError(f"bundle image must be pinned by GHCR digest: {bundle_image}")
 
-    prefix = f"{PACKAGE_NAME}."
-    bundle_name = f"{prefix}{version}"
+    catalog = Catalog(catalog_root)
+    bundle_name = f"{PACKAGE_NAME}.{version}"
     minor = release_minor(version)
-    original = catalog_path.read_text(encoding="utf-8")
-    documents = original.rstrip("\n").split("\n---\n")
 
-    existing_bundles = [
-        document
-        for document in documents
-        if document_field(document, "schema") == "olm.bundle"
-        and document_field(document, "name") == bundle_name
-    ]
-    if existing_bundles:
-        if len(existing_bundles) != 1:
-            raise ValueError(f"multiple bundle documents found for {bundle_name}")
-        existing_image = document_field(existing_bundles[0], "image")
-        if existing_image != bundle_image:
-            raise ValueError(
-                f"{bundle_name} already references {existing_image}; refusing to replace it"
-            )
+    if not bundle_is_new(catalog, version, bundle_image):
         return False
 
-    matched_channels: list[tuple[int, str]] = []
-    for index, document in enumerate(documents):
-        if (
-            document_field(document, "schema") != "olm.channel"
-            or document_field(document, "package") != PACKAGE_NAME
-        ):
+    matched: list[Channel] = []
+    for name in catalog.channel_names():
+        channel = catalog.read_channel(name)
+        if channel is None or not channel.entries:
             continue
-        name = document_field(document, "name")
-        entries = re.findall(r"^  - name: (\S+)$", document, re.MULTILINE)
-        if not entries:
+        channel.validate_entry_versions()
+        head = channel.head()
+        if head is None or release_minor(head.version) != minor:
             continue
-        replaced_entries = set(
-            re.findall(r"^    replaces: (\S+)$", document, re.MULTILINE)
-        )
-        skipped_entries = set(re.findall(r"^      - (\S+)$", document, re.MULTILINE))
-        heads = set(entries) - replaced_entries - skipped_entries
-        if len(heads) != 1:
+        if compare_semver(version, head.version) <= 0:
             raise ValueError(
-                f"expected exactly one {name} channel head, found: "
-                f"{', '.join(sorted(heads)) or 'none'}"
+                f"backport {version} must be newer than {name} channel head "
+                f"{head.version}"
             )
-        head = heads.pop()
-        if not head.startswith(prefix):
-            raise ValueError(f"unexpected bundle in {name} channel: {head}")
-        head_version = head.removeprefix(prefix)
-        if not valid_semver(head_version):
-            raise ValueError(
-                f"invalid bundle version in {name} channel: {head_version}"
-            )
-        if release_minor(head_version) != minor:
-            continue
-        if compare_semver(version, head_version) <= 0:
-            raise ValueError(
-                f"backport {version} must be newer than {name} channel head {head_version}"
-            )
-        matched_channels.append((index, head))
+        matched.append(channel)
 
-    if not matched_channels:
+    if not matched:
         raise ValueError(
-            f"no channel currently has a {PACKAGE_NAME} {minor}.x head; nothing to backport"
+            f"no channel currently has a {PACKAGE_NAME} {minor}.x head; "
+            "nothing to backport"
         )
 
-    for index, head in matched_channels:
-        entry_lines = [f"  - name: {bundle_name}", f"    replaces: {head}"]
-        documents[index] = documents[index].rstrip("\n") + "\n" + "\n".join(entry_lines)
-
-    bundle_document = "\n".join(
-        [
-            "schema: olm.bundle",
-            f"name: {bundle_name}",
-            f"package: {PACKAGE_NAME}",
-            f"image: {bundle_image}",
-            "properties:",
-            "  - type: olm.gvk",
-            "    value:",
-            "      group: operators.coreos.com",
-            "      kind: ClusterServiceVersion",
-            "      version: v1alpha1",
-            "  - type: olm.package",
-            "    value:",
-            f"      packageName: {PACKAGE_NAME}",
-            f"      version: {version}",
-        ]
-    )
-    documents.append(bundle_document)
-
-    atomic_write(catalog_path, "\n---\n".join(documents) + "\n")
+    for channel in matched:
+        channel.entries.append(Entry(bundle_name, replaces=channel.head().name))
+        catalog.write_channel(channel)
+    catalog.write_bundle(version, bundle_image)
     return True
 
 
 def update_nightly_channel(
-    catalog_path: Path, bundle_image: str, neteye_version: str
+    catalog_root: Path, bundle_image: str, neteye_version: str
 ) -> bool:
     """Append the newest bundle to the rolling nightly channel.
 
+    The head is the only entry carrying upgrade edges: it replaces the previous
+    head and skips everything before that, so an installation can move to the
+    newest nightly from any older one. Earlier entries are rewritten as plain
+    names, which keeps the channel linear in size instead of repeating the full
+    predecessor list on every entry.
+
     Stable channels only advance when a tagged release is promoted by the
-    build-and-test workflow, never by the nightly build.
+    release workflow, never by the nightly build.
     """
     match = NIGHTLY_IMAGE_PATTERN.fullmatch(bundle_image)
     if not match:
@@ -392,87 +454,26 @@ def update_nightly_channel(
     if not tag_match or not valid_semver(tag_match.group("version")):
         raise ValueError(f"invalid nightly tag: {tag}")
 
-    channel = f"{neteye_version}-nightly"
+    catalog = Catalog(catalog_root)
+    channel_name = f"{neteye_version}-nightly"
     bundle_name = f"{PACKAGE_NAME}.{tag}"
-    original = catalog_path.read_text(encoding="utf-8")
-    documents = original.rstrip("\n").split("\n---\n")
+    channel = catalog.read_channel(channel_name) or Channel(channel_name)
 
-    changed = False
-    channel_indexes = [
-        index
-        for index, document in enumerate(documents)
-        if document_field(document, "schema") == "olm.channel"
-        and document_field(document, "package") == PACKAGE_NAME
-        and document_field(document, "name") == channel
-    ]
-    if len(channel_indexes) > 1:
-        raise ValueError(f"expected at most one {channel} channel document")
+    names = [entry.name for entry in channel.entries if entry.name != bundle_name]
+    names.append(bundle_name)
+    entries = [Entry(name) for name in names]
+    if len(names) >= 2:
+        entries[-1].replaces = names[-2]
+    if len(names) >= 3:
+        entries[-1].skips = names[:-2]
+    rewritten = Channel(channel_name, entries)
 
-    if channel_indexes:
-        channel_index = channel_indexes[0]
-        previous_entries = re.findall(
-            r"^  - name: (\S+)$", documents[channel_index], re.MULTILINE
-        )
-        if previous_entries != [bundle_name]:
-            new_entry_lines = [
-                f"  - name: {bundle_name}",
-                f"    replaces: {previous_entries[-1]}",
-            ]
-            if len(previous_entries) > 1:
-                new_entry_lines.extend(
-                    [
-                        "    skips:",
-                        *[f"      - {entry}" for entry in previous_entries[:-1]],
-                    ]
-                )
-            documents[channel_index] = (
-                documents[channel_index].rstrip("\n")
-                + "\n"
-                + "\n".join(new_entry_lines)
-            )
-            changed = True
-    else:
-        documents.append(
-            "\n".join(
-                [
-                    "schema: olm.channel",
-                    f"package: {PACKAGE_NAME}",
-                    f"name: {channel}",
-                    "entries:",
-                    f"  - name: {bundle_name}",
-                ]
-            )
-        )
-        changed = True
+    changed = rewritten.render() != catalog.channel_text(channel_name)
+    if changed:
+        catalog.write_channel(rewritten)
 
-    existing_bundles = [
-        document
-        for document in documents
-        if document_field(document, "schema") == "olm.bundle"
-        and document_field(document, "name") == bundle_name
-    ]
-    if not existing_bundles:
-        bundle_document = "\n".join(
-            [
-                "schema: olm.bundle",
-                f"name: {bundle_name}",
-                f"package: {PACKAGE_NAME}",
-                f"image: {bundle_image}",
-                "properties:",
-                "  - type: olm.gvk",
-                "    value:",
-                "      group: operators.coreos.com",
-                "      kind: ClusterServiceVersion",
-                "      version: v1alpha1",
-                "  - type: olm.package",
-                "    value:",
-                f"      packageName: {PACKAGE_NAME}",
-                f"      version: {tag}",
-            ]
-        )
-        documents.append(bundle_document)
-
-    atomic_write(catalog_path, "\n---\n".join(documents) + "\n")
+    if catalog.bundle_image(tag) is None:
+        catalog.write_bundle(tag, bundle_image)
     return changed
 
 
@@ -480,7 +481,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Add a release to the NetEye OLM catalog"
     )
-    parser.add_argument("--catalog", required=True, type=Path)
+    parser.add_argument(
+        "--catalog",
+        required=True,
+        type=Path,
+        help="path to the file-based catalog root, e.g. ./catalog/catalog",
+    )
     parser.add_argument("--version")
     parser.add_argument("--bundle-image", required=True)
     parser.add_argument(
