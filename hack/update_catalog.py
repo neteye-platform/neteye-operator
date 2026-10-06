@@ -89,7 +89,7 @@ def atomic_write(path: Path, content: str) -> None:
             temporary_file.write(content)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
-        os.chmod(temporary_path, 0o644 if mode is None else mode)
+        os.chmod(temporary_path, 0o600 if mode is None else mode)
         os.replace(temporary_path, path)
     finally:
         if temporary_path is not None:
