@@ -30,8 +30,8 @@ documentation, licensing, and support, see Würth IT Italy:
 ## Install
 
 The operator is packaged for OLM. To install it, first create a `ClusterCatalog`
-that references the `neteye-operator-catalog:latest` image from the separate
-catalog repository (`neteye-platform/neteye-operator-catalog`), the
+that references the `neteye-catalog:latest` image from the separate
+catalog repository (`neteye-platform/neteye-catalog`), the
 `neteye-operator` `ClusterExtension`, and required namespaces. An example
 `install.yaml` is provided in `examples/` for convenience. Apply it with:
 
@@ -90,14 +90,14 @@ not mutate tracked `config/manifests/`. `verify-generated` regenerates and
 validates the code and bundle output. The bundle remains AllNamespaces-only
 and preserves the validating webhook at `/validate-neteye-cloud-v1alpha1-neteye`.
 Bundle channel membership is defined only by the file-based catalog in the
-separate `neteye-operator-catalog` repository. OLM requires bundle-format
+separate `neteye-catalog` repository. OLM requires bundle-format
 channel metadata, so every bundle declares the `preview` channel metadata.
 This is not a release input and does not assign catalog membership.
 
 ### OLM catalog
 
 The file-based OLM catalog and its catalog image build are maintained in the
-separate `neteye-operator-catalog` repository. This repository builds the
+separate `neteye-catalog` repository. This repository builds the
 operator and its OLM bundle image; release automation publishes that bundle
 before the catalog repository references it. The catalog repository publishes
 its `:latest` image from `main`.
@@ -122,12 +122,12 @@ checked-in version or do not come from an allowed release source.
 After validation, the workflow builds and publishes the operator and bundle
 images with SBOM and provenance attestations. It passes the release version to
 both image builds and records the resulting bundle digest. It then opens a
-version-specific pull request in `neteye-platform/neteye-operator-catalog` that
+version-specific pull request in `neteye-platform/neteye-catalog` that
 references the immutable bundle digest. Rerunning the workflow updates or
 reports the same pull request instead of opening a duplicate.
 
 Cross-repository pull requests use a GitHub App installed on
-`neteye-platform/neteye-operator-catalog` with repository `Contents: Read and
+`neteye-platform/neteye-catalog` with repository `Contents: Read and
 write` and `Pull requests: Read and write`. Configure its App ID as the
 organization variable `NETEYE_APP_ID` and its private key as the organization
 secret `NETEYE_APP_PRIVATE_KEY`, granting this repository access to both. The
@@ -143,7 +143,7 @@ from a fresh trusted `main`; repository rules establish who may trigger that
 workflow and prevent branch-name preemption.
 
 Once the catalog pull request passes validation and is merged, the catalog
-repository publishes `neteye-operator-catalog:latest`. Never move a release tag
+repository publishes `neteye-catalog:latest`. Never move a release tag
 or overwrite an existing catalog release with another digest; publish a new
 SemVer version for corrections.
 
