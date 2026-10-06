@@ -61,6 +61,29 @@ func (v *NetEyeValidator) ValidateCreate(ctx context.Context, obj *NetEye) (admi
 	)
 }
 
+// validateVersionTransition applies the ADR-0003 upgrade rules: a release in
+// the support window stays fully manageable without changing its version, a
+// change is allowed only along a declared forward-upgrade edge, and downgrades
+// are never supported.
+func validateVersionTransition(oldVersion, newVersion string) error {
+	if newVersion == oldVersion {
+		// Keeping the version is not an upgrade request. The release still has
+		// to be one this operator can manage, because the previous release must
+		// remain manageable while a product upgrade waits to start.
+		if IsSupportedVersion(newVersion) {
+			return nil
+		}
+		return fmt.Errorf("NetEye version %s is not supported by this operator; supported versions are %v", newVersion, SupportedVersions())
+	}
+	if IsSupportedUpgrade(oldVersion, newVersion) {
+		return nil
+	}
+	if targets := UpgradeTargets(oldVersion); len(targets) > 0 {
+		return fmt.Errorf("NetEye version cannot change from %s to %s; the supported upgrade targets are %v", oldVersion, newVersion, targets)
+	}
+	return fmt.Errorf("NetEye version cannot change from %s to %s; no upgrade from %s is declared by this operator", oldVersion, newVersion, oldVersion)
+}
+
 // ValidateUpdate validates NetEye version transitions on update.
 func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *NetEye) (admission.Warnings, error) {
 	if err := validateNamespace(newObj); err != nil {
@@ -72,20 +95,10 @@ func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *Ne
 	if err := validateElasticStack(newObj); err != nil {
 		return nil, err
 	}
-	oldVersion := oldObj.Spec.Version
-	newVersion := newObj.Spec.Version
-
-	if oldVersion == CurrentNetEyeVersion && newVersion == CurrentNetEyeVersion {
-		return nil, v.validateSingleAuthority(ctx, newObj)
+	if err := validateVersionTransition(oldObj.Spec.Version, newObj.Spec.Version); err != nil {
+		return nil, invalidVersionError(newObj, err.Error())
 	}
-	if oldVersion == PreviousNetEyeVersion && newVersion == CurrentNetEyeVersion {
-		return nil, v.validateSingleAuthority(ctx, newObj)
-	}
-
-	return nil, invalidVersionError(
-		newObj,
-		fmt.Sprintf("NetEye version can only remain at %s or upgrade from %s to %s", CurrentNetEyeVersion, PreviousNetEyeVersion, CurrentNetEyeVersion),
-	)
+	return nil, v.validateSingleAuthority(ctx, newObj)
 }
 
 func validateIdentity(neteye *NetEye) error {

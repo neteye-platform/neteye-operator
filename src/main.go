@@ -81,6 +81,15 @@ func main() {
 	}
 	setupLog.Info("requeue intervals configured", "waitForProgressing", waitForProgressingRequeue, "failure", failureRequeue, "reconciliation", reconciliationRequeue)
 
+	// ADR-0003: the operator must never become ready with invalid embedded
+	// release data, so this is checked before the manager starts rather than
+	// surfacing as a confusing per-component failure later.
+	if err := neteye.ValidateReleaseData(); err != nil {
+		setupLog.Error(err, "embedded NetEye release data is invalid; refusing to start")
+		os.Exit(1)
+	}
+	setupLog.Info("embedded NetEye release data validated", "supportedVersions", neteye.SupportedVersions())
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                        controllers.Scheme,
 		Metrics:                       metricsserver.Options{BindAddress: metricsAddr},
