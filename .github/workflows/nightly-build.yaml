@@ -275,22 +275,26 @@ jobs:
           pr_number="$PR_NUMBER"
           repo="neteye-platform/neteye-catalog"
 
-          # Checks are registered asynchronously after PR creation; gh errors out
-          # instead of waiting when none exist yet, so poll until one appears.
-          for attempt in $(seq 1 10); do
-            output="$(gh pr checks "$pr_number" --repo "$repo" 2>&1)" || true
-            if [[ "$output" != *"no checks reported"* ]]; then
-              break
-            fi
-            if [[ "$attempt" -eq 10 ]]; then
-              echo "$output" >&2
+          # Checks are registered asynchronously after PR creation, and the
+          # Actions queue has taken up to ~3 minutes to do it, so allow a
+          # generous deadline rather than a fixed 10 attempts.
+          #
+          # Wait for the *required* contexts specifically. Breaking as soon as
+          # any check exists can hand the pull request to --watch before the
+          # required workflows have registered; --watch would then see only
+          # green third-party checks and --admin would merge it untested.
+          deadline=$((SECONDS + 900))
+          until [[ "$(gh pr checks "$pr_number" --repo "$repo" --required --json name --jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; do
+            if ((SECONDS >= deadline)); then
+              echo "::error::no required checks reported for PR #$pr_number within 15 minutes"
+              gh pr checks "$pr_number" --repo "$repo" >&2 || true
               exit 1
             fi
-            echo "No checks reported yet for PR #$pr_number (attempt $attempt/10); retrying in 15s..."
+            echo "No required checks reported yet for PR #$pr_number (${SECONDS}s elapsed); retrying in 15s..."
             sleep 15
           done
 
-          gh pr checks "$pr_number" --repo "$repo" --watch --interval 30 --fail-fast
+          gh pr checks "$pr_number" --repo "$repo" --required --watch --interval 30 --fail-fast
           # --admin bypasses the base branch protection merge restriction; the
           # automation is a configured bypass actor, checks above already gate the merge.
           gh pr merge "$pr_number" --repo "$repo" --squash --delete-branch --admin
