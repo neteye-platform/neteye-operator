@@ -78,7 +78,6 @@ jobs:
             echo "error: no previous stable release tag found" >&2
             exit 1
           fi
-          previous_version="${last_tag#v}"
           echo "tag=$last_tag" >> "$GITHUB_OUTPUT"
 
       - name: Prepare and merge NetEye support PR
