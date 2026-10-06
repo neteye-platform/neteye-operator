@@ -309,7 +309,7 @@ jobs:
         run: |
           python3 -m pip install --disable-pip-version-check -r hack/requirements.txt
           ./hack/update_catalog.py \
-            --catalog ./catalog/catalog/index.yaml \
+            --catalog ./catalog/catalog \
             --version "$VERSION" \
             --neteye-version "$NETEYE_VERSION" \
             --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle@$BUNDLE_DIGEST"
@@ -318,18 +318,20 @@ jobs:
         id: catalog-changes
         working-directory: catalog
         run: |
-          if git diff --quiet; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           mapfile -t changed_files < <(
             git status --porcelain=v1 --untracked-files=all | cut -c4-
           )
-          if [[ ${#changed_files[@]} -ne 1 || ${changed_files[0]} != "catalog/index.yaml" ]]; then
-            echo "error: catalog update modified unexpected files" >&2
-            printf '  %s\n' "${changed_files[@]}" >&2
-            exit 1
+          if [[ ${#changed_files[@]} -eq 0 ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          for changed_file in "${changed_files[@]}"; do
+            if [[ $changed_file != catalog/* ]]; then
+              echo "error: catalog update modified unexpected files" >&2
+              printf '  %s\n' "${changed_files[@]}" >&2
+              exit 1
+            fi
+          done
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Validate catalog
@@ -358,7 +360,7 @@ jobs:
         with:
           token: ${{ steps.catalog-write-token.outputs.token }}
           path: catalog
-          add-paths: catalog/index.yaml
+          add-paths: catalog
           sign-commits: true
           commit-message: >-
             feat: add v${{ steps.input.outputs.version != '' &&
