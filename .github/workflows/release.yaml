@@ -78,6 +78,7 @@ jobs:
             echo "error: no previous stable release tag found" >&2
             exit 1
           fi
+          previous_version="${last_tag#v}"
           echo "tag=$last_tag" >> "$GITHUB_OUTPUT"
 
       - name: Prepare and merge NetEye support PR
@@ -405,3 +406,17 @@ jobs:
           # --admin bypasses the base branch protection merge restriction; checks
           # above already gate the merge.
           gh pr merge "$pr_number" --repo "$repo" --squash --delete-branch --admin
+
+      - name: Publish GitHub release
+        if: ${{ steps.catalog-changes.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
+          BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
+        run: |
+          gh release create "v$VERSION" --repo "$REPOSITORY" \
+            --verify-tag \
+            --title "v$VERSION" \
+            --generate-notes \
+            --notes-start-tag "$BASELINE_TAG"
