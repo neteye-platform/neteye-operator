@@ -29,6 +29,10 @@ spec:
     additionalOptions:
       - name: spi-connections-http-client--default--connection-pool-size
         value: "20"
+    # Extra Keycloak features to enable. The telemetry features stay
+    # operator-managed and are enabled through identity.telemetry.
+    enabledFeatures:
+      - token-exchange
     dbConnection:
       host: mariadb.example.com
       port: 3306

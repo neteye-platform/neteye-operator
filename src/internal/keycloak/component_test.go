@@ -74,13 +74,13 @@ func TestKeycloakEnv(t *testing.T) {
 
 func TestKeycloakAdditionalOptions(t *testing.T) {
 	got := keycloakAdditionalOptions([]neteye.NetEyeKeycloakOption{
-		{Name: "spi-cache-embedded--default--cluster-name", Value: "custom-cluster"},
+		{Name: "cache-embedded-cluster-name", Value: "custom-cluster"},
 		{Name: "proxy-headers", Value: "forwarded"},
 		{Name: "spi-connections-http-client--default--connection-pool-size", Value: "20"},
 	}, nil)
 	want := []any{
 		map[string]any{"name": "http-relative-path", "value": HTTPRelativePath},
-		map[string]any{"name": "spi-cache-embedded--default--cluster-name", "value": InfinispanClusterName},
+		map[string]any{"name": "cache-embedded-cluster-name", "value": InfinispanClusterName},
 		map[string]any{"name": "spi-connections-http-client--default--connection-pool-size", "value": "20"},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -254,6 +254,46 @@ func TestKeycloakInstanceSpecTelemetrySignals(t *testing.T) {
 			}
 			if spec["startOptimized"] != false {
 				t.Errorf("startOptimized = %#v, want false", spec["startOptimized"])
+			}
+		})
+	}
+}
+
+func TestKeycloakInstanceSpecEnabledFeatures(t *testing.T) {
+	tests := []struct {
+		name      string
+		features  []string
+		telemetry *neteye.NetEyeIdentityTelemetrySpec
+		want      []any
+	}{
+		{name: "none"},
+		{name: "spec features", features: []string{"token-exchange", "admin-fine-grained-authz:v2"}, want: []any{"token-exchange", "admin-fine-grained-authz:v2"}},
+		{
+			name:      "merged with telemetry",
+			features:  []string{"token-exchange"},
+			telemetry: &neteye.NetEyeIdentityTelemetrySpec{LogsEnabled: true},
+			want:      []any{"opentelemetry-logs", "token-exchange"},
+		},
+		{
+			name:      "managed features are dropped",
+			features:  []string{"opentelemetry-logs", "opentelemetry-metrics", "token-exchange"},
+			telemetry: &neteye.NetEyeIdentityTelemetrySpec{LogsEnabled: true},
+			want:      []any{"opentelemetry-logs", "token-exchange"},
+		},
+		{name: "duplicates collapse", features: []string{"token-exchange", "token-exchange"}, want: []any{"token-exchange"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", EnabledFeatures: tt.features, Telemetry: tt.telemetry})
+			got, found := spec["features"]
+			if len(tt.want) == 0 {
+				if found {
+					t.Fatalf("features = %#v, want omitted", got)
+				}
+				return
+			}
+			if !found || !reflect.DeepEqual(got, map[string]any{"enabled": tt.want}) {
+				t.Errorf("features = %#v, found=%t, want %#v", got, found, map[string]any{"enabled": tt.want})
 			}
 		})
 	}

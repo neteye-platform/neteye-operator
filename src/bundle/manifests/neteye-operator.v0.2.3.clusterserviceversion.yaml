@@ -4,7 +4,7 @@ metadata:
   annotations:
     alm-examples: '[{"apiVersion":"neteye.cloud/v1alpha1","kind":"NetEye","metadata":{"name":"neteye-sample"},"spec":{"version":"4.51","gateway":{"name":"neteye","className":"cilium"},"internalCertificateIssuerRef":"neteye-internal-issuer","identity":{"hostname":"keycloak.example.com","dbConnection":{"host":"mariadb.example.com","dbName":"keycloak","usernameSecret":{"name":"keycloak-db-secret","key":"username"},"passwordSecret":{"name":"keycloak-db-secret","key":"password"}}},"elasticStack":{"enabled":true,"elasticsearchEndpoints":["https://192.0.2.10:9200"],"telemetry":{"otelCollector":{},"edotGateway":{}}}}}]'
     capabilities: Basic Install
-  name: neteye-operator.v0.2.1
+  name: neteye-operator.v0.2.3
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -377,14 +377,14 @@ spec:
               containers:
               - env:
                 - name: RELATED_IMAGE_KEYCLOAK
-                  value: ghcr.io/neteye-platform/neteye-keycloak:1.0.5@sha256:1ca9daaa85414c135259c15042462899ec5d804c93cdf16bd94ccb51de2e0c66
+                  value: ghcr.io/neteye-platform/neteye-keycloak:1.0.6@sha256:e58681c26f89d305d87a38ce20b81bfb8dfd47fc5d6068ebec2a609bf89c3ce2
                 - name: RELATED_IMAGE_OTEL_COLLECTOR
                   value: docker.io/otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1
                 - name: RELATED_IMAGE_EDOT_GATEWAY
                   value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.4@sha256:0597fe7cad118fcaee15a8691088eff7b60fdd1501bd84fc91b90066d79c9afd
                 - name: RELATED_IMAGE_CA_BUNDLE
                   value: docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-                image: ghcr.io/neteye-platform/neteye-operator:0.2.1
+                image: ghcr.io/neteye-platform/neteye-operator:0.2.3
                 imagePullPolicy: Always
                 name: manager
                 ports:
@@ -466,7 +466,7 @@ spec:
     name: Wuerth IT | Italy
     url: https://your.domain
   relatedImages:
-  - image: ghcr.io/neteye-platform/neteye-keycloak:1.0.5@sha256:1ca9daaa85414c135259c15042462899ec5d804c93cdf16bd94ccb51de2e0c66
+  - image: ghcr.io/neteye-platform/neteye-keycloak:1.0.6@sha256:e58681c26f89d305d87a38ce20b81bfb8dfd47fc5d6068ebec2a609bf89c3ce2
     name: neteye-keycloak
   - image: docker.io/otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1
     name: neteye-otel-collector
@@ -474,7 +474,7 @@ spec:
     name: neteye-edot-gateway
   - image: docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
     name: neteye-ca-bundle
-  version: 0.2.1
+  version: 0.2.3
   webhookdefinitions:
   - admissionReviewVersions:
     - v1
