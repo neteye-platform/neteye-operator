@@ -5,9 +5,11 @@ package controllers
 
 import (
 	"context"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -892,4 +894,101 @@ func gatewayListenerByName(t *testing.T, listeners []any, name string) map[strin
 	}
 	t.Fatalf("gateway listener %q not found", name)
 	return nil
+}
+
+// TestStatusContractAgainstAPIServer drives a real reconcile against a real API
+// server and reads the status back. Only this test can prove the published
+// schema is actually storable and servable; the readiness logic itself is
+// covered by the unit tests in status_test.go.
+//
+// Identity cannot reach Ready here because envtest has no Keycloak Admin API,
+// which makes this the natural place to verify the opposite guarantee: a
+// partially applied release must not be reported as achieved.
+func TestStatusContractAgainstAPIServer(t *testing.T) {
+	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, nil)
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}); err != nil {
+		t.Fatalf("reconcile ready platform: %v", err)
+	}
+
+	stored := &neteye.NetEye{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), stored); err != nil {
+		t.Fatalf("get NetEye: %v", err)
+	}
+
+	// Conditions survive the round trip with the fields consumers branch on.
+	for _, conditionType := range []string{neteye.ConditionReady, neteye.ConditionProgressing, neteye.ConditionDegraded, neteye.ConditionUpgradeAvailable} {
+		condition := apimeta.FindStatusCondition(stored.Status.Conditions, conditionType)
+		if condition == nil {
+			t.Errorf("condition %q is missing; conditions = %+v", conditionType, stored.Status.Conditions)
+			continue
+		}
+		if condition.Reason == "" {
+			t.Errorf("condition %q has no machine-readable reason", conditionType)
+		}
+		if condition.ObservedGeneration != stored.Generation {
+			t.Errorf("condition %q observedGeneration = %d, want %d", conditionType, condition.ObservedGeneration, stored.Generation)
+		}
+		if condition.LastTransitionTime.IsZero() {
+			t.Errorf("condition %q has no lastTransitionTime", conditionType)
+		}
+	}
+
+	// Identity is still converging, so the installation is not ready and the
+	// release must not be recorded as achieved.
+	if apimeta.IsStatusConditionTrue(stored.Status.Conditions, neteye.ConditionReady) {
+		t.Error("Ready is True while identity is still converging")
+	}
+	if !apimeta.IsStatusConditionTrue(stored.Status.Conditions, neteye.ConditionProgressing) {
+		t.Error("Progressing is not True while identity is still converging")
+	}
+	if stored.Status.CurrentVersion != "" {
+		t.Errorf("currentVersion = %q, want it unset until every component is ready", stored.Status.CurrentVersion)
+	}
+	// The current release has no newer target, so no upgrade is offered.
+	if apimeta.IsStatusConditionTrue(stored.Status.Conditions, neteye.ConditionUpgradeAvailable) {
+		t.Error("UpgradeAvailable is True on the latest supported release")
+	}
+
+	// The dynamic component map round-trips, including disabled components, so
+	// a consumer sees every component the operator knows about.
+	wantStates := map[componentID]neteye.ComponentState{
+		identityComponentID:      neteye.ComponentStateProgressing,
+		otelCollectorComponentID: neteye.ComponentStateDisabled,
+		edotGatewayComponentID:   neteye.ComponentStateDisabled,
+	}
+	for id, want := range wantStates {
+		entry, present := stored.Status.Components[string(id)]
+		if !present {
+			t.Errorf("component map is missing %q; components = %+v", id, stored.Status.Components)
+			continue
+		}
+		if entry.Status != want {
+			t.Errorf("%s status = %q, want %q", id, entry.Status, want)
+		}
+		if entry.Reason == "" {
+			t.Errorf("%s has no machine-readable reason", id)
+		}
+		if entry.ObservedGeneration != stored.Generation {
+			t.Errorf("%s observedGeneration = %d, want %d", id, entry.ObservedGeneration, stored.Generation)
+		}
+	}
+
+	// resolvedImages are reported while progressing too, as the target set.
+	identity := stored.Status.Components[string(identityComponentID)]
+	if len(identity.ResolvedImages) != 1 || identity.ResolvedImages[0].Name != "server" {
+		t.Fatalf("identity resolvedImages = %+v, want one entry named server", identity.ResolvedImages)
+	}
+	if !strings.Contains(identity.ResolvedImages[0].Image, "@sha256:") {
+		t.Errorf("identity image %q is not pinned by digest", identity.ResolvedImages[0].Image)
+	}
+
+	// The human summary and the deprecated per-service view are both still
+	// maintained, which is the compatibility promise of this change.
+	if stored.Status.Phase == "" {
+		t.Error("phase is empty, want it kept as the human summary")
+	}
+	//nolint:staticcheck // asserting the deprecated view is still populated is the point.
+	if stored.Status.ServicesStatus.Identity == nil {
+		t.Error("servicesStatus.identity is nil, want the deprecated view still populated")
+	}
 }
