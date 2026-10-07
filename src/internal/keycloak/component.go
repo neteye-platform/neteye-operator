@@ -7,6 +7,7 @@ package keycloak
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -46,7 +47,6 @@ const (
 	InfinispanClusterName = keycloakconfig.InfinispanClusterName
 	HTTPPort              = int64(8080)
 	HTTPRelativePath      = keycloakconfig.HTTPRelativePath
-	KubeSystemNamespace   = "kube-system"
 	// OperatorSystemNamespace runs the NetEye operator itself, which reaches the
 	// Keycloak Admin API in-cluster to reconcile KeycloakClient resources.
 	OperatorSystemNamespace = "neteye-system"
@@ -179,7 +179,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, RouteHostname, []string{RouteHostname}, issuerRef, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
 	}
-	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), identityTelemetryEnabled(identity), &owner); err != nil {
+	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak workload network policy: %w", err)
 	}
 	if err := c.EnsureIngressNetworkPolicy(ctx, namespace, &owner); err != nil {
@@ -363,7 +363,7 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 
 func (c *Component) EnsureIngressNetworkPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
 	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
-		GVK:  nativeNetworkPolicyGVK(),
+		GVK:  ciliumNetworkPolicyGVK(),
 		Name: IngressPolicyName, Namespace: namespace,
 		Spec:  keycloakIngressNetworkPolicySpec(),
 		Owner: owner,
@@ -373,26 +373,37 @@ func (c *Component) EnsureIngressNetworkPolicy(ctx context.Context, namespace st
 
 func keycloakIngressNetworkPolicySpec() map[string]any {
 	return map[string]any{
-		"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()},
-		"policyTypes": []any{"Ingress"},
+		"endpointSelector": map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()},
 		"ingress": []any{
+			// Infinispan cluster transport, scoped to Keycloak peers: a bare-metal
+			// instance kept alive during a migration must not share session state.
 			map[string]any{
-				"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}, // TODO: add this field in NE 4.51 "from":  []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
+				"fromEndpoints": []any{map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()}},
+				"toPorts":       []any{ciliumTCPPorts("7800", "57800")},
 			},
 			// The operator calls the Keycloak Admin API to reconcile KeycloakClient
 			// resources, so it needs its own way in through the default deny.
 			map[string]any{
-				"from":  []any{namespaceSelector(OperatorSystemNamespace)},
-				"ports": []any{networkPort(int32(HTTPPort), "TCP")},
+				"fromEndpoints": []any{ciliumNamespaceSelector(OperatorSystemNamespace)},
+				"toPorts":       []any{ciliumTCPPorts(strconv.FormatInt(HTTPPort, 10))},
 			},
 		},
 	}
 }
 
-func namespaceSelector(namespace string) map[string]any {
-	return map[string]any{
-		"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": namespace}},
+// ciliumNamespaceSelector matches every endpoint in a namespace.
+func ciliumNamespaceSelector(namespace string) map[string]any {
+	return map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": namespace}}
+}
+
+// ciliumTCPPorts builds a toPorts entry. CiliumNetworkPolicy ports are strings,
+// unlike the integers a native NetworkPolicy takes.
+func ciliumTCPPorts(ports ...string) map[string]any {
+	entries := make([]any, 0, len(ports))
+	for _, port := range ports {
+		entries = append(entries, map[string]any{"port": port, "protocol": "TCP"})
 	}
+	return map[string]any{"ports": entries}
 }
 
 func (c *Component) EnsureHostManagementPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
@@ -411,41 +422,34 @@ func keycloakHostManagementPolicySpec() map[string]any {
 		"ingress": []any{
 			map[string]any{
 				"fromEntities": []any{"ingress"},
-				"toPorts":      []any{map[string]any{"ports": []any{map[string]any{"port": "8080", "protocol": "TCP"}}}},
+				"toPorts":      []any{ciliumTCPPorts(strconv.FormatInt(HTTPPort, 10))},
 			},
 			map[string]any{
 				"fromEntities": []any{"host", "remote-node"},
-				"toPorts":      []any{map[string]any{"ports": []any{map[string]any{"port": "9000", "protocol": "TCP"}}}},
+				"toPorts":      []any{ciliumTCPPorts("9000")},
 			},
 		},
 	}
 }
 
-// EnsureWorkloadNetworkPolicy creates the Keycloak egress policy.
-func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, databasePort int32, telemetryEnabled bool, owner *metav1.OwnerReference) error {
+// EnsureWorkloadNetworkPolicy reconciles the Keycloak egress policy.
+func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
 	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
-		GVK:  nativeNetworkPolicyGVK(),
+		GVK:  ciliumNetworkPolicyGVK(),
 		Name: EgressPolicyName, Namespace: namespace, Owner: owner,
-		Spec: keycloakEgressNetworkPolicySpec(databasePort, telemetryEnabled),
+		Spec: keycloakEgressNetworkPolicySpec(),
 	})
 	return err
 }
 
-func keycloakEgressNetworkPolicySpec(databasePort int32, telemetryEnabled bool) map[string]any {
-	egress := []any{
-		// Standard NetworkPolicy cannot select an external database by DNS name.
-		// Restrict the interim rule to the configured database TCP port only.
-		map[string]any{"ports": []any{networkPort(databasePort, "TCP")}},
-		map[string]any{"to": []any{namespaceAndPodSelector(KubeSystemNamespace, map[string]any{"k8s-app": "kube-dns"})}, "ports": []any{networkPort(53, "TCP"), networkPort(53, "UDP")}},
-		map[string]any{"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}}, // TODO: add this field in NE 4.51 "to": []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
-	}
-	if telemetryEnabled {
-		egress = append(egress, map[string]any{"to": []any{namespaceAndPodSelector(WorkloadNamespace, map[string]any{"app": "otel-edot-gateway"})}, "ports": []any{networkPort(4317, "TCP")}})
-	}
+// keycloakEgressNetworkPolicySpec allows every egress destination. Upstream
+// identity providers (OIDC, SAML, LDAP federation) are configured in the Keycloak
+// admin console, so the operator never learns their endpoints, and a provider may
+// sit outside the cluster, on the node subnet, or in the cluster itself.
+func keycloakEgressNetworkPolicySpec() map[string]any {
 	return map[string]any{
-		"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()},
-		"policyTypes": []any{"Egress"},
-		"egress":      egress,
+		"endpointSelector": map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()},
+		"egress":           []any{map[string]any{"toEntities": []any{"all"}}},
 	}
 }
 
@@ -500,30 +504,11 @@ func keycloakTelemetryResourceAttributes(attributes map[string]string) map[strin
 	return merged
 }
 
-func networkPort(port int32, protocol string) map[string]any {
-	return map[string]any{"protocol": protocol, "port": int64(port)}
-}
-
-func keycloakWorkloadLabels() map[string]any {
-	return map[string]any{
-		"app":                          "keycloak",
-		"app.kubernetes.io/instance":   InstanceName,
-		"app.kubernetes.io/managed-by": "keycloak-operator",
-	}
-}
-
 func keycloakCiliumWorkloadLabels() map[string]any {
 	return map[string]any{
 		"k8s:app":                          "keycloak",
 		"k8s:app.kubernetes.io/instance":   InstanceName,
 		"k8s:app.kubernetes.io/managed-by": "keycloak-operator",
-	}
-}
-
-func namespaceAndPodSelector(namespace string, podLabels map[string]any) map[string]any {
-	return map[string]any{
-		"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": namespace}},
-		"podSelector":       map[string]any{"matchLabels": podLabels},
 	}
 }
 
@@ -594,10 +579,6 @@ func clusterExtensionGVK() schema.GroupVersionKind {
 		Version: "v1",
 		Kind:    "ClusterExtension",
 	}
-}
-
-func nativeNetworkPolicyGVK() schema.GroupVersionKind {
-	return schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"}
 }
 
 func ciliumNetworkPolicyGVK() schema.GroupVersionKind {
