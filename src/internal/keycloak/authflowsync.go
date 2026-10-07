@@ -62,7 +62,18 @@ func toRuntimeSpecL3(spec *neteye.KeycloakAuthFlowExecutionSpecL3) *flowSpec {
 	}
 	execs := make([]flowExecution, len(spec.Executions))
 	for i, e := range spec.Executions {
-		// Level 3 is the deepest allowed level: its executions are leaves and
+		execs[i] = flowExecution{Alias: e.Alias, Requirement: e.Requirement, Authenticator: e.Authenticator, Config: e.Config, Flow: toRuntimeSpecL4(e.Flow)}
+	}
+	return &flowSpec{Alias: spec.Alias, Provider: spec.Provider, Executions: execs}
+}
+
+func toRuntimeSpecL4(spec *neteye.KeycloakAuthFlowExecutionSpecL4) *flowSpec {
+	if spec == nil {
+		return nil
+	}
+	execs := make([]flowExecution, len(spec.Executions))
+	for i, e := range spec.Executions {
+		// Level 4 is the deepest allowed level: its executions are leaves and
 		// never carry a further nested Flow.
 		execs[i] = flowExecution{Alias: e.Alias, Requirement: e.Requirement, Authenticator: e.Authenticator, Config: e.Config}
 	}

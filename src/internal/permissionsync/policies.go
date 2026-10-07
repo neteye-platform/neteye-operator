@@ -8,22 +8,20 @@ import (
 	"strconv"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
-
-	"github.com/neteye-platform/neteye-operator/internal/keycloakconfig"
 )
 
 var ciliumPolicyGVK = schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}
 
-// ingressPolicy admits the only two callers the component has: the identity
-// service, whose login-sync authenticator posts the synchronization request,
-// and the node, which runs the liveness and readiness probes. Everything else
-// stays refused by the namespace-wide default-deny baseline.
-func ingressPolicy(namespace string) map[string]any {
+// ingressPolicy admits the only two ways in: the shared Gateway, through which
+// the identity service's login-sync authenticator posts over TLS, and the
+// node, which runs the liveness and readiness probes. Everything else stays
+// refused by the namespace-wide default-deny baseline.
+func ingressPolicy() map[string]any {
 	port := strconv.Itoa(int(ListenerPort))
 	return map[string]any{
 		"endpointSelector": labelsFor(appLabel),
 		"ingress": []any{
-			map[string]any{"fromEndpoints": []any{keycloakEndpoint(namespace)}, "toPorts": []any{tcpPorts(port)}},
+			map[string]any{"fromEntities": []any{"ingress"}, "toPorts": []any{tcpPorts(port)}},
 			map[string]any{"fromEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts(port)}},
 		},
 	}
@@ -61,17 +59,6 @@ func hostCIDR(ip net.IP) string {
 
 func labelsFor(app string) map[string]any {
 	return map[string]any{"matchLabels": map[string]any{"k8s:app": app}}
-}
-
-// keycloakEndpoint selects the Keycloak pods in the shared namespace by the
-// labels the Keycloak Operator gives them.
-func keycloakEndpoint(namespace string) map[string]any {
-	return map[string]any{"matchLabels": map[string]any{
-		"k8s:app":                          "keycloak",
-		"k8s:app.kubernetes.io/instance":   keycloakconfig.InstanceName,
-		"k8s:app.kubernetes.io/managed-by": "keycloak-operator",
-		"k8s:io.kubernetes.pod.namespace":  namespace,
-	}}
 }
 
 func tcpPorts(ports ...string) map[string]any {

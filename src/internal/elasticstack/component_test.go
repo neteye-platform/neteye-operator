@@ -375,28 +375,28 @@ func TestRouteReadyUsesMatchingParentStatus(t *testing.T) {
 	if err := resources.EnsureGRPCRoute(context.Background(), c, namespace, GRPCRouteName, namespace, "gateway", GRPCListenerName, GRPCRouteHostname, ServiceName, 4317, &owner); err != nil {
 		t.Fatal(err)
 	}
-	expected := expectedParent{group: "gateway.networking.k8s.io", kind: "Gateway", namespace: namespace, name: "gateway", section: GRPCListenerName}
-	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
+	expected := resources.RouteParent{Group: "gateway.networking.k8s.io", Kind: "Gateway", Namespace: namespace, Name: "gateway", Section: GRPCListenerName}
+	if ready, _, err := resources.IsRouteReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
 		t.Fatalf("no parents ready=%t err=%v", ready, err)
 	}
 	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "other", true, true, 0)
-	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
+	if ready, _, err := resources.IsRouteReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
 		t.Fatalf("unrelated parent ready=%t err=%v", ready, err)
 	}
 	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", false, true, 0)
-	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
+	if ready, _, err := resources.IsRouteReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
 		t.Fatalf("rejected parent ready=%t err=%v", ready, err)
 	}
 	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, false, 0)
-	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
+	if ready, _, err := resources.IsRouteReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
 		t.Fatalf("unresolved parent ready=%t err=%v", ready, err)
 	}
 	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, -1)
-	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
+	if ready, _, err := resources.IsRouteReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || ready {
 		t.Fatalf("stale parent ready=%t err=%v", ready, err)
 	}
 	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, 0)
-	if ready, _, err := routeReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || !ready {
+	if ready, _, err := resources.IsRouteReady(context.Background(), c, namespace, GRPCRouteName, "GRPCRoute", expected); err != nil || !ready {
 		t.Fatalf("accepted parent ready=%t err=%v", ready, err)
 	}
 }

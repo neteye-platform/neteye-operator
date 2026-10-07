@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -27,6 +29,7 @@ type fakeKeycloak struct {
 	realmScopes   map[string]string         // scope name -> scope id
 	createdScopes []representation          // client scopes created through the API
 	scopeReps     map[string]representation // scope id -> full representation
+	flows         map[string]string         // top-level flow alias -> flow id
 	clientRoles   map[string][]string       // client UUID -> role names it defines
 	accountRoles  map[string][]string       // "userID/clientUUID" -> assigned role names
 	tokenIssued   int
@@ -43,6 +46,7 @@ func newFakeKeycloak(realm string, realmScopes ...string) *fakeKeycloak {
 		clientRoles:  map[string][]string{},
 		accountRoles: map[string][]string{},
 		scopeReps:    map[string]representation{},
+		flows:        map[string]string{},
 	}
 	for _, name := range realmScopes {
 		// A scope the realm lists is always readable in a real Keycloak, so the
@@ -125,8 +129,32 @@ func (f *fakeKeycloak) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if uuid, client := f.clientByClientID(clientID); client != nil {
 				found = append(found, withID(client, uuid))
 			}
+			writeJSON(w, found)
+			return
+		}
+		// The unfiltered listing pages like Keycloak's, so a client that stops
+		// after the first page is caught.
+		uuids := make([]string, 0, len(f.clients))
+		for uuid := range f.clients {
+			uuids = append(uuids, uuid)
+		}
+		sort.Strings(uuids)
+		first, _ := strconv.Atoi(r.URL.Query().Get("first"))
+		limit, err := strconv.Atoi(r.URL.Query().Get("max"))
+		if err != nil {
+			limit = len(uuids)
+		}
+		for i := first; i < len(uuids) && i < first+limit; i++ {
+			found = append(found, withID(f.clients[uuids[i]], uuids[i]))
 		}
 		writeJSON(w, found)
+
+	case segments[0] == "authentication" && len(segments) == 2 && segments[1] == "flows" && r.Method == http.MethodGet:
+		flows := []representation{}
+		for alias, id := range f.flows {
+			flows = append(flows, representation{"alias": alias, "id": id, "topLevel": true})
+		}
+		writeJSON(w, flows)
 
 	case segments[0] == "clients" && len(segments) == 1 && r.Method == http.MethodPost:
 		client := decode(r)

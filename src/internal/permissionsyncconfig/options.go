@@ -39,7 +39,47 @@ const (
 	// ListenerPort is PermissionSync's single listener port, which both its
 	// own Service and the identity service's egress policy refer to.
 	ListenerPort = int32(8443)
+
+	// ProviderAudience is the audience the NetEye Permission Provider
+	// validates. PermissionSync forwards the caller's own JWT to it, and the
+	// provider validates that token as an independent resource server, so the
+	// token carries this audience next to Audience (PermissionSync ADR-0008).
+	ProviderAudience = "neteye-permission-provider"
+
+	// ProviderAudienceMapperName puts ProviderAudience into the caller's tokens.
+	ProviderAudienceMapperName = "neteye-permission-provider-audience"
+
+	// Hostname is the name PermissionSync is published under on the shared
+	// Gateway, which terminates TLS in front of its plaintext listener.
+	Hostname = "permissionsync.neteyelocal"
+
+	// SyncPath is PermissionSync's synchronization endpoint.
+	SyncPath = "/api/sync-user"
+
+	// CallerClientSecretName holds the login-sync client secret. The operator
+	// generates it once and both Keycloak sides read it: the KeycloakClient,
+	// which sets it on the client, and the login-sync authenticator, which
+	// authenticates with it.
+	CallerClientSecretName = "permissionsync-login-sync-client"
+	// CallerClientSecretKey is the key inside CallerClientSecretName.
+	CallerClientSecretKey = "client-secret"
+
+	// BrowserFlowAlias is the browser flow that runs the login-sync
+	// authenticator after authentication. It is bound only to the Keycloak
+	// clients that are PermissionSync targets.
+	BrowserFlowAlias = "neteye-permissionsync-browser"
+
+	// CallerTimeoutMarginMilliseconds is added to the PermissionSync overall
+	// request deadline to give the login-sync authenticator's own timeout. A
+	// caller must wait longer than the receiver's deadline, or it gives up on
+	// a request PermissionSync would still have answered.
+	CallerTimeoutMarginMilliseconds = int64(5000)
 )
+
+// SyncURL is the URL the login-sync authenticator posts to.
+func SyncURL() string {
+	return "https://" + Hostname + SyncPath
+}
 
 // ScopeName returns the client scope a login client must have in its realm for
 // the login-sync authenticator to treat it as a PermissionSync target. The

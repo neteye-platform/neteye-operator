@@ -21,7 +21,6 @@ import (
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/keycloakconfig"
-	"github.com/neteye-platform/neteye-operator/internal/permissionsyncconfig"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -175,7 +174,7 @@ func clusterExtensionSpec() map[string]any {
 
 // EnsureResources reconciles the identity component resources owned by the Keycloak
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
-func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
+func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, permissionSync neteye.NetEyePermissionSyncSpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
 	ctx = logf.IntoContext(ctx, c.log)
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, RouteHostname, []string{RouteHostname}, issuerRef, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
@@ -189,6 +188,25 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := c.EnsureHostManagementPolicy(ctx, namespace, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak host management policy: %w", err)
 	}
+	// PermissionSync is part of every deployment, so the instance always runs
+	// the login-sync authenticator: its client secret and the CA it trusts
+	// must exist before the instance references them.
+	wiring := loginSyncWiringFor(permissionSync)
+	if err := c.EnsureGatewayEgressPolicy(ctx, namespace, &owner); err != nil {
+		return false, "", fmt.Errorf("ensure keycloak gateway egress policy: %w", err)
+	}
+	if err := c.ensureCallerClientSecret(ctx, namespace, &owner); err != nil {
+		return false, "", err
+	}
+	if wiring.rootCASecretName != "" {
+		trusted, message, err := c.ensureRootCATrust(ctx, namespace, wiring.rootCASecretName, owner)
+		if err != nil {
+			return false, "", err
+		}
+		if !trusted {
+			return false, message, nil
+		}
+	}
 	certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
 	if err != nil {
 		return false, "", fmt.Errorf("check tls certificate readiness: %w", err)
@@ -196,7 +214,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if !certificateReady {
 		return false, certificateMessage, nil
 	}
-	if err := c.EnsureInstance(ctx, namespace, image, identity, &owner); err != nil {
+	if err := c.EnsureInstance(ctx, namespace, image, identity, wiring, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
 
@@ -286,12 +304,12 @@ func (c *Component) IsUserReady(ctx context.Context, namespace, name string) (bo
 	return true, "", nil
 }
 
-func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, owner *metav1.OwnerReference) error {
+func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, wiring loginSyncWiring, owner *metav1.OwnerReference) error {
 	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:       keycloakGVK(),
 		Name:      InstanceName,
 		Namespace: namespace,
-		Spec:      keycloakInstanceSpec(image, identity),
+		Spec:      keycloakInstanceSpec(image, identity, wiring),
 		Owner:     owner,
 	})
 	if err != nil {
@@ -306,7 +324,7 @@ func (c *Component) EnsureInstance(ctx context.Context, namespace, image string,
 	return nil
 }
 
-func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[string]any {
+func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec, wiring loginSyncWiring) map[string]any {
 	database := identity.DBConnection
 	usernameSecret := database.EffectiveUsernameSecret()
 	passwordSecret := database.EffectivePasswordSecret()
@@ -343,7 +361,10 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 		"proxy": map[string]any{
 			"headers": "xforwarded",
 		},
-		"additionalOptions": keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry),
+		"additionalOptions": append(keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry), loginSyncOptions(wiring)...),
+	}
+	if truststores := loginSyncTruststores(wiring); truststores != nil {
+		spec["truststores"] = truststores
 	}
 	if features := keycloakFeatures(identity); len(features) > 0 {
 		spec["features"] = map[string]any{"enabled": features}
@@ -443,11 +464,6 @@ func keycloakEgressNetworkPolicySpec(databasePort int32, telemetryEnabled bool) 
 	if telemetryEnabled {
 		egress = append(egress, map[string]any{"to": []any{namespaceAndPodSelector(WorkloadNamespace, map[string]any{"app": "otel-edot-gateway"})}, "ports": []any{networkPort(4317, "TCP")}})
 	}
-	// The login-sync authenticator posts the synchronization request from
-	// inside Keycloak, so PermissionSync is only reachable for it when this
-	// egress exception exists alongside the namespace-wide default deny. It is
-	// unconditional: the component is part of every NetEye deployment.
-	egress = append(egress, map[string]any{"to": []any{namespaceAndPodSelector(WorkloadNamespace, map[string]any{"app": permissionsyncconfig.WorkloadAppLabel})}, "ports": []any{networkPort(permissionsyncconfig.ListenerPort, "TCP")}})
 	return map[string]any{
 		"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()},
 		"policyTypes": []any{"Egress"},

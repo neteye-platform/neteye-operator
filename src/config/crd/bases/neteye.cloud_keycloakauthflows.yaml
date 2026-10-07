@@ -135,7 +135,7 @@ spec:
                           items:
                             description: |-
                               KeycloakAuthFlowExecutionL2 is KeycloakAuthFlowExecution one level deeper;
-                              its own nested Flow is the last allowed level (KeycloakAuthFlowExecutionL3).
+                              its own nested Flow is a level-3 flow (KeycloakAuthFlowExecutionL3).
                             properties:
                               alias:
                                 description: Alias identifies an authenticator execution
@@ -169,14 +169,17 @@ spec:
                                     minLength: 1
                                     type: string
                                   executions:
-                                    description: |-
-                                      Executions is the ordered, authoritative list of direct child executions.
-                                      These are leaf executions: a flow at this depth cannot nest a further
-                                      subflow.
+                                    description: Executions is the ordered, authoritative
+                                      list of direct child executions.
                                     items:
                                       description: |-
-                                        KeycloakAuthFlowExecutionL3 is a leaf execution at the deepest allowed
-                                        nesting level: it can only be an Authenticator, never a further subflow.
+                                        KeycloakAuthFlowExecutionL3 is one execution in a level-3 flow: either an
+                                        Authenticator or a subflow. Its own nested Flow is the last allowed level
+                                        (KeycloakAuthFlowExecutionL4).
+
+                                        Four levels are what it takes to wrap Keycloak's built-in browser flow,
+                                        conditional second factor included, in a subflow followed by a further
+                                        execution, as the PermissionSync login flow does.
                                       properties:
                                         alias:
                                           description: Alias identifies an authenticator
@@ -185,7 +188,6 @@ spec:
                                         authenticator:
                                           description: Authenticator is the Keycloak
                                             authenticator provider identifier.
-                                          minLength: 1
                                           type: string
                                         config:
                                           description: Config configures this authenticator.
@@ -201,6 +203,75 @@ spec:
                                                 configuration entries.
                                               type: object
                                           type: object
+                                        flow:
+                                          description: Flow declares a nested subflow
+                                            in place of an authenticator.
+                                          properties:
+                                            alias:
+                                              description: Alias is the Keycloak flow
+                                                alias, unique within the realm.
+                                              minLength: 1
+                                              type: string
+                                            executions:
+                                              description: |-
+                                                Executions is the ordered, authoritative list of direct child executions.
+                                                These are leaf executions: a flow at this depth cannot nest a further
+                                                subflow.
+                                              items:
+                                                description: |-
+                                                  KeycloakAuthFlowExecutionL4 is a leaf execution at the deepest allowed
+                                                  nesting level: it can only be an Authenticator, never a further subflow.
+                                                properties:
+                                                  alias:
+                                                    description: Alias identifies
+                                                      an authenticator execution where
+                                                      Keycloak exposes an alias.
+                                                    type: string
+                                                  authenticator:
+                                                    description: Authenticator is
+                                                      the Keycloak authenticator provider
+                                                      identifier.
+                                                    minLength: 1
+                                                    type: string
+                                                  config:
+                                                    description: Config configures
+                                                      this authenticator.
+                                                    properties:
+                                                      alias:
+                                                        description: Alias is the
+                                                          human-readable configuration
+                                                          name in Keycloak.
+                                                        type: string
+                                                      values:
+                                                        additionalProperties:
+                                                          type: string
+                                                        description: Values contains
+                                                          the authenticator configuration
+                                                          entries.
+                                                        type: object
+                                                    type: object
+                                                  requirement:
+                                                    description: Requirement is the
+                                                      Keycloak execution requirement,
+                                                      such as REQUIRED or ALTERNATIVE.
+                                                    enum:
+                                                    - REQUIRED
+                                                    - ALTERNATIVE
+                                                    - CONDITIONAL
+                                                    - DISABLED
+                                                    type: string
+                                                required:
+                                                - authenticator
+                                                type: object
+                                              type: array
+                                            provider:
+                                              default: basic-flow
+                                              description: Provider is the Keycloak
+                                                flow provider identifier.
+                                              type: string
+                                          required:
+                                          - alias
+                                          type: object
                                         requirement:
                                           description: Requirement is the Keycloak
                                             execution requirement, such as REQUIRED
@@ -211,9 +282,15 @@ spec:
                                           - CONDITIONAL
                                           - DISABLED
                                           type: string
-                                      required:
-                                      - authenticator
                                       type: object
+                                      x-kubernetes-validations:
+                                      - message: exactly one of authenticator or flow
+                                          must be set
+                                        rule: (has(self.authenticator) && self.authenticator
+                                          != "") != has(self.flow)
+                                      - message: config requires authenticator
+                                        rule: '!has(self.config) || (has(self.authenticator)
+                                          && self.authenticator != "")'
                                     type: array
                                   provider:
                                     default: basic-flow

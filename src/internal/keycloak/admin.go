@@ -262,6 +262,24 @@ func (a *AdminAPI) CreateClient(ctx context.Context, realm string, client repres
 	return stringValue(created, "id"), nil
 }
 
+// ListClients returns every client of the realm, paging so that no server-side
+// default page size truncates the list.
+func (a *AdminAPI) ListClients(ctx context.Context, realm string) ([]representation, error) {
+	const page = 100
+	all := []representation{}
+	for first := 0; ; first += page {
+		var clients []representation
+		path := fmt.Sprintf("/admin/realms/%s/clients?first=%d&max=%d", url.PathEscape(realm), first, page)
+		if err := a.do(ctx, http.MethodGet, path, nil, &clients); err != nil {
+			return nil, err
+		}
+		all = append(all, clients...)
+		if len(clients) < page {
+			return all, nil
+		}
+	}
+}
+
 // UpdateClient replaces the client representation identified by uuid.
 func (a *AdminAPI) UpdateClient(ctx context.Context, realm, uuid string, client representation) error {
 	path := fmt.Sprintf("/admin/realms/%s/clients/%s", url.PathEscape(realm), url.PathEscape(uuid))

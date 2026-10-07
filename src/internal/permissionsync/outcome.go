@@ -20,6 +20,8 @@ const (
 	ReasonSecretNotFound         = "SecretNotFound"
 	ReasonSecretKeyMissing       = "SecretKeyMissing"
 	ReasonDeploymentNotAvailable = "DeploymentNotAvailable"
+	ReasonCertificateNotReady    = "CertificateNotReady"
+	ReasonRouteNotReady          = "RouteNotReady"
 	ReasonReconcileFailed        = "ReconcileFailed"
 )
 
@@ -44,6 +46,12 @@ func progressingOutcome(reason, message string) Outcome {
 func degradedOutcome(reason, message string, err error) Outcome {
 	if err == nil {
 		err = errors.New(message)
+	}
+	// The message is what the NetEye status shows. An adapter error carries no
+	// message of its own, and an empty status message would leave an operator
+	// to dig the cause out of the operator log.
+	if message == "" {
+		message = err.Error()
 	}
 	return Outcome{Phase: PhaseDegraded, Reason: reason, Message: message, Err: err}
 }

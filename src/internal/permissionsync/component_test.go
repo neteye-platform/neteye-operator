@@ -5,23 +5,29 @@ package permissionsync
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/yaml"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/permissionsyncconfig"
+	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
 const (
@@ -33,7 +39,13 @@ const (
 func TestEnsureRendersTheConfigurationAndHardenedWorkload(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(prerequisites(testNamespace)...).Build()
 
-	outcome := NewComponent(c).Ensure(context.Background(), testNamespace, fullSpec(), testIdentityHostname, testImage, owner())
+	component := NewComponent(c)
+	outcome := component.Ensure(context.Background(), testNamespace, fullSpec(), testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
+	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonCertificateNotReady {
+		t.Fatalf("outcome = %+v, want progressing on the TLS certificate", outcome)
+	}
+	markExposed(t, c)
+	outcome = component.Ensure(context.Background(), testNamespace, fullSpec(), testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
 	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonDeploymentNotAvailable {
 		t.Fatalf("outcome = %+v, want progressing on the workload", outcome)
 	}
@@ -151,8 +163,81 @@ func TestEnsureRendersTheConfigurationAndHardenedWorkload(t *testing.T) {
 		}
 	}
 	ingress := policyRules(t, c, IngressPolicyName, "ingress")
-	if len(ingress) != 2 {
-		t.Fatalf("ingress rules = %v, want the identity service and the node probes", ingress)
+	if len(ingress) != 2 || !reflect.DeepEqual(ingress[0].(map[string]any)["fromEntities"], []any{"ingress"}) {
+		t.Fatalf("ingress rules = %v, want the Gateway and the node probes only", ingress)
+	}
+}
+
+// TestEnsureDoesNotReadTheRenderedSecretBackFromTheCache reproduces the first
+// reconciliation observed on a real cluster: the manager client reads from its
+// cache, which does not yet hold the Secret this pass has just created. The
+// workload must still be applied, and an error must never leave the status
+// message empty.
+func TestEnsureDoesNotReadTheRenderedSecretBackFromTheCache(t *testing.T) {
+	staleCache := interceptor.Funcs{Get: func(ctx context.Context, underlying client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+		if _, isSecret := object.(*corev1.Secret); isSecret && key.Name == ConfigSecretName {
+			return apierrors.NewNotFound(corev1.Resource("secrets"), key.Name)
+		}
+		return underlying.Get(ctx, key, object, options...)
+	}}
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(prerequisites(testNamespace)...).WithInterceptorFuncs(staleCache).Build()
+
+	outcome := NewComponent(c).Ensure(context.Background(), testNamespace, fullSpec(), testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
+	if outcome.Phase == PhaseDegraded {
+		t.Fatalf("outcome = %+v, want the workload applied despite the stale cache", outcome)
+	}
+	deployment := &appsv1.Deployment{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: DeploymentName}, deployment); err != nil {
+		t.Fatalf("the workload was not applied: %v", err)
+	}
+	if deployment.Spec.Template.Annotations[configVersionAnnotation] == "" {
+		t.Error("the rollout annotation must come from the written Secret, not from a cache read")
+	}
+}
+
+func TestDegradedOutcomeAlwaysCarriesAMessage(t *testing.T) {
+	outcome := degradedOutcome(ReasonReconcileFailed, "", errors.New("Secret \"permissionsync-config\" not found"))
+	if outcome.Message == "" {
+		t.Fatal("a degraded outcome without a message leaves the NetEye status empty")
+	}
+}
+
+// TestEnsurePublishesPermissionSyncOnTheGateway checks the TLS exposure the
+// login-sync authenticator needs: it refuses a plaintext endpoint, and the
+// listener PermissionSync serves is plaintext.
+func TestEnsurePublishesPermissionSyncOnTheGateway(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(prerequisites(testNamespace)...).Build()
+	NewComponent(c).Ensure(context.Background(), testNamespace, fullSpec(), testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
+
+	certificate := &unstructured.Unstructured{}
+	certificate.SetGroupVersionKind(schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"})
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: TLSCertificateName}, certificate); err != nil {
+		t.Fatalf("the TLS certificate was not requested: %v", err)
+	}
+	if names, _, _ := unstructured.NestedStringSlice(certificate.Object, "spec", "dnsNames"); !reflect.DeepEqual(names, []string{permissionsyncconfig.Hostname}) {
+		t.Errorf("certificate dnsNames = %v, want %q", names, permissionsyncconfig.Hostname)
+	}
+	if issuer, _, _ := unstructured.NestedString(certificate.Object, "spec", "issuerRef", "name"); issuer != testIssuer().Name {
+		t.Errorf("certificate issuer = %q, want the internal issuer", issuer)
+	}
+
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"})
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: HTTPRouteName}, route); err != nil {
+		t.Fatalf("the route was not created: %v", err)
+	}
+	if hostnames, _, _ := unstructured.NestedStringSlice(route.Object, "spec", "hostnames"); !reflect.DeepEqual(hostnames, []string{permissionsyncconfig.Hostname}) {
+		t.Errorf("route hostnames = %v", hostnames)
+	}
+	parents, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs")
+	if len(parents) != 1 || parents[0].(map[string]any)["sectionName"] != GatewayListenerName {
+		t.Errorf("route parents = %v, want the PermissionSync listener", parents)
+	}
+	rules, _, _ := unstructured.NestedSlice(route.Object, "spec", "rules")
+	backends, _, _ := unstructured.NestedSlice(rules[0].(map[string]any), "backendRefs")
+	backend := backends[0].(map[string]any)
+	if backend["name"] != ServiceName || backend["port"] != int64(ListenerPort) {
+		t.Errorf("route backend = %v, want the Service on the listener port", backend)
 	}
 }
 
@@ -161,15 +246,15 @@ func TestEnsureRollsTheWorkloadWhenTheDocumentChanges(t *testing.T) {
 	component := NewComponent(c)
 	spec := fullSpec()
 
-	component.Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, owner())
+	component.Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
 	first := deploymentAnnotation(t, c)
-	component.Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, owner())
+	component.Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
 	if deploymentAnnotation(t, c) != first {
 		t.Error("an unchanged document must not roll the workload")
 	}
 
 	spec.LogLevel = "trace"
-	component.Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, owner())
+	component.Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
 	if deploymentAnnotation(t, c) == first {
 		t.Error("a changed document must roll the workload")
 	}
@@ -180,7 +265,7 @@ func TestEnsureWithoutATrustAnchorSecretUsesTheSystemRootsOnly(t *testing.T) {
 	spec.RootCASecretName = ptr.To("")
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(glpiCredentials(testNamespace)).Build()
 
-	outcome := NewComponent(c).Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, owner())
+	outcome := NewComponent(c).Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
 	if outcome.Phase == PhaseDegraded {
 		t.Fatalf("outcome = %+v, want the component to accept the system trust store", outcome)
 	}
@@ -218,7 +303,7 @@ func TestEnsureRefusesAnUnusableConfiguration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(test.objects...).Build()
 
-			outcome := NewComponent(c).Ensure(context.Background(), testNamespace, test.spec, test.hostname, test.image, owner())
+			outcome := NewComponent(c).Ensure(context.Background(), testNamespace, test.spec, test.hostname, test.image, testGateway(), testIssuer(), owner())
 			if outcome.Phase != PhaseDegraded || outcome.Reason != test.reason || outcome.Message == "" || outcome.Err == nil {
 				t.Fatalf("outcome = %+v, want degraded with reason %q", outcome, test.reason)
 			}
@@ -238,10 +323,12 @@ func TestEnsureRefusesAnUnusableConfiguration(t *testing.T) {
 func TestEnsureReportsReadyOnceTheWorkloadIsAvailable(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(prerequisites(testNamespace)...).Build()
 	component := NewComponent(c)
-	component.Ensure(context.Background(), testNamespace, fullSpec(), testIdentityHostname, testImage, owner())
+	component.Ensure(context.Background(), testNamespace, fullSpec(), testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
+	markExposed(t, c)
+	component.Ensure(context.Background(), testNamespace, fullSpec(), testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
 	markDeploymentAvailable(t, c)
 
-	outcome := component.Ensure(context.Background(), testNamespace, fullSpec(), testIdentityHostname, testImage, owner())
+	outcome := component.Ensure(context.Background(), testNamespace, fullSpec(), testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
 	if outcome.Phase != PhaseReady || outcome.Reason != ReasonAvailable {
 		t.Fatalf("outcome = %+v, want ready", outcome)
 	}
@@ -302,7 +389,7 @@ func TestConfiguredBoundsReachTheDocument(t *testing.T) {
 	spec.OperationTimeoutMilliseconds = 2500
 
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(prerequisites(testNamespace)...).Build()
-	if outcome := NewComponent(c).Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, owner()); outcome.Phase == PhaseDegraded {
+	if outcome := NewComponent(c).Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, testGateway(), testIssuer(), owner()); outcome.Phase == PhaseDegraded {
 		t.Fatalf("outcome = %+v", outcome)
 	}
 
@@ -377,7 +464,7 @@ func TestValidateBoundsRefusesAnImpossibleCombination(t *testing.T) {
 				t.Fatal("an impossible combination must be refused")
 			}
 			c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(prerequisites(testNamespace)...).Build()
-			outcome := NewComponent(c).Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, owner())
+			outcome := NewComponent(c).Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, testGateway(), testIssuer(), owner())
 			if outcome.Phase != PhaseDegraded || outcome.Reason != ReasonInvalidConfiguration {
 				t.Fatalf("outcome = %+v, want degraded with an invalid configuration", outcome)
 			}
@@ -430,7 +517,7 @@ func TestProviderEndpointDefaultsToTheNetEyeAPI(t *testing.T) {
 	spec.Provider = neteye.NetEyePermissionSyncProviderSpec{}
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(prerequisites(testNamespace)...).Build()
 
-	if outcome := NewComponent(c).Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, owner()); outcome.Phase == PhaseDegraded {
+	if outcome := NewComponent(c).Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, testGateway(), testIssuer(), owner()); outcome.Phase == PhaseDegraded {
 		t.Fatalf("outcome = %+v", outcome)
 	}
 	provider := section(t, section(t, renderedDocument(t, c), "provider"), "generic_rest")
@@ -450,7 +537,7 @@ func TestGLPIEndpointDefaultsToTheNetEyeInstance(t *testing.T) {
 	spec.GLPI.Endpoint = ""
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(prerequisites(testNamespace)...).Build()
 
-	if outcome := NewComponent(c).Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, owner()); outcome.Phase == PhaseDegraded {
+	if outcome := NewComponent(c).Ensure(context.Background(), testNamespace, spec, testIdentityHostname, testImage, testGateway(), testIssuer(), owner()); outcome.Phase == PhaseDegraded {
 		t.Fatalf("outcome = %+v", outcome)
 	}
 	if got := section(t, renderedDocument(t, c), "glpi")["endpoint"]; got != neteye.DefaultPermissionSyncGLPIEndpoint {
@@ -636,4 +723,44 @@ func findVolume(values []corev1.Volume, name string) corev1.Volume {
 		}
 	}
 	return corev1.Volume{}
+}
+
+func testGateway() resources.RouteParent {
+	return resources.RouteParent{Namespace: testNamespace, Name: "neteye"}
+}
+
+func testIssuer() resources.CertificateIssuerRef {
+	return resources.CertificateIssuerRef{Name: "neteye-internal-issuer"}
+}
+
+// markExposed reports the TLS certificate issued and the route accepted by
+// the Gateway listener, which a reconciliation waits for before the workload.
+func markExposed(t *testing.T, c client.Client) {
+	t.Helper()
+	certificate := &unstructured.Unstructured{}
+	certificate.SetGroupVersionKind(schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"})
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: TLSCertificateName}, certificate); err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedSlice(certificate.Object, []any{map[string]any{"type": "Ready", "status": "True"}}, "status", "conditions"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Update(context.Background(), certificate); err != nil {
+		t.Fatal(err)
+	}
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"})
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNamespace, Name: HTTPRouteName}, route); err != nil {
+		t.Fatal(err)
+	}
+	parent := map[string]any{
+		"parentRef":  map[string]any{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": testNamespace, "name": "neteye", "sectionName": GatewayListenerName},
+		"conditions": []any{map[string]any{"type": "Accepted", "status": "True"}, map[string]any{"type": "ResolvedRefs", "status": "True"}},
+	}
+	if err := unstructured.SetNestedSlice(route.Object, []any{parent}, "status", "parents"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Update(context.Background(), route); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -27,6 +27,13 @@ const (
 	// policies, composed with the namespace-wide default-deny baseline.
 	IngressPolicyName = "neteye-permissionsync-ingress"
 	EgressPolicyName  = "neteye-permissionsync-egress"
+	// GatewayListenerName, HTTPRouteName, TLSCertificateName and
+	// TLSSecretName publish PermissionSync on the shared Gateway, which
+	// terminates TLS in front of the plaintext listener.
+	GatewayListenerName = "permissionsync"
+	HTTPRouteName       = "permissionsync"
+	TLSCertificateName  = "permissionsync-tls"
+	TLSSecretName       = "permissionsync-tls-secret"
 
 	appLabel      = permissionsyncconfig.WorkloadAppLabel
 	containerName = "permissionsync"

@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/permissionsyncconfig"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -36,7 +37,7 @@ func NewComponent(c client.Client) *Component {
 // rather than rendering a document without it: PermissionSync accepts an
 // invalid component section by leaving that component unavailable, which would
 // turn a provisioning mistake into silently unreconciled logins.
-func (c *Component) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyePermissionSyncSpec, identityHostname, image string, owner metav1.OwnerReference) Outcome {
+func (c *Component) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyePermissionSyncSpec, identityHostname, image string, gateway resources.RouteParent, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) Outcome {
 	egressTargets, err := validateSpec(spec, identityHostname)
 	if err != nil {
 		return degradedOutcome(ReasonInvalidConfiguration, err.Error(), nil)
@@ -65,10 +66,7 @@ func (c *Component) Ensure(ctx context.Context, namespace string, spec *neteye.N
 	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := resources.EnsureSecret(ctx, c.client, namespace, ConfigSecretName, map[string][]byte{ConfigFileName: rendered}, owner); err != nil {
-		return degradedOutcome(ReasonReconcileFailed, "", err)
-	}
-	version, err := secretResourceVersion(ctx, c.client, namespace, ConfigSecretName)
+	version, err := resources.EnsureSecret(ctx, c.client, namespace, ConfigSecretName, map[string][]byte{ConfigFileName: rendered}, owner)
 	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
@@ -82,6 +80,30 @@ func (c *Component) Ensure(ctx context.Context, namespace string, spec *neteye.N
 	if err := c.ensurePolicies(ctx, namespace, identityHostname, egressTargets, owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
+	// The listener is plaintext, so the shared Gateway terminates TLS in front
+	// of it under its own name: the login-sync authenticator refuses a
+	// plaintext endpoint for the credentials it sends.
+	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, permissionsyncconfig.Hostname, []string{permissionsyncconfig.Hostname}, issuerRef, &owner); err != nil {
+		return degradedOutcome(ReasonReconcileFailed, "", err)
+	}
+	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gateway.Namespace, gateway.Name, GatewayListenerName, []string{permissionsyncconfig.Hostname}, ServiceName, int64(ListenerPort), &owner); err != nil {
+		return degradedOutcome(ReasonReconcileFailed, "", err)
+	}
+	certificateReady, message, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
+	if err != nil {
+		return degradedOutcome(ReasonReconcileFailed, message, err)
+	}
+	if !certificateReady {
+		return progressingOutcome(ReasonCertificateNotReady, message)
+	}
+	gateway.Section = GatewayListenerName
+	routeReady, message, err := resources.IsRouteReady(ctx, c.client, namespace, HTTPRouteName, "HTTPRoute", gateway)
+	if err != nil {
+		return degradedOutcome(ReasonReconcileFailed, message, err)
+	}
+	if !routeReady {
+		return progressingOutcome(ReasonRouteNotReady, message)
+	}
 	ready, message, err := resources.IsDeploymentReady(ctx, c.client, namespace, DeploymentName)
 	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, message, err)
@@ -93,7 +115,7 @@ func (c *Component) Ensure(ctx context.Context, namespace string, spec *neteye.N
 }
 
 func (c *Component) ensurePolicies(ctx context.Context, namespace, identityHostname string, targets []endpointTarget, owner metav1.OwnerReference) error {
-	if _, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: IngressPolicyName, Owner: &owner, Spec: ingressPolicy(namespace)}); err != nil {
+	if _, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: IngressPolicyName, Owner: &owner, Spec: ingressPolicy()}); err != nil {
 		return err
 	}
 	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: EgressPolicyName, Owner: &owner, Spec: egressPolicy(identityHostname, targets)})
@@ -118,12 +140,4 @@ func requiredSecretValue(ctx context.Context, c client.Client, namespace, name, 
 		return "", prerequisiteError{ReasonSecretKeyMissing, fmt.Sprintf("required user-managed Secret %q is missing non-empty key %q in namespace %q", name, key, namespace)}
 	}
 	return string(value), nil
-}
-
-func secretResourceVersion(ctx context.Context, c client.Client, namespace, name string) (string, error) {
-	secret := &corev1.Secret{}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, secret); err != nil {
-		return "", err
-	}
-	return secret.ResourceVersion, nil
 }

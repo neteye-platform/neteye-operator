@@ -131,7 +131,8 @@ cluster.
 
 ### What stays outside this decision
 
-Three things are deliberately not resolved here:
+Three things are deliberately not resolved here. [ADR-0006](0006-login-sync-wiring-and-permissionsync-exposure.md)
+resolves the first two and replaces the unmanaged client secret above.
 
 - Configuring the `login-sync` authenticator itself — its endpoint, service
   account credentials, and token endpoint — and placing its execution in the

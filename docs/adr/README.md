@@ -73,3 +73,4 @@ The following statuses are used:
 | [ADR-0003](0003-neteye-and-operator-version-model.md) | NetEye and Operator Version Model | Product and operator versions, OLM channels, upgrade authorization, and resolved images | Accepted |
 | [ADR-0004](0004-automated-neteye-line-release.md) | Automated Operator Release for New NetEye Lines | Pipeline-dispatched operator release for a new NetEye line, its stable channel, and the maintenance branch | Accepted |
 | [ADR-0005](0005-permissionsync-component-and-caller-provisioning.md) | PermissionSync Component and Caller Provisioning | PermissionSync component lifecycle, its configuration document, and the Keycloak objects its technical caller uses | Accepted |
+| [ADR-0006](0006-login-sync-wiring-and-permissionsync-exposure.md) | Login-Sync Wiring and PermissionSync Exposure | Login-sync authenticator configuration, its client secret and browser flow binding, Gateway TLS exposure of PermissionSync, and Keycloak trust | Proposed |

@@ -36,7 +36,26 @@ var managedOptions = [...]ManagedOption{
 	{Name: "telemetry-logs-protocol"},
 	{Name: "telemetry-metrics-endpoint"},
 	{Name: "telemetry-metrics-protocol"},
+	// The login-sync authenticator's configuration, derived from the
+	// PermissionSync wiring.
+	{Name: LoginSyncServiceEndpointOption},
+	{Name: LoginSyncClientIDOption},
+	{Name: LoginSyncClientSecretOption},
+	{Name: LoginSyncTokenEndpointOption},
+	{Name: LoginSyncHTTPTimeoutOption},
+	{Name: LoginSyncAllowInsecureHTTPOption},
 }
+
+// Keycloak server options of the login-sync authenticator, one SPI property
+// each. The double dash between segments is the Keycloak 26 option form.
+const (
+	LoginSyncServiceEndpointOption   = "spi-authenticator--login-sync--service-endpoint"
+	LoginSyncClientIDOption          = "spi-authenticator--login-sync--sa-client-id"
+	LoginSyncClientSecretOption      = "spi-authenticator--login-sync--sa-client-secret"
+	LoginSyncTokenEndpointOption     = "spi-authenticator--login-sync--sa-token-endpoint"
+	LoginSyncHTTPTimeoutOption       = "spi-authenticator--login-sync--http-timeout-ms"
+	LoginSyncAllowInsecureHTTPOption = "spi-authenticator--login-sync--allow-insecure-http"
+)
 
 // managedFeatures lists the Keycloak features the operator derives from the
 // NetEye spec. They are enabled through their own spec fields, not by name.

@@ -63,7 +63,7 @@ type KeycloakAuthFlowExecutionSpecL2 struct {
 }
 
 // KeycloakAuthFlowExecutionL2 is KeycloakAuthFlowExecution one level deeper;
-// its own nested Flow is the last allowed level (KeycloakAuthFlowExecutionL3).
+// its own nested Flow is a level-3 flow (KeycloakAuthFlowExecutionL3).
 // +kubebuilder:validation:XValidation:rule="(has(self.authenticator) && self.authenticator != \"\") != has(self.flow)",message="exactly one of authenticator or flow must be set"
 // +kubebuilder:validation:XValidation:rule="!has(self.config) || (has(self.authenticator) && self.authenticator != \"\")",message="config requires authenticator"
 type KeycloakAuthFlowExecutionL2 struct {
@@ -86,8 +86,52 @@ type KeycloakAuthFlowExecutionL2 struct {
 }
 
 // KeycloakAuthFlowExecutionSpecL3 declares a Keycloak authentication flow
-// nested two levels below the root flow, the deepest level allowed.
+// nested two levels below the root flow.
 type KeycloakAuthFlowExecutionSpecL3 struct {
+	// Alias is the Keycloak flow alias, unique within the realm.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Alias string `json:"alias"`
+	// Provider is the Keycloak flow provider identifier.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="basic-flow"
+	Provider string `json:"provider,omitempty"`
+	// Executions is the ordered, authoritative list of direct child executions.
+	// +kubebuilder:validation:Optional
+	Executions []KeycloakAuthFlowExecutionL3 `json:"executions,omitempty"`
+}
+
+// KeycloakAuthFlowExecutionL3 is one execution in a level-3 flow: either an
+// Authenticator or a subflow. Its own nested Flow is the last allowed level
+// (KeycloakAuthFlowExecutionL4).
+//
+// Four levels are what it takes to wrap Keycloak's built-in browser flow,
+// conditional second factor included, in a subflow followed by a further
+// execution, as the PermissionSync login flow does.
+// +kubebuilder:validation:XValidation:rule="(has(self.authenticator) && self.authenticator != \"\") != has(self.flow)",message="exactly one of authenticator or flow must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.config) || (has(self.authenticator) && self.authenticator != \"\")",message="config requires authenticator"
+type KeycloakAuthFlowExecutionL3 struct {
+	// Alias identifies an authenticator execution where Keycloak exposes an alias.
+	// +kubebuilder:validation:Optional
+	Alias string `json:"alias,omitempty"`
+	// Requirement is the Keycloak execution requirement, such as REQUIRED or ALTERNATIVE.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=REQUIRED;ALTERNATIVE;CONDITIONAL;DISABLED
+	Requirement string `json:"requirement,omitempty"`
+	// Authenticator is the Keycloak authenticator provider identifier.
+	// +kubebuilder:validation:Optional
+	Authenticator string `json:"authenticator,omitempty"`
+	// Config configures this authenticator.
+	// +kubebuilder:validation:Optional
+	Config *KeycloakAuthFlowConfig `json:"config,omitempty"`
+	// Flow declares a nested subflow in place of an authenticator.
+	// +kubebuilder:validation:Optional
+	Flow *KeycloakAuthFlowExecutionSpecL4 `json:"flow,omitempty"`
+}
+
+// KeycloakAuthFlowExecutionSpecL4 declares a Keycloak authentication flow
+// nested three levels below the root flow, the deepest level allowed.
+type KeycloakAuthFlowExecutionSpecL4 struct {
 	// Alias is the Keycloak flow alias, unique within the realm.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
@@ -100,12 +144,12 @@ type KeycloakAuthFlowExecutionSpecL3 struct {
 	// These are leaf executions: a flow at this depth cannot nest a further
 	// subflow.
 	// +kubebuilder:validation:Optional
-	Executions []KeycloakAuthFlowExecutionL3 `json:"executions,omitempty"`
+	Executions []KeycloakAuthFlowExecutionL4 `json:"executions,omitempty"`
 }
 
-// KeycloakAuthFlowExecutionL3 is a leaf execution at the deepest allowed
+// KeycloakAuthFlowExecutionL4 is a leaf execution at the deepest allowed
 // nesting level: it can only be an Authenticator, never a further subflow.
-type KeycloakAuthFlowExecutionL3 struct {
+type KeycloakAuthFlowExecutionL4 struct {
 	// Alias identifies an authenticator execution where Keycloak exposes an alias.
 	// +kubebuilder:validation:Optional
 	Alias string `json:"alias,omitempty"`

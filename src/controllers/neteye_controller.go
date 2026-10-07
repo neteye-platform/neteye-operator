@@ -264,7 +264,8 @@ func (r *NetEyeReconciler) reconcilePermissionSync(ctx context.Context, ne *nete
 	// it refuses, so it runs first: provisioning client scopes named after an
 	// unvalidated target would write objects into Keycloak that the rest of
 	// this reconciliation then rejects, and the operator never removes them.
-	outcome := r.PermissionSyncComponent.Ensure(ctx, ns, spec, ne.Spec.Identity.Hostname, image, owner)
+	gateway := resources.RouteParent{Namespace: keycloak.WorkloadNamespace, Name: ne.Spec.Gateway.Name}
+	outcome := r.PermissionSyncComponent.Ensure(ctx, ns, spec, ne.Spec.Identity.Hostname, image, gateway, issuerRefFor(ne), owner)
 	ne.Status.ServicesStatus.PermissionSync = permissionSyncStatus(permissionSyncServiceState(outcome.Phase), outcome.Message, image)
 	if outcome.Phase == permissionsync.PhaseDegraded {
 		return mapPermissionSyncOutcome(outcome, r.waitForProgressingRequeue(), r.failureRequeue())
@@ -273,11 +274,17 @@ func (r *NetEyeReconciler) reconcilePermissionSync(ctx context.Context, ne *nete
 	// the workload is still rolling out: its client scopes are what make a
 	// declared logical target reachable at all, and they do not depend on the
 	// service already serving.
-	if err := r.KeycloakComponent.EnsurePermissionSyncCaller(ctx, ns, spec.LogicalTargets()); err != nil {
+	callerProvisioned, callerProvisioningMessage, err := r.KeycloakComponent.EnsurePermissionSyncCaller(ctx, ns, spec.LogicalTargets())
+	if err != nil {
 		message := fmt.Sprintf("failed to provision the PermissionSync caller in Keycloak: %v", err)
 		log.Error(err, "failed to provision the PermissionSync caller in Keycloak", "namespace", ns, "requeueAfter", r.failureRequeue())
 		ne.Status.ServicesStatus.PermissionSync = permissionSyncStatus(neteye.ServiceStateFailed, message, image)
 		return degradedResult(permissionSyncComponentID, "EnsureCallerFailed", message, r.failureRequeue(), err)
+	}
+	if !callerProvisioned {
+		log.V(1).Info("PermissionSync caller provisioning is not complete", "reason", callerProvisioningMessage, "requeueAfter", r.waitForProgressingRequeue())
+		ne.Status.ServicesStatus.PermissionSync = permissionSyncStatus(neteye.ServiceStateNotReady, callerProvisioningMessage, image)
+		return progressingResult(permissionSyncComponentID, "CallerProvisioning", callerProvisioningMessage, r.waitForProgressingRequeue())
 	}
 	if outcome.Phase != permissionsync.PhaseReady {
 		return mapPermissionSyncOutcome(outcome, r.waitForProgressingRequeue(), r.failureRequeue())
@@ -474,11 +481,15 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 }
 
 // gatewayListeners returns the per-component HTTPS listeners exposed on the
-// shared Gateway. The identity listener is always present; the Elastic Stack
-// listeners are only added when the feature module is enabled.
+// shared Gateway. The identity and PermissionSync listeners are always
+// present; the Elastic Stack listeners are only added when the feature module
+// is enabled.
 func gatewayListeners(ne *neteye.NetEye) []resources.GatewayListener {
 	listeners := []resources.GatewayListener{
 		{Name: keycloak.GatewayListenerName, Hostname: keycloak.RouteHostname, TLSSecretName: keycloak.TLSSecretName, RouteKind: resources.RouteKindHTTP},
+		// PermissionSync is part of every deployment; the identity service
+		// reaches it over TLS through this listener.
+		{Name: permissionsync.GatewayListenerName, Hostname: permissionsyncconfig.Hostname, TLSSecretName: permissionsync.TLSSecretName, RouteKind: resources.RouteKindHTTP},
 	}
 	if ne.Spec.ElasticStack != nil && ne.Spec.ElasticStack.Enabled {
 		listeners = append(listeners,
@@ -504,7 +515,7 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, message, image)
 		return degradedResult(identityComponentID, "IssuerCheckFailed", message, r.failureRequeue(), err)
 	}
-	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, ne.Spec.Identity, keycloak.WorkloadNamespace, ne.Spec.Gateway.Name, issuerRef, owner)
+	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, ne.Spec.Identity, ne.Spec.PermissionSync, keycloak.WorkloadNamespace, ne.Spec.Gateway.Name, issuerRef, owner)
 	if err != nil {
 		log.Error(err, "failed to ensure keycloak resources", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to ensure keycloak resources in namespace %q: %v", keycloak.WorkloadNamespace, err), image)
