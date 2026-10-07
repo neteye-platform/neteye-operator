@@ -180,6 +180,11 @@ spec:
                                         Four levels are what it takes to wrap Keycloak's built-in browser flow,
                                         conditional second factor included, in a subflow followed by a further
                                         execution, as the PermissionSync login flow does.
+
+                                        Unlike the shallower levels, this one carries no CEL rules: it used to be
+                                        a leaf, and adding validation rules to an existing CRD version fails the
+                                        OLM CRD upgrade safety check. The reconciler enforces the same constraints
+                                        before it writes anything to Keycloak.
                                       properties:
                                         alias:
                                           description: Alias identifies an authenticator
@@ -283,14 +288,6 @@ spec:
                                           - DISABLED
                                           type: string
                                       type: object
-                                      x-kubernetes-validations:
-                                      - message: exactly one of authenticator or flow
-                                          must be set
-                                        rule: (has(self.authenticator) && self.authenticator
-                                          != "") != has(self.flow)
-                                      - message: config requires authenticator
-                                        rule: '!has(self.config) || (has(self.authenticator)
-                                          && self.authenticator != "")'
                                     type: array
                                   provider:
                                     default: basic-flow

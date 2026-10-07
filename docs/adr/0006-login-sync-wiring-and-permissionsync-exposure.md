@@ -176,6 +176,8 @@ hostname to the Gateway, as it does for the identity hostname.
 
 - [ADR-0002: Reconciliation and Resource Application](0002-reconciliation-and-resource-application.md)
 - [ADR-0005: PermissionSync Component and Caller Provisioning](0005-permissionsync-component-and-caller-provisioning.md)
-- PermissionSync ADR-0001: Inbound Synchronization Contract and Caller-Owned Workflow Policy
+- PermissionSync ADR-0001: Inbound Synchronization Contract and Caller-Owned
+  Workflow Policy
 - PermissionSync ADR-0002: Caller Authentication and Authorization
-- PermissionSync ADR-0008: Generic REST Permission Provider Wire and Transport Contract
+- PermissionSync ADR-0008: Generic REST Permission Provider Wire and Transport
+  Contract

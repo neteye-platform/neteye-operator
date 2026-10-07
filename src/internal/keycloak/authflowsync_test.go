@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 )
 
 // fakeExecutions is an in-memory stand-in for the execution endpoints of one
@@ -182,5 +184,30 @@ func TestReconcileExecutionOrderRenumbersAReorderedFlow(t *testing.T) {
 		if got := intValue(update, "priority"); got != want {
 			t.Errorf("priority of %q = %d, want %d", id, got, want)
 		}
+	}
+}
+
+// TestValidateFlowExecutionsCoversTheLevelWithoutCELRules pins the reconciler
+// check that stands in for the CEL rules level 3 cannot carry.
+func TestValidateFlowExecutionsCoversTheLevelWithoutCELRules(t *testing.T) {
+	leaf := &neteye.KeycloakAuthFlowExecutionSpecL4{Alias: "leaf", Executions: []neteye.KeycloakAuthFlowExecutionL4{{Authenticator: "auth-otp-form"}}}
+	config := &neteye.KeycloakAuthFlowConfig{Alias: "config"}
+	for name, level3 := range map[string]neteye.KeycloakAuthFlowExecutionL3{
+		"both authenticator and flow": {Authenticator: "auth-cookie", Flow: leaf},
+		"neither":                     {Requirement: "REQUIRED"},
+		"config on a subflow":         {Flow: leaf, Config: config},
+	} {
+		spec := neteye.KeycloakAuthFlowSpec{Alias: "root", Executions: []neteye.KeycloakAuthFlowExecution{{Flow: &neteye.KeycloakAuthFlowExecutionSpecL2{
+			Alias: "l2", Executions: []neteye.KeycloakAuthFlowExecutionL2{{Flow: &neteye.KeycloakAuthFlowExecutionSpecL3{
+				Alias: "l3", Executions: []neteye.KeycloakAuthFlowExecutionL3{level3},
+			}}},
+		}}}}
+		if err := validateFlowExecutions(spec.Alias, toRuntimeExecutions(spec.Executions)); err == nil {
+			t.Errorf("%s: validation passed, want an error", name)
+		}
+	}
+	permissionSync := permissionSyncFlowSpec()
+	if err := validateFlowExecutions(permissionSync.Alias, toRuntimeExecutions(permissionSync.Executions)); err != nil {
+		t.Errorf("PermissionSync flow: %v", err)
 	}
 }

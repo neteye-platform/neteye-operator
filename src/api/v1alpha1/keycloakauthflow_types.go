@@ -108,8 +108,11 @@ type KeycloakAuthFlowExecutionSpecL3 struct {
 // Four levels are what it takes to wrap Keycloak's built-in browser flow,
 // conditional second factor included, in a subflow followed by a further
 // execution, as the PermissionSync login flow does.
-// +kubebuilder:validation:XValidation:rule="(has(self.authenticator) && self.authenticator != \"\") != has(self.flow)",message="exactly one of authenticator or flow must be set"
-// +kubebuilder:validation:XValidation:rule="!has(self.config) || (has(self.authenticator) && self.authenticator != \"\")",message="config requires authenticator"
+//
+// Unlike the shallower levels, this one carries no CEL rules: it used to be
+// a leaf, and adding validation rules to an existing CRD version fails the
+// OLM CRD upgrade safety check. The reconciler enforces the same constraints
+// before it writes anything to Keycloak.
 type KeycloakAuthFlowExecutionL3 struct {
 	// Alias identifies an authenticator execution where Keycloak exposes an alias.
 	// +kubebuilder:validation:Optional
