@@ -657,14 +657,145 @@ type NetEyeServicesStatus struct {
 	ElasticStack *NetEyeElasticStackStatus `json:"elasticStack,omitempty"`
 }
 
+// Condition types reported in NetEyeStatus.Conditions. Ready is the stable
+// readiness interface for scripts and users; consumers must also compare its
+// observedGeneration with metadata.generation before treating it as current.
+const (
+	// ConditionReady reports readiness of the NetEye resource as a whole. An
+	// available product upgrade does not make an installation unready.
+	ConditionReady = "Ready"
+	// ConditionProgressing reports that at least one branch is converging. It
+	// can be true at the same time as Degraded, when an independent branch can
+	// still make progress.
+	ConditionProgressing = "Progressing"
+	// ConditionDegraded reports that at least one component has an observed
+	// failure. A component merely waiting for a healthy prerequisite does not
+	// make the installation degraded.
+	ConditionDegraded = "Degraded"
+	// ConditionUpgradeAvailable reports that the installation is managed by an
+	// operator that supports a newer NetEye release. It is orthogonal to
+	// readiness, which is why it is a separate condition rather than a phase.
+	ConditionUpgradeAvailable = "UpgradeAvailable"
+)
+
+// Stable, machine-readable condition reasons. Messages are concise
+// explanations for humans and are not a machine-readable API.
+const (
+	ReasonAllComponentsReady = "AllComponentsReady"
+	ReasonComponentsNotReady = "ComponentsNotReady"
+	ReasonComponentsDegraded = "ComponentsDegraded"
+	ReasonNoFailures         = "NoFailures"
+	ReasonConverging         = "Converging"
+	ReasonConverged          = "Converged"
+	ReasonUpgradeAvailable   = "UpgradeAvailable"
+	ReasonNoUpgradeAvailable = "NoUpgradeAvailable"
+	ReasonUnsupportedVersion = "UnsupportedVersion"
+	ReasonDeletionInProgress = "DeletionInProgress"
+	ReasonDeletionFailed     = "DeletionFailed"
+	ReasonDependencyNotReady = "DependencyNotReady"
+)
+
+// ComponentState is the readiness state reported for one logical component.
+type ComponentState string
+
+const (
+	// ComponentStateReady means the component reached its desired state.
+	ComponentStateReady ComponentState = "Ready"
+	// ComponentStateProgressing means the component is converging.
+	ComponentStateProgressing ComponentState = "Progressing"
+	// ComponentStateDegraded means the component's own reconciliation failed.
+	ComponentStateDegraded ComponentState = "Degraded"
+	// ComponentStateBlocked means a prerequisite component is not ready. It is
+	// distinct from Degraded so automation can tell an intrinsic failure from
+	// waiting on a healthy dependency.
+	ComponentStateBlocked ComponentState = "Blocked"
+	// ComponentStateDisabled means the component is not part of the desired
+	// state. A disabled component does not keep the installation from becoming
+	// ready.
+	ComponentStateDisabled ComponentState = "Disabled"
+)
+
+// NetEyeResolvedImage is one container image selected by the operator for a
+// component. Name is a stable logical identifier within that component, and
+// Image is a complete OCI reference pinned by digest.
+type NetEyeResolvedImage struct {
+	// Name is the stable logical image name within its component.
+	Name string `json:"name"`
+
+	// Image is the exact, digest-pinned image reference.
+	Image string `json:"image"`
+}
+
+// NetEyeComponentStatus reports the observed state of one logical component.
+type NetEyeComponentStatus struct {
+	// Status is the component's readiness state.
+	Status ComponentState `json:"status,omitempty"`
+
+	// ObservedGeneration is the NetEye generation this entry describes.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Reason is a stable, machine-readable identifier for the current state.
+	Reason string `json:"reason,omitempty"`
+
+	// Message is a concise explanation for humans and is not a
+	// machine-readable API.
+	Message string `json:"message,omitempty"`
+
+	// BlockingDependencies lists the prerequisite components that are not
+	// ready. It is only set when Status is Blocked.
+	// +kubebuilder:validation:Optional
+	// +listType=set
+	BlockingDependencies []string `json:"blockingDependencies,omitempty"`
+
+	// ResolvedImages is the complete set of container images the operator
+	// selected for this component. A component with no container images
+	// reports an empty list. While the component is progressing this is the
+	// target set; once it is ready, the operator has confirmed its required
+	// workloads use that set.
+	// +kubebuilder:validation:Optional
+	// +listType=map
+	// +listMapKey=name
+	ResolvedImages []NetEyeResolvedImage `json:"resolvedImages,omitempty"`
+}
+
 // NetEyeStatus defines the observed state of NetEyeConfig.
 type NetEyeStatus struct {
+	// Phase is the human-readable aggregate lifecycle state. It is a summary
+	// for operators reading the resource; automation that needs readiness uses
+	// the Ready condition, which can represent independent facts that a single
+	// phase value cannot hold at the same time.
 	Phase NetEyePhase `json:"phase,omitempty"`
 
 	// Message is a human-readable aggregate status message.
 	Message string `json:"message,omitempty"`
 
+	// Conditions is the stable machine-readable status interface. It uses the
+	// Kubernetes standard condition schema. Callers must tolerate condition
+	// types they do not recognize.
+	// +kubebuilder:validation:Optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Components reports observed state keyed by stable logical component
+	// name. The map is dynamic because components are added as NetEye moves to
+	// Kubernetes: adding a key is backward compatible, and callers must
+	// tolerate component keys they do not recognize.
+	// +kubebuilder:validation:Optional
+	Components map[string]NetEyeComponentStatus `json:"components,omitempty"`
+
+	// CurrentVersion is the NetEye product release the operator has
+	// successfully applied. During an upgrade it can differ from spec.version,
+	// and it only advances once every desired component is ready.
+	CurrentVersion string `json:"currentVersion,omitempty"`
+
 	// ServicesStatus reports observed state for each managed NetEye service.
+	//
+	// DEPRECATED: use Components instead. Components is keyed by stable
+	// logical component name, so new components can be added without a schema
+	// change, and it carries the per-component observedGeneration, reason, and
+	// resolvedImages that this field cannot express. ServicesStatus is still
+	// written for compatibility and will be removed in a future API version.
 	ServicesStatus NetEyeServicesStatus `json:"servicesStatus,omitempty"`
 
 	// ObservedGeneration is the generation of the most recently observed
@@ -678,6 +809,8 @@ type NetEyeStatus struct {
 // +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.spec.version`
 // +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.metadata.namespace`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Current",type=string,JSONPath=`.status.currentVersion`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // NetEye is the Schema for the neteyes API.
