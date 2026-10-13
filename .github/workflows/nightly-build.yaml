@@ -107,7 +107,9 @@ jobs:
 
   build-bundle:
     name: Build nightly bundle image
-    needs: compute-candidate-tag
+    # Depends on build-operator so a published nightly bundle never references
+    # an operator image that does not exist yet.
+    needs: [compute-candidate-tag, build-operator]
     if: ${{ needs.compute-candidate-tag.outputs.has-new-commit == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -120,6 +122,40 @@ jobs:
         with:
           # ref: main
           persist-credentials: false
+
+      # Caches are not restored here: this job publishes the bundle image, and a
+      # poisoned cache would reach the published artifact. The bundle tooling is
+      # installed from scratch instead.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/go.mod
+          cache: false
+
+      # Dockerfile.bundle only copies the committed manifests, which pin the
+      # released operator image. Without this the nightly bundle advertises a
+      # new version while deploying the last release.
+      - name: Render the bundle against the nightly operator image
+        env:
+          VERSION_TAG: ${{ needs.compute-candidate-tag.outputs.version-tag }}
+        run: make bundle VERSION="$VERSION_TAG"
+
+      - name: Verify the rendered bundle references the nightly operator image
+        env:
+          OPERATOR_IMAGE: ghcr.io/${{ github.repository_owner }}/neteye-operator:${{ needs.compute-candidate-tag.outputs.version-tag }}
+        run: |
+          set -euo pipefail
+          csv=(src/bundle/manifests/*.clusterserviceversion.yaml)
+          if [[ ${#csv[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one ClusterServiceVersion, found ${#csv[@]}"
+            printf '  %s\n' "${csv[@]}"
+            exit 1
+          fi
+          if ! grep -qF "image: $OPERATOR_IMAGE" "${csv[0]}"; then
+            echo "::error::${csv[0]} does not reference $OPERATOR_IMAGE"
+            grep -n "image: ghcr.io" "${csv[0]}" || true
+            exit 1
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
