@@ -4,11 +4,11 @@ BUNDLE_IMG ?= ghcr.io/neteye-platform/neteye-operator-bundle:$(VERSION)
 
 # Tool versions.
 # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools
-CONTROLLER_GEN_VERSION ?= v0.21.0
+CONTROLLER_GEN_VERSION ?= v0.22.0
 # renovate: datasource=github-releases depName=golangci/golangci-lint
 GOLANGCI_LINT_VERSION ?= v2.14.0
 # renovate: datasource=github-releases depName=kubernetes-sigs/kustomize extractVersion=^kustomize/(?<version>.+)$
-KUSTOMIZE_VERSION ?= v5.7.1
+KUSTOMIZE_VERSION ?= v5.8.3
 # renovate: datasource=github-releases depName=operator-framework/operator-sdk
 OPERATOR_SDK_VERSION ?= v1.42.3
 VERSION ?= 0.2.4
@@ -26,7 +26,7 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 # A release branch, not a tag: Renovate cannot resolve it.
 ENVTEST_VERSION ?= release-0.24
 # renovate: datasource=github-releases depName=kubernetes/kubernetes extractVersion=^v(?<version>.+)$
-ENVTEST_K8S_VERSION ?= 1.36.2
+ENVTEST_K8S_VERSION ?= 1.37.1
 CRD_BASES ?= config/crd/bases
 
 .PHONY: all
