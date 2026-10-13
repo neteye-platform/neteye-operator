@@ -9,6 +9,11 @@ const (
 	InfinispanClusterName = "neteye-k8s-ispn"
 	InstanceName          = "neteye-kc"
 
+	// TruststoreFolder is the directory Keycloak scans recursively for trusted
+	// certificates. The Keycloak Operator mounts spec.truststores entries into
+	// subdirectories of it, so the operator keeps the server option pointed here.
+	TruststoreFolder = "/opt/keycloak/conf/truststores"
+
 	// FeatureOpenTelemetryLogs and FeatureOpenTelemetryMetrics are the Keycloak
 	// features backing the opt-in identity telemetry signals.
 	FeatureOpenTelemetryLogs    = "opentelemetry-logs"
@@ -25,6 +30,7 @@ type ManagedOption struct {
 var managedOptions = [...]ManagedOption{
 	{Name: "http-relative-path", Value: HTTPRelativePath, EmitAsServerOption: true},
 	{Name: "cache-embedded-cluster-name", Value: InfinispanClusterName, EmitAsServerOption: true},
+	{Name: "truststore-paths", Value: TruststoreFolder, EmitAsServerOption: true},
 	{Name: "proxy-headers"},
 	{Name: "telemetry-logs-enabled"},
 	{Name: "telemetry-metrics-enabled"},
