@@ -45,9 +45,13 @@ func TestNetEyeValidatorValidateUpdate(t *testing.T) {
 	}{
 		{name: "current version unchanged", oldVersion: CurrentNetEyeVersion, newVersion: CurrentNetEyeVersion},
 		{name: "previous to current", oldVersion: PreviousNetEyeVersion, newVersion: CurrentNetEyeVersion},
-		{name: "previous version unchanged", oldVersion: PreviousNetEyeVersion, newVersion: PreviousNetEyeVersion, wantErr: true},
+		// ADR-0003 requires the previous release to stay fully manageable while
+		// a staged upgrade waits, so an update that keeps its version is not an
+		// upgrade request and must be accepted.
+		{name: "previous version unchanged", oldVersion: PreviousNetEyeVersion, newVersion: PreviousNetEyeVersion},
 		{name: "current to previous", oldVersion: CurrentNetEyeVersion, newVersion: PreviousNetEyeVersion, wantErr: true},
 		{name: "skipped upgrade", oldVersion: "4.48", newVersion: CurrentNetEyeVersion, wantErr: true},
+		{name: "unsupported version unchanged", oldVersion: "4.48", newVersion: "4.48", wantErr: true},
 		{name: "future version", oldVersion: CurrentNetEyeVersion, newVersion: "99.99", wantErr: true},
 	}
 

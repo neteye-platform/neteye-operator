@@ -57,8 +57,8 @@ func TestReconcileVersionGating(t *testing.T) {
 		version   string
 		wantPhase neteye.NetEyePhase
 	}{
-		{name: "previous version pends upgrade", version: neteye.PreviousNetEyeVersion, wantPhase: neteye.PhasePendingUpgrades},
 		{name: "unknown version fails", version: "1.00", wantPhase: neteye.PhaseFailed},
+		{name: "unsupported older version fails", version: "4.48", wantPhase: neteye.PhaseFailed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,6 +81,36 @@ func TestReconcileVersionGating(t *testing.T) {
 			}
 			if got.Status.Phase != tt.wantPhase {
 				t.Errorf("phase = %q, want %q", got.Status.Phase, tt.wantPhase)
+			}
+		})
+	}
+}
+
+// TestReconcileSupportWindowIsNotGated asserts that every release in the
+// support window gets past the version gate and into component reconciliation.
+// ADR-0003 requires the previous release to stay fully manageable while a
+// staged product upgrade waits, so it must behave exactly like the current
+// release here rather than short-circuiting into a paused phase.
+func TestReconcileSupportWindowIsNotGated(t *testing.T) {
+	for _, version := range []string{neteye.PreviousNetEyeVersion, neteye.CurrentNetEyeVersion} {
+		t.Run(version, func(t *testing.T) {
+			s := testScheme(t)
+			ne := newNetEye(version)
+			c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(ne).WithObjects(ne).Build()
+			r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s}
+
+			// Reaching the component-initialization check proves the version
+			// gate let this release through; a gated release returns nil here.
+			if _, err := reconcileNetEye(t, r, ne); err == nil {
+				t.Fatal("reconcile stopped at the version gate instead of reaching component reconciliation")
+			}
+
+			got := &neteye.NetEye{}
+			if err := c.Get(context.Background(), types.NamespacedName{Namespace: ne.Namespace, Name: ne.Name}, got); err != nil {
+				t.Fatalf("get neteye: %v", err)
+			}
+			if got.Status.Phase == neteye.PhasePendingUpgrades {
+				t.Errorf("phase = %q, want reconciliation to proceed rather than pend the upgrade", got.Status.Phase)
 			}
 		})
 	}

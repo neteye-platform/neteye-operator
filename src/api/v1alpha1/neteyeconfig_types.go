@@ -4,8 +4,10 @@
 package v1alpha1
 
 import (
+	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -389,7 +391,16 @@ type NetEyeGatewaySpec struct {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.6@sha256:e58681c26f89d305d87a38ce20b81bfb8dfd47fc5d6068ebec2a609bf89c3ce2", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.4@sha256:0597fe7cad118fcaee15a8691088eff7b60fdd1501bd84fc91b90066d79c9afd", CABundleImage: "docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"},
+	PreviousNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.5@sha256:1ca9daaa85414c135259c15042462899ec5d804c93cdf16bd94ccb51de2e0c66", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.4@sha256:0597fe7cad118fcaee15a8691088eff7b60fdd1501bd84fc91b90066d79c9afd", CABundleImage: "docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"},
+	CurrentNetEyeVersion:  {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.6@sha256:e58681c26f89d305d87a38ce20b81bfb8dfd47fc5d6068ebec2a609bf89c3ce2", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.4@sha256:0597fe7cad118fcaee15a8691088eff7b60fdd1501bd84fc91b90066d79c9afd", CABundleImage: "docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"},
+}
+
+// netEyeUpgradeGraph is the explicit forward-upgrade graph required by
+// ADR-0003. Upgrade authorization is read from this table rather than inferred
+// by comparing version numbers, so an unlisted transition is rejected even
+// when it looks like a forward move.
+var netEyeUpgradeGraph = map[string][]string{
+	PreviousNetEyeVersion: {CurrentNetEyeVersion},
 }
 
 const (
@@ -444,7 +455,8 @@ func IsSupportedVersion(version string) bool {
 	return ok
 }
 
-// IsPreviousVersion returns true if given NetEye version is the latest supported version.
+// IsPreviousVersion returns true if the given NetEye version is the previous
+// supported release, which is the upgrade source of this operator line.
 func IsPreviousVersion(version string) bool {
 	return version == PreviousNetEyeVersion
 }
@@ -452,6 +464,109 @@ func IsPreviousVersion(version string) bool {
 // IsLatestVersion returns true if the given NetEye version is the latest supported version.
 func IsLatestVersion(version string) bool {
 	return version == CurrentNetEyeVersion
+}
+
+// IsSupportedUpgrade reports whether the operator declares an explicit forward
+// upgrade from one NetEye release line to another.
+func IsSupportedUpgrade(from, to string) bool {
+	for _, target := range netEyeUpgradeGraph[from] {
+		if target == to {
+			return true
+		}
+	}
+	return false
+}
+
+// UpgradeTargets returns the release lines reachable from the given release.
+func UpgradeTargets(from string) []string {
+	targets := append([]string(nil), netEyeUpgradeGraph[from]...)
+	sort.Strings(targets)
+	return targets
+}
+
+// ValidateReleaseData checks the release data embedded in this operator build.
+// ADR-0003 requires that the operator never becomes ready with invalid
+// embedded release data, so main calls this before starting the manager and the
+// unit tests assert it for every build.
+func ValidateReleaseData() error {
+	var problems []string
+	// The support window is the target release plus the immediately previous
+	// release, which must stay fully manageable while a product upgrade waits.
+	for _, version := range []string{PreviousNetEyeVersion, CurrentNetEyeVersion} {
+		components, ok := netEyeVersionMap[version]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("supported NetEye release %q has no component image set", version))
+			continue
+		}
+		for name, image := range map[string]string{
+			"keycloak":       components.KeycloakImage,
+			"otel-collector": components.OTelCollectorImage,
+			"edot-gateway":   components.EDOTGatewayImage,
+			"ca-bundle":      components.CABundleImage,
+		} {
+			if image == "" {
+				problems = append(problems, fmt.Sprintf("NetEye release %q has no %s image", version, name))
+				continue
+			}
+			if !strings.Contains(image, "@sha256:") {
+				problems = append(problems, fmt.Sprintf("NetEye release %q %s image %q is not pinned by digest", version, name, image))
+			}
+		}
+	}
+	// Upgrade edges must move forward and reference releases that exist.
+	for from, targets := range netEyeUpgradeGraph {
+		if _, ok := netEyeVersionMap[from]; !ok {
+			problems = append(problems, fmt.Sprintf("upgrade edge source %q is not a known NetEye release", from))
+		}
+		for _, to := range targets {
+			if _, ok := netEyeVersionMap[to]; !ok {
+				problems = append(problems, fmt.Sprintf("upgrade edge %q -> %q targets an unknown NetEye release", from, to))
+				continue
+			}
+			if !isForwardVersion(from, to) {
+				problems = append(problems, fmt.Sprintf("upgrade edge %q -> %q does not move forward", from, to))
+			}
+		}
+	}
+	// The window's forward transition has to be declared, or a staged operator
+	// update could never authorize the product upgrade it exists to perform.
+	if PreviousNetEyeVersion != CurrentNetEyeVersion && !IsSupportedUpgrade(PreviousNetEyeVersion, CurrentNetEyeVersion) {
+		problems = append(problems, fmt.Sprintf("no upgrade edge declared from %q to %q", PreviousNetEyeVersion, CurrentNetEyeVersion))
+	}
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		return fmt.Errorf("invalid embedded NetEye release data: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// isForwardVersion compares two "major.minor" release lines.
+func isForwardVersion(from, to string) bool {
+	fromMajor, fromMinor, okFrom := splitVersion(from)
+	toMajor, toMinor, okTo := splitVersion(to)
+	if !okFrom || !okTo {
+		return false
+	}
+	if toMajor != fromMajor {
+		return toMajor > fromMajor
+	}
+	return toMinor > fromMinor
+}
+
+func splitVersion(version string) (int, int, bool) {
+	major, minor, found := strings.Cut(version, ".")
+	if !found {
+		return 0, 0, false
+	}
+	majorValue, err := strconv.Atoi(major)
+	if err != nil {
+		return 0, 0, false
+	}
+	minorValue, err := strconv.Atoi(minor)
+	if err != nil {
+		return 0, 0, false
+	}
+	return majorValue, minorValue, true
 }
 
 // NetEyeSpec defines the desired state of NetEyeConfig.

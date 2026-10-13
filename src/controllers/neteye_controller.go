@@ -115,16 +115,10 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		}
 	}()
 
-	if !neteye.IsLatestVersion(ne.Spec.Version) && neteye.IsPreviousVersion(ne.Spec.Version) {
-		log.Info("NetEye version is not the latest", "currentVersion", ne.Spec.Version, "latestVersion", neteye.CurrentNetEyeVersion, "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhasePendingUpgrades, fmt.Sprintf("NetEye version '%s' is not the latest; consider upgrading to '%s'. Reconciliation will be paused until the upgrade is performed.", ne.Spec.Version, neteye.CurrentNetEyeVersion))
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
-	} else if !neteye.IsLatestVersion(ne.Spec.Version) {
-		log.Error(nil, "NetEye version mismatch detected", "currentVersion", ne.Spec.Version, "latestVersion", neteye.CurrentNetEyeVersion, "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("NetEye version '%s' is not the latest. Latest version is '%s'. Reconciliation will be paused until the mismatch has been resolved.", ne.Spec.Version, neteye.CurrentNetEyeVersion))
-		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
-	}
-
+	// A release inside the support window is reconciled normally, including the
+	// previous release: a newer operator managing the current installation is
+	// the safe intermediate state of a staged upgrade, so pausing here would
+	// leave that installation unmanaged until someone authorized the upgrade.
 	components, ok := neteye.ComponentsForVersion(ne.Spec.Version)
 	if !ok {
 		log.Error(nil, "unsupported NetEye version", "version", ne.Spec.Version, "supportedVersions", neteye.SupportedVersions(), "requeueAfter", r.failureRequeue())
@@ -180,6 +174,12 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	ne.Status.ServicesStatus.ElasticStack.Status, ne.Status.ServicesStatus.ElasticStack.Message = state, message
 	phase, message := aggregateComponentPhase(results)
 	setPhase(ne, phase, message)
+	// A fully reconciled installation that is not on the latest release still
+	// has an upgrade available. Reporting it after aggregation keeps the signal
+	// visible without suppressing a component failure, which ranks higher.
+	if !neteye.IsLatestVersion(ne.Spec.Version) {
+		setPhase(ne, neteye.PhasePendingUpgrades, fmt.Sprintf("NetEye %s is reconciled; an upgrade to %v is available", ne.Spec.Version, neteye.UpgradeTargets(ne.Spec.Version)))
+	}
 	requeueAfter := earliestComponentRequeue(results)
 	if requeueAfter == 0 {
 		requeueAfter = r.reconciliationRequeue()
