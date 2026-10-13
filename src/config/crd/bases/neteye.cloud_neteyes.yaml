@@ -26,6 +26,12 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.currentVersion
+      name: Current
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -418,6 +424,140 @@ spec:
           status:
             description: NetEyeStatus defines the observed state of NetEyeConfig.
             properties:
+              components:
+                additionalProperties:
+                  description: NetEyeComponentStatus reports the observed state of
+                    one logical component.
+                  properties:
+                    blockingDependencies:
+                      description: |-
+                        BlockingDependencies lists the prerequisite components that are not
+                        ready. It is only set when Status is Blocked.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: set
+                    message:
+                      description: |-
+                        Message is a concise explanation for humans and is not a
+                        machine-readable API.
+                      type: string
+                    observedGeneration:
+                      description: ObservedGeneration is the NetEye generation this
+                        entry describes.
+                      format: int64
+                      type: integer
+                    reason:
+                      description: Reason is a stable, machine-readable identifier
+                        for the current state.
+                      type: string
+                    resolvedImages:
+                      description: |-
+                        ResolvedImages is the complete set of container images the operator
+                        selected for this component. A component with no container images
+                        reports an empty list. While the component is progressing this is the
+                        target set; once it is ready, the operator has confirmed its required
+                        workloads use that set.
+                      items:
+                        description: |-
+                          NetEyeResolvedImage is one container image selected by the operator for a
+                          component. Name is a stable logical identifier within that component, and
+                          Image is a complete OCI reference pinned by digest.
+                        properties:
+                          image:
+                            description: Image is the exact, digest-pinned image reference.
+                            type: string
+                          name:
+                            description: Name is the stable logical image name within
+                              its component.
+                            type: string
+                        required:
+                        - image
+                        - name
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
+                    status:
+                      description: Status is the component's readiness state.
+                      type: string
+                  type: object
+                description: |-
+                  Components reports observed state keyed by stable logical component
+                  name. The map is dynamic because components are added as NetEye moves to
+                  Kubernetes: adding a key is backward compatible, and callers must
+                  tolerate component keys they do not recognize.
+                type: object
+              conditions:
+                description: |-
+                  Conditions is the stable machine-readable status interface. It uses the
+                  Kubernetes standard condition schema. Callers must tolerate condition
+                  types they do not recognize.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              currentVersion:
+                description: |-
+                  CurrentVersion is the NetEye product release the operator has
+                  successfully applied. During an upgrade it can differ from spec.version,
+                  and it only advances once every desired component is ready.
+                type: string
               message:
                 description: Message is a human-readable aggregate status message.
                 type: string
@@ -428,12 +568,21 @@ spec:
                 format: int64
                 type: integer
               phase:
-                description: NetEyePhase is the aggregate lifecycle state reported
-                  in NetEyeStatus.Phase.
+                description: |-
+                  Phase is the human-readable aggregate lifecycle state. It is a summary
+                  for operators reading the resource; automation that needs readiness uses
+                  the Ready condition, which can represent independent facts that a single
+                  phase value cannot hold at the same time.
                 type: string
               servicesStatus:
-                description: ServicesStatus reports observed state for each managed
-                  NetEye service.
+                description: |-
+                  ServicesStatus reports observed state for each managed NetEye service.
+
+                  DEPRECATED: use Components instead. Components is keyed by stable
+                  logical component name, so new components can be added without a schema
+                  change, and it carries the per-component observedGeneration, reason, and
+                  resolvedImages that this field cannot express. ServicesStatus is still
+                  written for compatibility and will be removed in a future API version.
                 properties:
                   elasticStack:
                     description: NetEyeElasticStackStatus reports observed state for

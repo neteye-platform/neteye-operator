@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 )
 
 type componentID string
@@ -24,6 +26,8 @@ const (
 	componentStateBlocked     componentState = "Blocked"
 
 	dependencyNotReadyReason = "DependencyNotReady"
+	// disabledReason marks a component that is not part of the desired state.
+	disabledReason = "Disabled"
 )
 
 // componentOperation performs one component reconciliation. Its returned
@@ -39,6 +43,7 @@ type componentResult struct {
 	Message              string
 	RequeueAfter         time.Duration
 	BlockingDependencies []componentID
+	ResolvedImages       []neteye.NetEyeResolvedImage
 	Err                  error
 }
 

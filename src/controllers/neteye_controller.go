@@ -97,12 +97,20 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		return ctrl.Result{}, err
 	}
 
-	ne.Status.ObservedGeneration = ne.GetGeneration()
+	generation := ne.GetGeneration()
+	ne.Status.ObservedGeneration = generation
 	// Reset the phase so severity comparisons in setPhase are scoped to this
 	// reconcile only; otherwise a stale Failed phase from a previous
 	// reconcile would block this pass from ever reporting Ready again.
 	ne.Status.Phase = ""
 	ne.Status.Message = ""
+	// Conditions and the achieved version are deliberately not reset. The
+	// condition list carries lastTransitionTime, which only means anything if
+	// it survives across passes, and currentVersion records what was actually
+	// applied rather than what this pass observed.
+	ne.Status.Components = nil
+	// The deprecated per-service view is maintained alongside Components for
+	// one release so existing consumers keep working.
 	ne.Status.ServicesStatus = neteye.NetEyeServicesStatus{
 		Identity:     identityStatus(neteye.ServiceStateUnknown, "", ""),
 		ElasticStack: &neteye.NetEyeElasticStackStatus{Status: neteye.ServiceStateUnknown, OTelCollector: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}, EDOTGateway: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown}},
@@ -122,7 +130,10 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	components, ok := neteye.ComponentsForVersion(ne.Spec.Version)
 	if !ok {
 		log.Error(nil, "unsupported NetEye version", "version", ne.Spec.Version, "supportedVersions", neteye.SupportedVersions(), "requeueAfter", r.failureRequeue())
-		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("unsupported NetEye version '%s'; supported versions are: %v", ne.Spec.Version, neteye.SupportedVersions()))
+		message := fmt.Sprintf("unsupported NetEye version '%s'; supported versions are: %v", ne.Spec.Version, neteye.SupportedVersions())
+		setPhase(ne, neteye.PhaseFailed, message)
+		failCondition(&ne.Status, generation, neteye.ReasonUnsupportedVersion, message)
+		applyUpgradeAvailableCondition(&ne.Status, generation, ne.Spec.Version)
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
 
@@ -158,12 +169,17 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		return ctrl.Result{}, fmt.Errorf("construct component lifecycle graph: %w", err)
 	}
 	results, err := runComponentOperations(graph, map[componentID]componentOperation{
-		identityComponentID: func() (componentResult, error) { return r.reconcileKeycloak(ctx, ne, components.KeycloakImage) },
+		identityComponentID: func() (componentResult, error) {
+			result, err := r.reconcileKeycloak(ctx, ne, components.KeycloakImage)
+			return withResolvedImages(result, err, identityResolvedImages(components))
+		},
 		otelCollectorComponentID: func() (componentResult, error) {
-			return r.reconcileOTelCollector(ctx, ne, components.OTelCollectorImage, components.CABundleImage)
+			result, err := r.reconcileOTelCollector(ctx, ne, components.OTelCollectorImage, components.CABundleImage)
+			return withResolvedImages(result, err, otelCollectorResolvedImages(components))
 		},
 		edotGatewayComponentID: func() (componentResult, error) {
-			return r.reconcileEDOTGateway(ctx, ne, components.EDOTGatewayImage, components.CABundleImage)
+			result, err := r.reconcileEDOTGateway(ctx, ne, components.EDOTGatewayImage, components.CABundleImage)
+			return withResolvedImages(result, err, edotGatewayResolvedImages(components))
 		},
 	})
 	if err != nil {
@@ -175,11 +191,16 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	phase, message := aggregateComponentPhase(results)
 	setPhase(ne, phase, message)
 	// A fully reconciled installation that is not on the latest release still
-	// has an upgrade available. Reporting it after aggregation keeps the signal
-	// visible without suppressing a component failure, which ranks higher.
+	// has an upgrade available. The phase can only hold one of those facts, so
+	// it reports the upgrade; the conditions below report both independently.
 	if !neteye.IsLatestVersion(ne.Spec.Version) {
 		setPhase(ne, neteye.PhasePendingUpgrades, fmt.Sprintf("NetEye %s is reconciled; an upgrade to %v is available", ne.Spec.Version, neteye.UpgradeTargets(ne.Spec.Version)))
 	}
+
+	ne.Status.Components = buildComponentStatus(generation, results)
+	applyComponentConditions(&ne.Status, generation)
+	applyUpgradeAvailableCondition(&ne.Status, generation, ne.Spec.Version)
+	applyCurrentVersion(&ne.Status, ne.Spec.Version)
 	requeueAfter := earliestComponentRequeue(results)
 	if requeueAfter == 0 {
 		requeueAfter = r.reconciliationRequeue()
@@ -204,7 +225,7 @@ func (r *NetEyeReconciler) reconcileOTelCollector(ctx context.Context, ne *netey
 			return degradedResult(otelCollectorComponentID, "CleanupFailed", message, r.failureRequeue(), err)
 		}
 		ne.Status.ServicesStatus.ElasticStack.OTelCollector = elasticStackServiceStatus(neteye.ServiceStateDisabled, "OpenTelemetry Collector is disabled", image)
-		return readyResult(otelCollectorComponentID, "Disabled", "OpenTelemetry Collector is disabled")
+		return readyResult(otelCollectorComponentID, disabledReason, "OpenTelemetry Collector is disabled")
 	}
 	var spec *neteye.NetEyeOtelCollectorSpec
 	if ne.Spec.ElasticStack.Telemetry != nil {
@@ -223,7 +244,7 @@ func (r *NetEyeReconciler) reconcileEDOTGateway(ctx context.Context, ne *neteye.
 			return degradedResult(edotGatewayComponentID, "CleanupFailed", message, r.failureRequeue(), err)
 		}
 		ne.Status.ServicesStatus.ElasticStack.EDOTGateway = elasticStackServiceStatus(neteye.ServiceStateDisabled, "EDOT Gateway is disabled", image)
-		return readyResult(edotGatewayComponentID, "Disabled", "EDOT Gateway is disabled")
+		return readyResult(edotGatewayComponentID, disabledReason, "EDOT Gateway is disabled")
 	}
 	var spec *neteye.NetEyeEDOTGatewaySpec
 	if ne.Spec.ElasticStack.Telemetry != nil {
