@@ -5,9 +5,11 @@ package keycloak
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/keycloakconfig"
 )
 
 func TestIdentityReplicas(t *testing.T) {
@@ -81,6 +83,7 @@ func TestKeycloakAdditionalOptions(t *testing.T) {
 	want := []any{
 		map[string]any{"name": "http-relative-path", "value": HTTPRelativePath},
 		map[string]any{"name": "cache-embedded-cluster-name", "value": InfinispanClusterName},
+		map[string]any{"name": "truststore-paths", "value": keycloakconfig.TruststoreFolder},
 		map[string]any{"name": "spi-connections-http-client--default--connection-pool-size", "value": "20"},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -124,7 +127,7 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 			PasswordSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
 		},
 	}
-	spec := keycloakInstanceSpec("ghcr.io/example/keycloak:1.0.0", identity)
+	spec := keycloakInstanceSpec("ghcr.io/example/keycloak:1.0.0", "docker.io/alpine:3", identity)
 
 	if spec["image"] != "ghcr.io/example/keycloak:1.0.0" {
 		t.Errorf("image = %v", spec["image"])
@@ -206,7 +209,7 @@ func TestKeycloakInstanceSpecDatabaseDefaultsAndOverrides(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			spec := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "kc.example.com", DBConnection: tt.database})
+			spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "kc.example.com", DBConnection: tt.database})
 			if got := spec["db"]; !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("database spec = %#v, want %#v", got, tt.want)
 			}
@@ -215,7 +218,7 @@ func TestKeycloakInstanceSpecDatabaseDefaultsAndOverrides(t *testing.T) {
 }
 
 func TestKeycloakInstanceSpecOmitsEnvWhenEmpty(t *testing.T) {
-	spec := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "h"})
+	spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "h"})
 	if _, ok := spec["env"]; ok {
 		t.Errorf("env should not be set when Env is empty")
 	}
@@ -236,7 +239,7 @@ func TestKeycloakInstanceSpecTelemetrySignals(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			spec := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", Telemetry: tt.telemetry})
+			spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", Telemetry: tt.telemetry})
 			if got, found := spec["features"]; (len(tt.features) > 0 && (!reflect.DeepEqual(got, map[string]any{"enabled": tt.features}) || !found)) || (len(tt.features) == 0 && found) {
 				t.Errorf("features = %#v, found=%t", got, found)
 			}
@@ -249,7 +252,7 @@ func TestKeycloakInstanceSpecTelemetrySignals(t *testing.T) {
 					t.Errorf("additionalOptions = %#v, missing %#v", options, want)
 				}
 			}
-			if len(options) != 2+len(tt.options) {
+			if len(options) != emittedManagedOptionCount()+len(tt.options) {
 				t.Errorf("additionalOptions = %#v, want no telemetry option leakage", options)
 			}
 			if spec["startOptimized"] != false {
@@ -284,7 +287,7 @@ func TestKeycloakInstanceSpecEnabledFeatures(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			spec := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", EnabledFeatures: tt.features, Telemetry: tt.telemetry})
+			spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", EnabledFeatures: tt.features, Telemetry: tt.telemetry})
 			got, found := spec["features"]
 			if len(tt.want) == 0 {
 				if found {
@@ -313,7 +316,7 @@ func TestKeycloakTelemetryResourceAttributes(t *testing.T) {
 		{ResourceAttributes: attributes},
 	} {
 		*identity.Telemetry = flags
-		spec := keycloakInstanceSpec("img", identity)
+		spec := keycloakInstanceSpec("img", "ca-img", identity)
 		telemetry, found := spec["telemetry"].(map[string]any)
 		if enabled := flags.LogsEnabled || flags.MetricsEnabled; !enabled {
 			if found {
@@ -343,6 +346,18 @@ func TestKeycloakTelemetryResourceAttributes(t *testing.T) {
 	}
 }
 
+// emittedManagedOptionCount counts the operator-managed options every instance
+// carries, so the telemetry expectations do not hardcode their number.
+func emittedManagedOptionCount() int {
+	count := 0
+	for _, option := range keycloakconfig.ManagedOptions() {
+		if option.EmitAsServerOption {
+			count++
+		}
+	}
+	return count
+}
+
 func containsOption(options []any, want any) bool {
 	for _, option := range options {
 		if reflect.DeepEqual(option, want) {
@@ -352,8 +367,77 @@ func containsOption(options []any, want any) bool {
 	return false
 }
 
+func TestKeycloakHostCATrust(t *testing.T) {
+	spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "kc.example.com"})
+
+	options, ok := spec["additionalOptions"].([]any)
+	if !ok {
+		t.Fatalf("additionalOptions is not a slice: %T", spec["additionalOptions"])
+	}
+	if want := nameValue("truststore-paths", keycloakconfig.TruststoreFolder); !containsOption(options, want) {
+		t.Errorf("additionalOptions = %#v, want %#v", options, want)
+	}
+
+	unsupported, ok := spec["unsupported"].(map[string]any)
+	if !ok {
+		t.Fatalf("unsupported is not a map: %T", spec["unsupported"])
+	}
+	template, ok := unsupported["podTemplate"].(map[string]any)
+	if !ok {
+		t.Fatalf("podTemplate is not a map: %T", unsupported["podTemplate"])
+	}
+	podSpec, ok := template["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("podTemplate.spec is not a map: %T", template["spec"])
+	}
+
+	initContainers, ok := podSpec["initContainers"].([]any)
+	if !ok || len(initContainers) != 1 {
+		t.Fatalf("initContainers = %#v, want one entry", podSpec["initContainers"])
+	}
+	initContainer, ok := initContainers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("init container is not a map: %T", initContainers[0])
+	}
+	if got := initContainer["image"]; got != "ca-img" {
+		t.Errorf("init container image = %v, want ca-img", got)
+	}
+	if got := initContainer["name"]; got != CABundleContainerName {
+		t.Errorf("init container name = %v, want %v", got, CABundleContainerName)
+	}
+
+	// The Keycloak Operator matches the Keycloak container by position, so the
+	// entry must stay unnamed and must only add the truststore mount.
+	containers, ok := podSpec["containers"].([]any)
+	if !ok || len(containers) != 1 {
+		t.Fatalf("containers = %#v, want one entry", podSpec["containers"])
+	}
+	container, ok := containers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("container is not a map: %T", containers[0])
+	}
+	if _, named := container["name"]; named {
+		t.Errorf("container = %#v, want no name so the operator matches it by position", container)
+	}
+	want := []any{map[string]any{"name": trustedCAVolumeName, "mountPath": HostCATruststorePath, "readOnly": true}}
+	if got := container["volumeMounts"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("container volumeMounts = %#v, want %#v", got, want)
+	}
+	if !strings.HasPrefix(HostCATruststorePath, keycloakconfig.TruststoreFolder+"/") {
+		t.Errorf("truststore mount %q is outside the scanned folder %q", HostCATruststorePath, keycloakconfig.TruststoreFolder)
+	}
+
+	wantVolumes := []any{
+		map[string]any{"name": trustedCAVolumeName, "emptyDir": map[string]any{}},
+		map[string]any{"name": hostCAVolumeName, "hostPath": map[string]any{"path": HostCABundlePath, "type": "File"}},
+	}
+	if got := podSpec["volumes"]; !reflect.DeepEqual(got, wantVolumes) {
+		t.Errorf("volumes = %#v, want %#v", got, wantVolumes)
+	}
+}
+
 func TestKeycloakNetworkPolicies(t *testing.T) {
-	instance := keycloakInstanceSpec("img", neteye.NetEyeIdentitySpec{Hostname: "h"})
+	instance := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "h"})
 	if !reflect.DeepEqual(instance["networkPolicy"], map[string]any{"enabled": false}) {
 		t.Errorf("native network policy = %#v, want disabled", instance["networkPolicy"])
 	}

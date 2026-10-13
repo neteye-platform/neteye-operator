@@ -50,6 +50,22 @@ const (
 	// OperatorSystemNamespace runs the NetEye operator itself, which reaches the
 	// Keycloak Admin API in-cluster to reconcile KeycloakClient resources.
 	OperatorSystemNamespace = "neteye-system"
+	// HostCABundlePath is the node trust bundle mounted into the Keycloak pods, so
+	// that Keycloak trusts the authorities its host trusts, as it did on bare-metal
+	// NetEye. Without it an LDAP or OIDC provider holding a locally issued
+	// certificate fails the TLS handshake.
+	HostCABundlePath = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+	// HostCATruststorePath holds the normalized host bundle inside the Keycloak
+	// truststore folder, which the server scans recursively on startup.
+	HostCATruststorePath = keycloakconfig.TruststoreFolder + "/neteye-host-ca"
+	// CABundleContainerName normalizes the host bundle before Keycloak starts.
+	CABundleContainerName = "neteye-kc-ca-bundle"
+
+	hostCAVolumeName    = "host-ca"
+	trustedCAVolumeName = "trusted-ca"
+	// keycloakImageUser is the uid the Keycloak image runs as.
+	keycloakImageUser = int64(1000)
+
 	// AdminSecretName is the Secret the Keycloak Operator creates with the
 	// bootstrap admin credentials of the Keycloak instance.
 	AdminSecretName        = InstanceName + "-initial-admin"
@@ -174,7 +190,7 @@ func clusterExtensionSpec() map[string]any {
 
 // EnsureResources reconciles the identity component resources owned by the Keycloak
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
-func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
+func (c *Component) EnsureResources(ctx context.Context, namespace string, image, caBundleImage string, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
 	ctx = logf.IntoContext(ctx, c.log)
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, RouteHostname, []string{RouteHostname}, issuerRef, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
@@ -195,7 +211,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if !certificateReady {
 		return false, certificateMessage, nil
 	}
-	if err := c.EnsureInstance(ctx, namespace, image, identity, &owner); err != nil {
+	if err := c.EnsureInstance(ctx, namespace, image, caBundleImage, identity, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
 
@@ -285,12 +301,12 @@ func (c *Component) IsUserReady(ctx context.Context, namespace, name string) (bo
 	return true, "", nil
 }
 
-func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, owner *metav1.OwnerReference) error {
+func (c *Component) EnsureInstance(ctx context.Context, namespace, image, caBundleImage string, identity neteye.NetEyeIdentitySpec, owner *metav1.OwnerReference) error {
 	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:       keycloakGVK(),
 		Name:      InstanceName,
 		Namespace: namespace,
-		Spec:      keycloakInstanceSpec(image, identity),
+		Spec:      keycloakInstanceSpec(image, caBundleImage, identity),
 		Owner:     owner,
 	})
 	if err != nil {
@@ -305,7 +321,7 @@ func (c *Component) EnsureInstance(ctx context.Context, namespace, image string,
 	return nil
 }
 
-func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[string]any {
+func keycloakInstanceSpec(image, caBundleImage string, identity neteye.NetEyeIdentitySpec) map[string]any {
 	database := identity.DBConnection
 	usernameSecret := database.EffectiveUsernameSecret()
 	passwordSecret := database.EffectivePasswordSecret()
@@ -343,6 +359,7 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 			"headers": "xforwarded",
 		},
 		"additionalOptions": keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry),
+		"unsupported":       map[string]any{"podTemplate": keycloakPodTemplate(caBundleImage)},
 	}
 	if features := keycloakFeatures(identity); len(features) > 0 {
 		spec["features"] = map[string]any{"enabled": features}
@@ -360,6 +377,58 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec) map[
 	}
 	return spec
 }
+
+// keycloakPodTemplate overlays the pod template the Keycloak Operator generates
+// so that Keycloak trusts the certificate authorities of its node. The Keycloak
+// Operator builds its pod from this template and then prepends its own volumes
+// and mounts, editing the first container by position: that entry therefore
+// carries no name and declares only the mount Keycloak needs.
+func keycloakPodTemplate(caBundleImage string) map[string]any {
+	return map[string]any{
+		"spec": map[string]any{
+			"initContainers": []any{map[string]any{
+				"name":            CABundleContainerName,
+				"image":           caBundleImage,
+				"command":         []any{"/bin/sh", "-ec", hostCABundleCommand},
+				"securityContext": caBundleSecurityContext(),
+				"volumeMounts": []any{
+					map[string]any{"name": trustedCAVolumeName, "mountPath": "/work"},
+					map[string]any{"name": hostCAVolumeName, "mountPath": "/input/system/tls-ca-bundle.pem", "readOnly": true},
+				},
+			}},
+			"containers": []any{map[string]any{
+				"volumeMounts": []any{
+					map[string]any{"name": trustedCAVolumeName, "mountPath": HostCATruststorePath, "readOnly": true},
+				},
+			}},
+			"volumes": []any{
+				map[string]any{"name": trustedCAVolumeName, "emptyDir": map[string]any{}},
+				map[string]any{"name": hostCAVolumeName, "hostPath": map[string]any{"path": HostCABundlePath, "type": "File"}},
+			},
+		},
+	}
+}
+
+// caBundleSecurityContext runs the init container as the Keycloak image user so
+// that the bundle it writes is readable by the server, and so that the pod still
+// starts where the Keycloak Operator requires a non-root pod.
+func caBundleSecurityContext() map[string]any {
+	return map[string]any{
+		"runAsNonRoot":             true,
+		"runAsUser":                keycloakImageUser,
+		"allowPrivilegeEscalation": false,
+		"readOnlyRootFilesystem":   true,
+		"capabilities":             map[string]any{"drop": []any{"ALL"}},
+		"seccompProfile":           map[string]any{"type": "RuntimeDefault"},
+	}
+}
+
+// hostCABundleCommand rewrites the node bundle into a PEM file Keycloak can
+// parse: the extracted host bundle carries comments and "TRUSTED CERTIFICATE"
+// blocks, and Keycloak discards a whole file once one block fails to parse.
+const hostCABundleCommand = `bundle=/work/ca-bundle.pem
+sed -e '/^#/d' -e '/^[[:space:]]*$/d' -e 's/TRUSTED //g' /input/system/tls-ca-bundle.pem > "$bundle.tmp"
+mv "$bundle.tmp" "$bundle"`
 
 func (c *Component) EnsureIngressNetworkPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
 	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{

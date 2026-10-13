@@ -188,6 +188,7 @@ func TestNetEyeValidatorRejectsManagedKeycloakOptions(t *testing.T) {
 		{name: "relative path", optionName: "http-relative-path", wantErr: true},
 		{name: "proxy headers", optionName: "proxy-headers", wantErr: true},
 		{name: "cluster name", optionName: "cache-embedded-cluster-name", wantErr: true},
+		{name: "truststore paths", optionName: "truststore-paths", wantErr: true},
 		{name: "telemetry logs", optionName: "telemetry-logs-enabled", wantErr: true},
 		{name: "telemetry metrics", optionName: "telemetry-metrics-enabled", wantErr: true},
 		{name: "metrics", optionName: "metrics-enabled", wantErr: true},
