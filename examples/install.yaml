@@ -23,7 +23,7 @@ spec:
   source:
     type: Image
     image:
-      ref: ghcr.io/neteye-platform/neteye-operator-catalog:latest
+      ref: ghcr.io/neteye-platform/neteye-catalog:latest
       pollIntervalMinutes: 10
 ---
 apiVersion: olm.operatorframework.io/v1

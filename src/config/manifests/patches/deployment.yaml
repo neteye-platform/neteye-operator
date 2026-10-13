@@ -131,7 +131,7 @@ spec:
                       }
                       - {
                         name: RELATED_IMAGE_EDOT_GATEWAY,
-                        value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.4@sha256:0597fe7cad118fcaee15a8691088eff7b60fdd1501bd84fc91b90066d79c9afd,
+                        value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.5@sha256:e167d4a672625d7049f00b631cd2914f94d878377322f5f90dacb199f87e292f,
                       }
                       - {
                         name: RELATED_IMAGE_CA_BUNDLE,

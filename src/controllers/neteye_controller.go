@@ -176,7 +176,9 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		return ctrl.Result{}, fmt.Errorf("construct component lifecycle graph: %w", err)
 	}
 	results, err := runComponentOperations(graph, map[componentID]componentOperation{
-		identityComponentID: func() (componentResult, error) { return r.reconcileKeycloak(ctx, ne, components.KeycloakImage) },
+		identityComponentID: func() (componentResult, error) {
+			return r.reconcileKeycloak(ctx, ne, components.KeycloakImage, components.CABundleImage)
+		},
 		otelCollectorComponentID: func() (componentResult, error) {
 			return r.reconcileOTelCollector(ctx, ne, components.OTelCollectorImage, components.CABundleImage)
 		},
@@ -500,7 +502,7 @@ func gatewayListeners(ne *neteye.NetEye) []resources.GatewayListener {
 	return listeners
 }
 
-func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.NetEye, image string) (componentResult, error) {
+func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.NetEye, image, caBundleImage string) (componentResult, error) {
 	log := ctrl.LoggerFrom(ctx)
 	owner := ownerReferenceFor(ne)
 	log.Info("Started Keycloak reconciliation", "namespace", ne.Namespace, "name", owner.Name)
@@ -515,7 +517,7 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, message, image)
 		return degradedResult(identityComponentID, "IssuerCheckFailed", message, r.failureRequeue(), err)
 	}
-	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, ne.Spec.Identity, ne.Spec.PermissionSync, keycloak.WorkloadNamespace, ne.Spec.Gateway.Name, issuerRef, owner)
+	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, caBundleImage, ne.Spec.Identity, ne.Spec.PermissionSync, keycloak.WorkloadNamespace, ne.Spec.Gateway.Name, issuerRef, owner)
 	if err != nil {
 		log.Error(err, "failed to ensure keycloak resources", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to ensure keycloak resources in namespace %q: %v", keycloak.WorkloadNamespace, err), image)

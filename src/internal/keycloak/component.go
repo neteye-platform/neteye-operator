@@ -7,6 +7,7 @@ package keycloak
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -46,10 +47,25 @@ const (
 	InfinispanClusterName = keycloakconfig.InfinispanClusterName
 	HTTPPort              = int64(8080)
 	HTTPRelativePath      = keycloakconfig.HTTPRelativePath
-	KubeSystemNamespace   = "kube-system"
 	// OperatorSystemNamespace runs the NetEye operator itself, which reaches the
 	// Keycloak Admin API in-cluster to reconcile KeycloakClient resources.
 	OperatorSystemNamespace = "neteye-system"
+	// HostCABundlePath is the node trust bundle mounted into the Keycloak pods, so
+	// that Keycloak trusts the authorities its host trusts, as it did on bare-metal
+	// NetEye. Without it an LDAP or OIDC provider holding a locally issued
+	// certificate fails the TLS handshake.
+	HostCABundlePath = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+	// HostCATruststorePath holds the normalized host bundle inside the Keycloak
+	// truststore folder, which the server scans recursively on startup.
+	HostCATruststorePath = keycloakconfig.TruststoreFolder + "/neteye-host-ca"
+	// CABundleContainerName normalizes the host bundle before Keycloak starts.
+	CABundleContainerName = "neteye-kc-ca-bundle"
+
+	hostCAVolumeName    = "host-ca"
+	trustedCAVolumeName = "trusted-ca"
+	// keycloakImageUser is the uid the Keycloak image runs as.
+	keycloakImageUser = int64(1000)
+
 	// AdminSecretName is the Secret the Keycloak Operator creates with the
 	// bootstrap admin credentials of the Keycloak instance.
 	AdminSecretName        = InstanceName + "-initial-admin"
@@ -174,12 +190,12 @@ func clusterExtensionSpec() map[string]any {
 
 // EnsureResources reconciles the identity component resources owned by the Keycloak
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
-func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, permissionSync neteye.NetEyePermissionSyncSpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
+func (c *Component) EnsureResources(ctx context.Context, namespace string, image, caBundleImage string, identity neteye.NetEyeIdentitySpec, permissionSync neteye.NetEyePermissionSyncSpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
 	ctx = logf.IntoContext(ctx, c.log)
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, RouteHostname, []string{RouteHostname}, issuerRef, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
 	}
-	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, externalDatabasePort(identity.DBConnection), identityTelemetryEnabled(identity), &owner); err != nil {
+	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak workload network policy: %w", err)
 	}
 	if err := c.EnsureIngressNetworkPolicy(ctx, namespace, &owner); err != nil {
@@ -189,23 +205,13 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 		return false, "", fmt.Errorf("ensure keycloak host management policy: %w", err)
 	}
 	// PermissionSync is part of every deployment, so the instance always runs
-	// the login-sync authenticator: its client secret and the CA it trusts
-	// must exist before the instance references them.
+	// the login-sync authenticator, and its client secret must exist before the
+	// instance references it. The authenticator reaches PermissionSync through
+	// the Gateway: the egress policy above allows it, and the host trust bundle
+	// the pod template mounts covers the CA that signs the Gateway certificates.
 	wiring := loginSyncWiringFor(permissionSync)
-	if err := c.EnsureGatewayEgressPolicy(ctx, namespace, &owner); err != nil {
-		return false, "", fmt.Errorf("ensure keycloak gateway egress policy: %w", err)
-	}
 	if err := c.ensureCallerClientSecret(ctx, namespace, &owner); err != nil {
 		return false, "", err
-	}
-	if wiring.rootCASecretName != "" {
-		trusted, message, err := c.ensureRootCATrust(ctx, namespace, wiring.rootCASecretName, owner)
-		if err != nil {
-			return false, "", err
-		}
-		if !trusted {
-			return false, message, nil
-		}
 	}
 	certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
 	if err != nil {
@@ -214,7 +220,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if !certificateReady {
 		return false, certificateMessage, nil
 	}
-	if err := c.EnsureInstance(ctx, namespace, image, identity, wiring, &owner); err != nil {
+	if err := c.EnsureInstance(ctx, namespace, image, caBundleImage, identity, wiring, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
 
@@ -304,12 +310,12 @@ func (c *Component) IsUserReady(ctx context.Context, namespace, name string) (bo
 	return true, "", nil
 }
 
-func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, wiring loginSyncWiring, owner *metav1.OwnerReference) error {
+func (c *Component) EnsureInstance(ctx context.Context, namespace, image, caBundleImage string, identity neteye.NetEyeIdentitySpec, wiring loginSyncWiring, owner *metav1.OwnerReference) error {
 	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:       keycloakGVK(),
 		Name:      InstanceName,
 		Namespace: namespace,
-		Spec:      keycloakInstanceSpec(image, identity, wiring),
+		Spec:      keycloakInstanceSpec(image, caBundleImage, identity, wiring),
 		Owner:     owner,
 	})
 	if err != nil {
@@ -324,7 +330,7 @@ func (c *Component) EnsureInstance(ctx context.Context, namespace, image string,
 	return nil
 }
 
-func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec, wiring loginSyncWiring) map[string]any {
+func keycloakInstanceSpec(image, caBundleImage string, identity neteye.NetEyeIdentitySpec, wiring loginSyncWiring) map[string]any {
 	database := identity.DBConnection
 	usernameSecret := database.EffectiveUsernameSecret()
 	passwordSecret := database.EffectivePasswordSecret()
@@ -362,9 +368,7 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec, wiri
 			"headers": "xforwarded",
 		},
 		"additionalOptions": append(keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry), loginSyncOptions(wiring)...),
-	}
-	if truststores := loginSyncTruststores(wiring); truststores != nil {
-		spec["truststores"] = truststores
+		"unsupported":       map[string]any{"podTemplate": keycloakPodTemplate(caBundleImage)},
 	}
 	if features := keycloakFeatures(identity); len(features) > 0 {
 		spec["features"] = map[string]any{"enabled": features}
@@ -383,9 +387,61 @@ func keycloakInstanceSpec(image string, identity neteye.NetEyeIdentitySpec, wiri
 	return spec
 }
 
+// keycloakPodTemplate overlays the pod template the Keycloak Operator generates
+// so that Keycloak trusts the certificate authorities of its node. The Keycloak
+// Operator builds its pod from this template and then prepends its own volumes
+// and mounts, editing the first container by position: that entry therefore
+// carries no name and declares only the mount Keycloak needs.
+func keycloakPodTemplate(caBundleImage string) map[string]any {
+	return map[string]any{
+		"spec": map[string]any{
+			"initContainers": []any{map[string]any{
+				"name":            CABundleContainerName,
+				"image":           caBundleImage,
+				"command":         []any{"/bin/sh", "-ec", hostCABundleCommand},
+				"securityContext": caBundleSecurityContext(),
+				"volumeMounts": []any{
+					map[string]any{"name": trustedCAVolumeName, "mountPath": "/work"},
+					map[string]any{"name": hostCAVolumeName, "mountPath": "/input/system/tls-ca-bundle.pem", "readOnly": true},
+				},
+			}},
+			"containers": []any{map[string]any{
+				"volumeMounts": []any{
+					map[string]any{"name": trustedCAVolumeName, "mountPath": HostCATruststorePath, "readOnly": true},
+				},
+			}},
+			"volumes": []any{
+				map[string]any{"name": trustedCAVolumeName, "emptyDir": map[string]any{}},
+				map[string]any{"name": hostCAVolumeName, "hostPath": map[string]any{"path": HostCABundlePath, "type": "File"}},
+			},
+		},
+	}
+}
+
+// caBundleSecurityContext runs the init container as the Keycloak image user so
+// that the bundle it writes is readable by the server, and so that the pod still
+// starts where the Keycloak Operator requires a non-root pod.
+func caBundleSecurityContext() map[string]any {
+	return map[string]any{
+		"runAsNonRoot":             true,
+		"runAsUser":                keycloakImageUser,
+		"allowPrivilegeEscalation": false,
+		"readOnlyRootFilesystem":   true,
+		"capabilities":             map[string]any{"drop": []any{"ALL"}},
+		"seccompProfile":           map[string]any{"type": "RuntimeDefault"},
+	}
+}
+
+// hostCABundleCommand rewrites the node bundle into a PEM file Keycloak can
+// parse: the extracted host bundle carries comments and "TRUSTED CERTIFICATE"
+// blocks, and Keycloak discards a whole file once one block fails to parse.
+const hostCABundleCommand = `bundle=/work/ca-bundle.pem
+sed -e '/^#/d' -e '/^[[:space:]]*$/d' -e 's/TRUSTED //g' /input/system/tls-ca-bundle.pem > "$bundle.tmp"
+mv "$bundle.tmp" "$bundle"`
+
 func (c *Component) EnsureIngressNetworkPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
 	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
-		GVK:  nativeNetworkPolicyGVK(),
+		GVK:  ciliumNetworkPolicyGVK(),
 		Name: IngressPolicyName, Namespace: namespace,
 		Spec:  keycloakIngressNetworkPolicySpec(),
 		Owner: owner,
@@ -395,26 +451,37 @@ func (c *Component) EnsureIngressNetworkPolicy(ctx context.Context, namespace st
 
 func keycloakIngressNetworkPolicySpec() map[string]any {
 	return map[string]any{
-		"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()},
-		"policyTypes": []any{"Ingress"},
+		"endpointSelector": map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()},
 		"ingress": []any{
+			// Infinispan cluster transport, scoped to Keycloak peers: a bare-metal
+			// instance kept alive during a migration must not share session state.
 			map[string]any{
-				"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}, // TODO: add this field in NE 4.51 "from":  []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
+				"fromEndpoints": []any{map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()}},
+				"toPorts":       []any{ciliumTCPPorts("7800", "57800")},
 			},
 			// The operator calls the Keycloak Admin API to reconcile KeycloakClient
 			// resources, so it needs its own way in through the default deny.
 			map[string]any{
-				"from":  []any{namespaceSelector(OperatorSystemNamespace)},
-				"ports": []any{networkPort(int32(HTTPPort), "TCP")},
+				"fromEndpoints": []any{ciliumNamespaceSelector(OperatorSystemNamespace)},
+				"toPorts":       []any{ciliumTCPPorts(strconv.FormatInt(HTTPPort, 10))},
 			},
 		},
 	}
 }
 
-func namespaceSelector(namespace string) map[string]any {
-	return map[string]any{
-		"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": namespace}},
+// ciliumNamespaceSelector matches every endpoint in a namespace.
+func ciliumNamespaceSelector(namespace string) map[string]any {
+	return map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": namespace}}
+}
+
+// ciliumTCPPorts builds a toPorts entry. CiliumNetworkPolicy ports are strings,
+// unlike the integers a native NetworkPolicy takes.
+func ciliumTCPPorts(ports ...string) map[string]any {
+	entries := make([]any, 0, len(ports))
+	for _, port := range ports {
+		entries = append(entries, map[string]any{"port": port, "protocol": "TCP"})
 	}
+	return map[string]any{"ports": entries}
 }
 
 func (c *Component) EnsureHostManagementPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
@@ -433,41 +500,34 @@ func keycloakHostManagementPolicySpec() map[string]any {
 		"ingress": []any{
 			map[string]any{
 				"fromEntities": []any{"ingress"},
-				"toPorts":      []any{map[string]any{"ports": []any{map[string]any{"port": "8080", "protocol": "TCP"}}}},
+				"toPorts":      []any{ciliumTCPPorts(strconv.FormatInt(HTTPPort, 10))},
 			},
 			map[string]any{
 				"fromEntities": []any{"host", "remote-node"},
-				"toPorts":      []any{map[string]any{"ports": []any{map[string]any{"port": "9000", "protocol": "TCP"}}}},
+				"toPorts":      []any{ciliumTCPPorts("9000")},
 			},
 		},
 	}
 }
 
-// EnsureWorkloadNetworkPolicy creates the Keycloak egress policy.
-func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, databasePort int32, telemetryEnabled bool, owner *metav1.OwnerReference) error {
+// EnsureWorkloadNetworkPolicy reconciles the Keycloak egress policy.
+func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
 	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
-		GVK:  nativeNetworkPolicyGVK(),
+		GVK:  ciliumNetworkPolicyGVK(),
 		Name: EgressPolicyName, Namespace: namespace, Owner: owner,
-		Spec: keycloakEgressNetworkPolicySpec(databasePort, telemetryEnabled),
+		Spec: keycloakEgressNetworkPolicySpec(),
 	})
 	return err
 }
 
-func keycloakEgressNetworkPolicySpec(databasePort int32, telemetryEnabled bool) map[string]any {
-	egress := []any{
-		// Standard NetworkPolicy cannot select an external database by DNS name.
-		// Restrict the interim rule to the configured database TCP port only.
-		map[string]any{"ports": []any{networkPort(databasePort, "TCP")}},
-		map[string]any{"to": []any{namespaceAndPodSelector(KubeSystemNamespace, map[string]any{"k8s-app": "kube-dns"})}, "ports": []any{networkPort(53, "TCP"), networkPort(53, "UDP")}},
-		map[string]any{"ports": []any{networkPort(7800, "TCP"), networkPort(57800, "TCP")}}, // TODO: add this field in NE 4.51 "to": []any{map[string]any{"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()}}},
-	}
-	if telemetryEnabled {
-		egress = append(egress, map[string]any{"to": []any{namespaceAndPodSelector(WorkloadNamespace, map[string]any{"app": "otel-edot-gateway"})}, "ports": []any{networkPort(4317, "TCP")}})
-	}
+// keycloakEgressNetworkPolicySpec allows every egress destination. Upstream
+// identity providers (OIDC, SAML, LDAP federation) are configured in the Keycloak
+// admin console, so the operator never learns their endpoints, and a provider may
+// sit outside the cluster, on the node subnet, or in the cluster itself.
+func keycloakEgressNetworkPolicySpec() map[string]any {
 	return map[string]any{
-		"podSelector": map[string]any{"matchLabels": keycloakWorkloadLabels()},
-		"policyTypes": []any{"Egress"},
-		"egress":      egress,
+		"endpointSelector": map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()},
+		"egress":           []any{map[string]any{"toEntities": []any{"all"}}},
 	}
 }
 
@@ -522,30 +582,11 @@ func keycloakTelemetryResourceAttributes(attributes map[string]string) map[strin
 	return merged
 }
 
-func networkPort(port int32, protocol string) map[string]any {
-	return map[string]any{"protocol": protocol, "port": int64(port)}
-}
-
-func keycloakWorkloadLabels() map[string]any {
-	return map[string]any{
-		"app":                          "keycloak",
-		"app.kubernetes.io/instance":   InstanceName,
-		"app.kubernetes.io/managed-by": "keycloak-operator",
-	}
-}
-
 func keycloakCiliumWorkloadLabels() map[string]any {
 	return map[string]any{
 		"k8s:app":                          "keycloak",
 		"k8s:app.kubernetes.io/instance":   InstanceName,
 		"k8s:app.kubernetes.io/managed-by": "keycloak-operator",
-	}
-}
-
-func namespaceAndPodSelector(namespace string, podLabels map[string]any) map[string]any {
-	return map[string]any{
-		"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": namespace}},
-		"podSelector":       map[string]any{"matchLabels": podLabels},
 	}
 }
 
@@ -616,10 +657,6 @@ func clusterExtensionGVK() schema.GroupVersionKind {
 		Version: "v1",
 		Kind:    "ClusterExtension",
 	}
-}
-
-func nativeNetworkPolicyGVK() schema.GroupVersionKind {
-	return schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"}
 }
 
 func ciliumNetworkPolicyGVK() schema.GroupVersionKind {

@@ -39,7 +39,7 @@ jobs:
     steps:
       - name: Create write token
         id: release-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.NETEYE_APP_ID }}
           private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
@@ -284,18 +284,18 @@ jobs:
 
       - name: Create catalog read token
         id: catalog-read-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.NETEYE_APP_ID }}
           private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: neteye-operator-catalog
+          repositories: neteye-catalog
           permission-contents: read
 
       - name: Checkout catalog
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: neteye-platform/neteye-operator-catalog
+          repository: neteye-platform/neteye-catalog
           token: ${{ steps.catalog-read-token.outputs.token }}
           path: catalog
           ref: main
@@ -309,7 +309,7 @@ jobs:
         run: |
           python3 -m pip install --disable-pip-version-check -r hack/requirements.txt
           ./hack/update_catalog.py \
-            --catalog ./catalog/catalog/index.yaml \
+            --catalog ./catalog/catalog \
             --version "$VERSION" \
             --neteye-version "$NETEYE_VERSION" \
             --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle@$BUNDLE_DIGEST"
@@ -318,38 +318,41 @@ jobs:
         id: catalog-changes
         working-directory: catalog
         run: |
-          if git diff --quiet; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           mapfile -t changed_files < <(
             git status --porcelain=v1 --untracked-files=all | cut -c4-
           )
-          if [[ ${#changed_files[@]} -ne 1 || ${changed_files[0]} != "catalog/index.yaml" ]]; then
-            echo "error: catalog update modified unexpected files" >&2
-            printf '  %s\n' "${changed_files[@]}" >&2
-            exit 1
+          if [[ ${#changed_files[@]} -eq 0 ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          for changed_file in "${changed_files[@]}"; do
+            if [[ $changed_file != catalog/* ]]; then
+              echo "error: catalog update modified unexpected files" >&2
+              printf '  %s\n' "${changed_files[@]}" >&2
+              exit 1
+            fi
+          done
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Validate catalog
         run: |
           docker run --rm \
             -v "$PWD/catalog/catalog:/configs:ro" \
-            "quay.io/operator-framework/opm:v1.73.0@sha256:e5a6220603fb4504d58c6e3e488386b817e3695c906a62ee0370b5faedc3799a" \
+            "quay.io/operator-framework/opm:v1.74.0@sha256:b32d3891616662620da08d7f0ec42c2e69fa2de43427dc975d35b12f7a969a0f" \
             validate /configs
 
       - name: Create catalog write token
         if: ${{ steps.catalog-changes.outputs.changed == 'true' }}
         id: catalog-write-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.NETEYE_APP_ID }}
           private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: neteye-operator-catalog
+          repositories: neteye-catalog
           permission-contents: write
           permission-pull-requests: write
+          permission-checks: read
 
       - name: Create catalog pull request
         id: catalog-pr
@@ -358,7 +361,7 @@ jobs:
         with:
           token: ${{ steps.catalog-write-token.outputs.token }}
           path: catalog
-          add-paths: catalog/index.yaml
+          add-paths: catalog
           sign-commits: true
           commit-message: >-
             feat: add v${{ steps.input.outputs.version != '' &&
@@ -384,24 +387,28 @@ jobs:
           PR_NUMBER: ${{ steps.catalog-pr.outputs.pull-request-number }}
         run: |
           pr_number="$PR_NUMBER"
-          repo="neteye-platform/neteye-operator-catalog"
+          repo="neteye-platform/neteye-catalog"
 
-          # Checks are registered asynchronously after PR creation; gh errors out
-          # instead of waiting when none exist yet, so poll until one appears.
-          for attempt in $(seq 1 10); do
-            output="$(gh pr checks "$pr_number" --repo "$repo" 2>&1)" || true
-            if [[ "$output" != *"no checks reported"* ]]; then
-              break
-            fi
-            if [[ "$attempt" -eq 10 ]]; then
-              echo "$output" >&2
+          # Checks are registered asynchronously after PR creation, and the
+          # Actions queue has taken up to ~3 minutes to do it, so allow a
+          # generous deadline rather than a fixed 10 attempts.
+          #
+          # Wait for the *required* contexts specifically. Breaking as soon as
+          # any check exists can hand the pull request to --watch before the
+          # required workflows have registered; --watch would then see only
+          # green third-party checks and --admin would merge it untested.
+          deadline=$((SECONDS + 900))
+          until [[ "$(gh pr checks "$pr_number" --repo "$repo" --required --json name --jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; do
+            if ((SECONDS >= deadline)); then
+              echo "::error::no required checks reported for PR #$pr_number within 15 minutes"
+              gh pr checks "$pr_number" --repo "$repo" >&2 || true
               exit 1
             fi
-            echo "No checks reported yet for PR #$pr_number (attempt $attempt/10); retrying in 15s..."
+            echo "No required checks reported yet for PR #$pr_number (${SECONDS}s elapsed); retrying in 15s..."
             sleep 15
           done
 
-          gh pr checks "$pr_number" --repo "$repo" --watch --interval 30 --fail-fast
+          gh pr checks "$pr_number" --repo "$repo" --required --watch --interval 30 --fail-fast
           # --admin bypasses the base branch protection merge restriction; checks
           # above already gate the merge.
           gh pr merge "$pr_number" --repo "$repo" --squash --delete-branch --admin

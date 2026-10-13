@@ -84,7 +84,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -94,7 +94,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish operator image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: src
           file: src/Dockerfile
@@ -107,7 +107,9 @@ jobs:
 
   build-bundle:
     name: Build nightly bundle image
-    needs: compute-candidate-tag
+    # Depends on build-operator so a published nightly bundle never references
+    # an operator image that does not exist yet.
+    needs: [compute-candidate-tag, build-operator]
     if: ${{ needs.compute-candidate-tag.outputs.has-new-commit == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -121,8 +123,42 @@ jobs:
           # ref: main
           persist-credentials: false
 
+      # Caches are not restored here: this job publishes the bundle image, and a
+      # poisoned cache would reach the published artifact. The bundle tooling is
+      # installed from scratch instead.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/go.mod
+          cache: false
+
+      # Dockerfile.bundle only copies the committed manifests, which pin the
+      # released operator image. Without this the nightly bundle advertises a
+      # new version while deploying the last release.
+      - name: Render the bundle against the nightly operator image
+        env:
+          VERSION_TAG: ${{ needs.compute-candidate-tag.outputs.version-tag }}
+        run: make bundle VERSION="$VERSION_TAG"
+
+      - name: Verify the rendered bundle references the nightly operator image
+        env:
+          OPERATOR_IMAGE: ghcr.io/${{ github.repository_owner }}/neteye-operator:${{ needs.compute-candidate-tag.outputs.version-tag }}
+        run: |
+          set -euo pipefail
+          csv=(src/bundle/manifests/*.clusterserviceversion.yaml)
+          if [[ ${#csv[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one ClusterServiceVersion, found ${#csv[@]}"
+            printf '  %s\n' "${csv[@]}"
+            exit 1
+          fi
+          if ! grep -qF "image: $OPERATOR_IMAGE" "${csv[0]}"; then
+            echo "::error::${csv[0]} does not reference $OPERATOR_IMAGE"
+            grep -n "image: ghcr.io" "${csv[0]}" || true
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -132,7 +168,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish bundle image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: src
           file: src/Dockerfile.bundle
@@ -156,12 +192,12 @@ jobs:
     steps:
       - name: Create catalog read token
         id: catalog-read-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.NETEYE_APP_ID }}
           private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: neteye-operator-catalog
+          repositories: neteye-catalog
           permission-contents: read
 
       - name: Checkout operator
@@ -174,7 +210,7 @@ jobs:
       - name: Checkout catalog
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: neteye-platform/neteye-operator-catalog
+          repository: neteye-platform/neteye-catalog
           token: ${{ steps.catalog-read-token.outputs.token }}
           path: catalog
           ref: main
@@ -202,7 +238,7 @@ jobs:
           VERSION_TAG: ${{ needs.compute-candidate-tag.outputs.version-tag }}
         run: |
           ./operator/hack/update_catalog.py \
-            --catalog ./catalog/catalog/index.yaml \
+            --catalog ./catalog/catalog \
             --nightly \
             --neteye-version "$NETEYE_VERSION" \
             --bundle-image "ghcr.io/neteye-platform/neteye-operator-bundle:$VERSION_TAG"
@@ -211,18 +247,20 @@ jobs:
         id: changes
         working-directory: catalog
         run: |
-          if git diff --quiet; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           mapfile -t changed_files < <(
             git status --porcelain=v1 --untracked-files=all | cut -c4-
           )
-          if [[ ${#changed_files[@]} -ne 1 || ${changed_files[0]} != "catalog/index.yaml" ]]; then
-            echo "error: catalog update modified unexpected files" >&2
-            printf '  %s\n' "${changed_files[@]}" >&2
-            exit 1
+          if [[ ${#changed_files[@]} -eq 0 ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          for changed_file in "${changed_files[@]}"; do
+            if [[ $changed_file != catalog/* ]]; then
+              echo "error: catalog update modified unexpected files" >&2
+              printf '  %s\n' "${changed_files[@]}" >&2
+              exit 1
+            fi
+          done
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Validate catalog
@@ -236,12 +274,12 @@ jobs:
       - name: Create catalog write token
         if: ${{ steps.changes.outputs.changed == 'true' }}
         id: catalog-write-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.NETEYE_APP_ID }}
           private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: neteye-operator-catalog
+          repositories: neteye-catalog
           permission-contents: write
           permission-pull-requests: write
           permission-checks: read
@@ -253,7 +291,7 @@ jobs:
         with:
           token: ${{ steps.catalog-write-token.outputs.token }}
           path: catalog
-          add-paths: catalog/index.yaml
+          add-paths: catalog
           sign-commits: true
           commit-message: "chore: nightly ${{ needs.compute-candidate-tag.outputs.tag }}"
           branch: nightly/neteye-operator-${{ needs.compute-candidate-tag.outputs.tag }}
@@ -271,24 +309,28 @@ jobs:
           PR_NUMBER: ${{ steps.catalog-pr.outputs.pull-request-number }}
         run: |
           pr_number="$PR_NUMBER"
-          repo="neteye-platform/neteye-operator-catalog"
+          repo="neteye-platform/neteye-catalog"
 
-          # Checks are registered asynchronously after PR creation; gh errors out
-          # instead of waiting when none exist yet, so poll until one appears.
-          for attempt in $(seq 1 10); do
-            output="$(gh pr checks "$pr_number" --repo "$repo" 2>&1)" || true
-            if [[ "$output" != *"no checks reported"* ]]; then
-              break
-            fi
-            if [[ "$attempt" -eq 10 ]]; then
-              echo "$output" >&2
+          # Checks are registered asynchronously after PR creation, and the
+          # Actions queue has taken up to ~3 minutes to do it, so allow a
+          # generous deadline rather than a fixed 10 attempts.
+          #
+          # Wait for the *required* contexts specifically. Breaking as soon as
+          # any check exists can hand the pull request to --watch before the
+          # required workflows have registered; --watch would then see only
+          # green third-party checks and --admin would merge it untested.
+          deadline=$((SECONDS + 900))
+          until [[ "$(gh pr checks "$pr_number" --repo "$repo" --required --json name --jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; do
+            if ((SECONDS >= deadline)); then
+              echo "::error::no required checks reported for PR #$pr_number within 15 minutes"
+              gh pr checks "$pr_number" --repo "$repo" >&2 || true
               exit 1
             fi
-            echo "No checks reported yet for PR #$pr_number (attempt $attempt/10); retrying in 15s..."
+            echo "No required checks reported yet for PR #$pr_number (${SECONDS}s elapsed); retrying in 15s..."
             sleep 15
           done
 
-          gh pr checks "$pr_number" --repo "$repo" --watch --interval 30 --fail-fast
+          gh pr checks "$pr_number" --repo "$repo" --required --watch --interval 30 --fail-fast
           # --admin bypasses the base branch protection merge restriction; the
           # automation is a configured bypass actor, checks above already gate the merge.
           gh pr merge "$pr_number" --repo "$repo" --squash --delete-branch --admin

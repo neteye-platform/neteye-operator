@@ -60,44 +60,6 @@ func TestLoginSyncOptionsNeverCarryTheSecretOrPlaintext(t *testing.T) {
 	}
 }
 
-func TestLoginSyncTruststoreFollowsTheTrustedCA(t *testing.T) {
-	if got := loginSyncTruststores(testLoginSyncWiring()); !reflect.DeepEqual(got, map[string]any{truststoreName: map[string]any{"configMap": map[string]any{"name": RootCATrustConfigMapName}}}) {
-		t.Errorf("truststores = %v", got)
-	}
-	if got := loginSyncTruststores(loginSyncWiring{overallDeadlineMilliseconds: 10000}); got != nil {
-		t.Errorf("truststores = %v, want none when only the system roots are trusted", got)
-	}
-}
-
-// TestEnsureRootCATrustCopiesOnlyThePublicCertificate guards the CA private
-// key: the CA Secret the internal issuer signs with carries it, and Keycloak
-// must never receive it.
-func TestEnsureRootCATrustCopiesOnlyThePublicCertificate(t *testing.T) {
-	ca := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: WorkloadNamespace, Name: "neteye-root-ca"},
-		Data:       map[string][]byte{corev1.TLSCertKey: []byte("public certificate"), corev1.TLSPrivateKeyKey: []byte("private key")},
-	}
-	c := fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).WithObjects(ca).Build()
-	component := NewComponent(c, logr.Discard())
-
-	trusted, message, err := component.ensureRootCATrust(context.Background(), WorkloadNamespace, "neteye-root-ca", testOwner())
-	if err != nil || !trusted {
-		t.Fatalf("ensureRootCATrust = %t, %q, %v", trusted, message, err)
-	}
-	configMap := &corev1.ConfigMap{}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: WorkloadNamespace, Name: RootCATrustConfigMapName}, configMap); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(configMap.Data, map[string]string{rootCATrustKey: "public certificate"}) {
-		t.Errorf("trust ConfigMap = %v, want the public certificate only", configMap.Data)
-	}
-
-	missing := NewComponent(fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).Build(), logr.Discard())
-	if trusted, message, err := missing.ensureRootCATrust(context.Background(), WorkloadNamespace, "neteye-root-ca", testOwner()); err != nil || trusted || message == "" {
-		t.Errorf("without the CA Secret = %t, %q, %v, want waiting", trusted, message, err)
-	}
-}
-
 func TestEnsureCallerClientSecretIsGeneratedOnce(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(internalAdminScheme(t)).Build()
 	component := NewComponent(c, logr.Discard())
@@ -125,23 +87,6 @@ func TestEnsureCallerClientSecretIsGeneratedOnce(t *testing.T) {
 	}
 	if string(second.Data[permissionsyncconfig.CallerClientSecretKey]) != value {
 		t.Error("an existing client secret must never be regenerated")
-	}
-}
-
-// TestKeycloakGatewayEgressPolicy pins what Cilium requires of a pod reaching
-// a service through the Gateway: egress to the Gateway itself and to the
-// backend it routes to, both observed on a real cluster.
-func TestKeycloakGatewayEgressPolicy(t *testing.T) {
-	rules := keycloakGatewayEgressPolicySpec(WorkloadNamespace)["egress"].([]any)
-	if len(rules) != 3 {
-		t.Fatalf("egress rules = %d, want the Gateway, PermissionSync and Keycloak itself", len(rules))
-	}
-	if !reflect.DeepEqual(rules[0].(map[string]any)["toEntities"], []any{"ingress"}) {
-		t.Errorf("first rule = %v, want the Gateway entity", rules[0])
-	}
-	backend := rules[1].(map[string]any)["toEndpoints"].([]any)[0].(map[string]any)["matchLabels"].(map[string]any)
-	if backend["k8s:app"] != permissionsyncconfig.WorkloadAppLabel {
-		t.Errorf("second rule selects %v, want the PermissionSync pods", backend)
 	}
 }
 

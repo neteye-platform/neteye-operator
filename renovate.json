@@ -12,16 +12,13 @@
     {
       "description": "Do not pin the Neteye Operator catalog digest",
       "matchDatasources": ["docker"],
-      "matchPackageNames": ["ghcr.io/neteye-platform/neteye-operator-catalog"],
+      "matchPackageNames": ["ghcr.io/neteye-platform/neteye-catalog"],
       "pinDigests": false,
       "minimumReleaseAge": null
     },
     {
       "description": "Keep both copies of the operand images in one pull request so they cannot drift",
-      "matchFileNames": [
-        "src/api/v1alpha1/neteyeconfig_types.go",
-        "src/config/manifests/patches/deployment.yaml"
-      ],
+      "matchFileNames": ["src/api/v1alpha1/neteyeconfig_types.go", "src/config/manifests/patches/deployment.yaml"],
       "groupName": "operand images"
     }
   ],

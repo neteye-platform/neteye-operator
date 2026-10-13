@@ -474,29 +474,26 @@ func TestReconcileIdentityTelemetryEnableAndDisable(t *testing.T) {
 		if err != nil || !found || optimized {
 			t.Errorf("startOptimized = %t, found=%t, err=%v", optimized, found, err)
 		}
-		for _, policy := range []struct {
-			gvk schema.GroupVersionKind
-			// baseRules is the rule count with identity telemetry disabled.
-			// The login-sync authenticator reaches PermissionSync through
-			// the Gateway, which the separate Cilium policy allows.
-			baseRules  int
-			name, path string
-		}{
-			{networkPolicyGVK, 3, keycloak.EgressPolicyName, "egress"},
-			{ciliumPolicyGVK, 2, elasticstack.EDOTGatewayIngressPolicyName, "ingress"},
-		} {
-			object := requireExists(ctx, t, c, policy.gvk, namespace, policy.name)
-			rules, found, err := unstructured.NestedSlice(object.Object, "spec", policy.path)
-			if err != nil || !found {
-				t.Fatalf("read %s rules: found=%t err=%v", policy.name, found, err)
-			}
-			want := policy.baseRules
-			if flags.LogsEnabled || flags.MetricsEnabled {
-				want++
-			}
-			if len(rules) != want {
-				t.Errorf("%s rules = %#v, want %d", policy.name, rules, want)
-			}
+		gateway := requireExists(ctx, t, c, ciliumPolicyGVK, namespace, elasticstack.EDOTGatewayIngressPolicyName)
+		gatewayRules, hasRules, err := unstructured.NestedSlice(gateway.Object, "spec", "ingress")
+		if err != nil || !hasRules {
+			t.Fatalf("read %s rules: found=%t err=%v", elasticstack.EDOTGatewayIngressPolicyName, hasRules, err)
+		}
+		wantRules := 2
+		if flags.LogsEnabled || flags.MetricsEnabled {
+			wantRules++
+		}
+		if len(gatewayRules) != wantRules {
+			t.Errorf("%s rules = %#v, want %d", elasticstack.EDOTGatewayIngressPolicyName, gatewayRules, wantRules)
+		}
+		// Keycloak egress does not vary with telemetry.
+		keycloakEgress := requireExists(ctx, t, c, ciliumPolicyGVK, namespace, keycloak.EgressPolicyName)
+		egressRules, hasEgress, err := unstructured.NestedSlice(keycloakEgress.Object, "spec", "egress")
+		if err != nil || !hasEgress || !reflect.DeepEqual(egressRules, []any{map[string]any{"toEntities": []any{"all"}}}) {
+			t.Errorf("keycloak egress rules = %#v, found=%t err=%v", egressRules, hasEgress, err)
+		}
+		if _, hasDeny, _ := unstructured.NestedSlice(keycloakEgress.Object, "spec", "egressDeny"); hasDeny {
+			t.Error("keycloak egress must carry no deny exceptions")
 		}
 	}
 }
@@ -730,6 +727,16 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(legacyLookup), legacyLookup); !apierrors.IsNotFound(err) {
 		t.Errorf("legacy native default deny still exists or lookup failed: %v", err)
 	}
+
+	keycloakEgress := requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.EgressPolicyName)
+	assertNetEyeOwner(t, keycloakEgress)
+	keycloakEgressRules, found, err := unstructured.NestedSlice(keycloakEgress.Object, "spec", "egress")
+	if err != nil || !found || !reflect.DeepEqual(keycloakEgressRules, []any{map[string]any{"toEntities": []any{"all"}}}) {
+		t.Errorf("keycloak egress = %#v, want every destination allowed", keycloakEgressRules)
+	}
+	if _, hasDeny, _ := unstructured.NestedSlice(keycloakEgress.Object, "spec", "egressDeny"); hasDeny {
+		t.Error("keycloak egress must carry no deny exceptions")
+	}
 	defaultDeny := requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
 	assertNetEyeOwner(t, defaultDeny)
 	assertNetEyeOwner(t, requireExists(ctx, t, c, schema.GroupVersionKind{Group: "coordination.k8s.io", Version: "v1", Kind: "Lease"}, keycloak.WorkloadNamespace, clusterAuthorityLeaseName))
@@ -787,8 +794,8 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	route := requireExists(ctx, t, c, httpRouteGVK, keycloak.WorkloadNamespace, keycloak.HTTPRouteName)
 	assertNetEyeOwner(t, route)
 	assertNetEyeOwner(t, keycloakInstance)
-	assertNetEyeOwner(t, requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.EgressPolicyName))
-	assertNetEyeOwner(t, requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.IngressPolicyName))
+	assertNetEyeOwner(t, requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.EgressPolicyName))
+	assertNetEyeOwner(t, requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.IngressPolicyName))
 	assertNetEyeOwner(t, requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.HostPolicyName))
 	parentRefs, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs")
 	parentRef := parentRefs[0].(map[string]any)

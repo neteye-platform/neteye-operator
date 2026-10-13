@@ -92,22 +92,22 @@ Resolving the internal hostname to the Gateway is a deployment
 responsibility, like the identity hostname: the operator publishes the name
 but does not manage name resolution.
 
-### Keycloak trusts the platform CA, and only its public certificate
+### Keycloak trusts the Gateway certificates through the host trust bundle
 
-Keycloak trusts the CA that signs the Gateway certificates through a
-truststore. The operator copies only the public certificate of the trusted CA
-Secret into a ConfigMap and mounts that ConfigMap. The CA Secret also carries
-the CA private key, which is never mounted into Keycloak. The identity
-component waits for the trusted CA Secret before declaring the Keycloak
-instance, because the authenticator cannot work without it.
+The Gateway certificates are signed by the NetEye internal CA, which the node
+already trusts. Keycloak trusts the node trust bundle, which the identity
+component mounts into its pods, so the authenticator verifies them without a
+separate truststore. No copy of the CA is made for this integration, and the
+CA Secret, which also holds the CA private key, is never mounted into
+Keycloak.
 
 ### Network policy follows the Gateway path
 
-The Keycloak pods are allowed egress to the Gateway on its HTTPS port and to
-the backends the Gateway routes their requests to, PermissionSync and
-Keycloak itself, because Cilium checks traffic through the Gateway against
-both. PermissionSync admits ingress from the Gateway and from the node running
-its probes; the direct path from Keycloak is removed.
+The Keycloak egress policy already allows every destination, because upstream
+identity providers can be anywhere, so it also covers the Gateway path.
+PermissionSync admits ingress from the Gateway and from the node running its
+probes; the direct path from Keycloak is removed, because Cilium presents
+traffic routed through the Gateway as coming from the `ingress` entity.
 
 ## Alternatives considered
 
@@ -132,10 +132,14 @@ certificate lifecycle and a TLS component the platform does not otherwise
 run. The shared Gateway already terminates TLS for the identity service with
 certificates from the same issuer.
 
-### Mount the CA Secret directly as the truststore
+### Give Keycloak a dedicated truststore with the internal CA
 
-It would avoid a copy, but the Secret holds the CA private key, which would
-then be readable inside every Keycloak pod.
+Copying the public certificate of the CA Secret into a ConfigMap truststore
+would not depend on the node trusting the internal CA. It was not chosen,
+because the node trust bundle Keycloak already trusts covers that CA, and a
+second path to the same trust would make the identity component wait on the
+CA Secret for no gain. Mounting the CA Secret itself was never an option: it
+holds the CA private key.
 
 ### Keep the client secret Keycloak-generated and copy it out
 
@@ -155,9 +159,9 @@ A PermissionSync outage now refuses logins on target clients. That is the
 authenticator's intended fail-closed behavior, and binding per client is what
 keeps it from reaching the rest of the realm.
 
-The identity component now depends on the trusted CA Secret and on the
-Gateway publishing PermissionSync; until both exist, logins on target clients
-fail and the respective components report what they wait for.
+Logins on target clients depend on the Gateway publishing PermissionSync and
+on the node trusting the internal CA; until PermissionSync is published the
+component reports what it waits for.
 
 The operator now owns one more credential, the `login-sync` client secret.
 Anyone who can read Secrets in the shared namespace can read it, as for the
