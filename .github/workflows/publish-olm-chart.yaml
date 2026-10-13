@@ -11,7 +11,7 @@ on:
       olm_version:
         description: "OLM release to package (e.g. v1.11.0)"
         required: false
-        default: "v1.11.0"
+        default: "v1.12.0"
 
 permissions:
   contents: read
@@ -24,7 +24,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   CHART_NAME: olmv1
-  OLM_VERSION: ${{ inputs.olm_version || 'v1.11.0' }}
+  OLM_VERSION: ${{ inputs.olm_version || 'v1.12.0' }}
 
 jobs:
   publish-chart:
