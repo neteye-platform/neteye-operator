@@ -25,8 +25,8 @@ GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 # A release branch, not a tag: Renovate cannot resolve it.
 ENVTEST_VERSION ?= release-0.24
-# renovate: datasource=github-releases depName=kubernetes/kubernetes extractVersion=^v(?<version>.+)$
-ENVTEST_K8S_VERSION ?= 1.37.1
+# renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools extractVersion=^envtest-v(?<version>.+)$
+ENVTEST_K8S_VERSION ?= 1.37.0
 CRD_BASES ?= config/crd/bases
 
 .PHONY: all
