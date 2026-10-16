@@ -384,6 +384,7 @@ processors:
         statements:
           - set(attributes["data_stream.namespace"], attributes["icinga2.custom.tenant"]) where attributes["icinga2.custom.tenant"] != nil
           - set(attributes["data_stream.namespace"], "master") where attributes["data_stream.namespace"] == nil
+          - set(attributes["data_stream.dataset"], "icinga2.otel")
   batch:
     send_batch_size: 1000
     timeout: 1s
