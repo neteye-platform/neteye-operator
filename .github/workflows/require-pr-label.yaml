@@ -1,0 +1,33 @@
+name: Require PR Label
+
+# The release workflow derives the version bump from the labels of the merged
+# PRs, so every PR must carry at least one.
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - labeled
+      - unlabeled
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  require-label:
+    name: Has label
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if the pull request has no label
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          if [ -z "$LABELS" ]; then
+            echo "::error::This pull request has no label. Add at least one (e.g. feature, bugfix, dependencies, major): the release version bump is derived from PR labels."
+            exit 1
+          fi
+          echo "Pull request labels: $LABELS"
