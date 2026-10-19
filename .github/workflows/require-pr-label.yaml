@@ -27,8 +27,6 @@ concurrency:
 jobs:
   require-pr-label:
     name: Require PR Label
-    # Skipped on merge_group events so it does not block merges.
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Fail if the pull request has no label
