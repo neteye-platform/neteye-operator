@@ -1,9 +1,16 @@
+# Workflow: require at least one label on every pull request. No inputs.
+#
+# The release workflow derives the version bump from the labels of the merged
+# PRs, so an unlabeled PR would silently be treated as a patch.
+#
+# On merge_group events the job is skipped (so it does not block merges).
+
 name: Require PR Label
 
-# The release workflow derives the version bump from the labels of the merged
-# PRs, so every PR must carry at least one.
 on:
   pull_request:
+    branches:
+      - "**"
     types:
       - opened
       - reopened
@@ -18,8 +25,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  require-label:
-    name: Has label
+  require-pr-label:
+    name: Require PR Label
+    # Skipped on merge_group events so it does not block merges.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Fail if the pull request has no label
