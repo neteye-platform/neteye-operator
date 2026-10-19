@@ -197,11 +197,49 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           VERSION: ${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           ./hack/bump-version.sh "$VERSION"
           git add -A
-          git commit -m "chore: bump version to $VERSION"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" HEAD:main
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if git diff --cached --quiet; then
+            echo "error: version bump produced no changes" >&2
+            exit 1
+          fi
+
+          # main requires verified signatures; a plain `git commit` on the
+          # runner is unsigned, so create the commit through the GraphQL API
+          # instead, where GitHub signs it on the App's behalf
+          tmp="$(mktemp -d)"
+          while IFS= read -r file; do
+            jq -n --arg path "$file" --arg contents "$(base64 -w0 "$file")" \
+              '{path: $path, contents: $contents}'
+          done < <(git diff --cached --no-renames --name-only --diff-filter=ACMR) \
+            | jq -s . > "$tmp/additions.json"
+          git diff --cached --no-renames --name-only --diff-filter=D \
+            | jq -R '{path: .}' | jq -s . > "$tmp/deletions.json"
+
+          commit_sha="$(
+            jq -n \
+              --arg repo "$REPOSITORY" \
+              --arg head "$(git rev-parse HEAD)" \
+              --arg headline "chore: bump version to $VERSION" \
+              --slurpfile additions "$tmp/additions.json" \
+              --slurpfile deletions "$tmp/deletions.json" \
+              '{
+                query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+                variables: {input: {
+                  branch: {repositoryNameWithOwner: $repo, branchName: "main"},
+                  message: {headline: $headline},
+                  expectedHeadOid: $head,
+                  fileChanges: {additions: $additions[0], deletions: $deletions[0]}
+                }}
+              }' \
+              | gh api graphql --input - --jq '.data.createCommitOnBranch.commit.oid'
+          )"
+          if [[ -z "$commit_sha" ]]; then
+            echo "error: GitHub did not return a commit SHA" >&2
+            exit 1
+          fi
+          echo "sha=$commit_sha" >> "$GITHUB_OUTPUT"
 
       - name: Create signed release tag
         env:
