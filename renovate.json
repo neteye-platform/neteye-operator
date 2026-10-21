@@ -1,6 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>neteye-platform/repo-commons"],
+  "description": "Commits by the bot that regenerates the OLM bundle (regenerate-bundle workflow) must not make Renovate treat its pull requests as manually edited",
+  "gitIgnoredAuthors": ["265889471+neteye-steward[bot]@users.noreply.github.com"],
   "packageRules": [
     {
       "description": "Do not pin the OperatorHub catalog digest",
@@ -17,9 +19,36 @@
       "minimumReleaseAge": null
     },
     {
-      "description": "Keep both copies of the operand images in one pull request so they cannot drift",
-      "matchFileNames": ["src/api/v1alpha1/neteyeconfig_types.go", "src/config/manifests/patches/deployment.yaml"],
-      "groupName": "operand images"
+      "description": "One pull request per operand image: the Keycloak image is updated in every place it is referenced so the copies cannot drift (overrides the shared digest grouping)",
+      "matchDatasources": ["docker"],
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["src/api/v1alpha1/neteyeconfig_types.go", "src/config/manifests/patches/deployment.yaml", "src/config/manifests/patches/metadata.yaml"],
+      "matchPackageNames": ["ghcr.io/neteye-platform/neteye-keycloak"],
+      "groupName": "Keycloak operand image"
+    },
+    {
+      "description": "One pull request per operand image: the OpenTelemetry collector image is updated in every place it is referenced so the copies cannot drift (overrides the shared digest grouping)",
+      "matchDatasources": ["docker"],
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["src/api/v1alpha1/neteyeconfig_types.go", "src/config/manifests/patches/deployment.yaml", "src/config/manifests/patches/metadata.yaml"],
+      "matchPackageNames": ["docker.io/otel/opentelemetry-collector-contrib"],
+      "groupName": "OpenTelemetry collector operand image"
+    },
+    {
+      "description": "One pull request per operand image: the EDOT gateway image is updated in every place it is referenced so the copies cannot drift (overrides the shared digest grouping)",
+      "matchDatasources": ["docker"],
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["src/api/v1alpha1/neteyeconfig_types.go", "src/config/manifests/patches/deployment.yaml", "src/config/manifests/patches/metadata.yaml"],
+      "matchPackageNames": ["docker.elastic.co/elastic-agent/elastic-otel-collector"],
+      "groupName": "EDOT gateway operand image"
+    },
+    {
+      "description": "One pull request per operand image: the CA bundle image is updated in every place it is referenced so the copies cannot drift (overrides the shared digest grouping)",
+      "matchDatasources": ["docker"],
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["src/api/v1alpha1/neteyeconfig_types.go", "src/config/manifests/patches/deployment.yaml", "src/config/manifests/patches/metadata.yaml"],
+      "matchPackageNames": ["docker.io/alpine"],
+      "groupName": "CA bundle operand image"
     }
   ],
   "customManagers": [
@@ -42,6 +71,16 @@
         "value:\\s*(?<depName>[^\\s@:,]+):(?<currentValue>[^\\s@,]+?)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?,"
       ],
       "autoReplaceStringTemplate": "value: {{{depName}}}:{{{newValue}}}{{#if newDigest}}@{{{newDigest}}}{{/if}},"
+    },
+    {
+      "customType": "regex",
+      "description": "Operand images listed as relatedImages in the CSV metadata patch",
+      "managerFilePatterns": ["src/config/manifests/patches/metadata.yaml"],
+      "datasourceTemplate": "docker",
+      "matchStrings": [
+        "image:\\s*(?<depName>[^\\s@:]+):(?<currentValue>[^\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?"
+      ],
+      "autoReplaceStringTemplate": "image: {{{depName}}}:{{{newValue}}}{{#if newDigest}}@{{{newDigest}}}{{/if}}"
     },
     {
       "customType": "regex",
