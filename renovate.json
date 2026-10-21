@@ -19,36 +19,11 @@
       "minimumReleaseAge": null
     },
     {
-      "description": "One pull request per operand image: the Keycloak image is updated in every place it is referenced so the copies cannot drift (overrides the shared digest grouping)",
+      "description": "One pull request per operand image: groupName is templated on the dependency, so every image is updated in all the files that reference it (including images added later) without being batched with the other operand images or the shared digest grouping",
       "matchDatasources": ["docker"],
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["src/api/v1alpha1/neteyeconfig_types.go", "src/config/manifests/patches/deployment.yaml", "src/config/manifests/patches/metadata.yaml"],
-      "matchPackageNames": ["ghcr.io/neteye-platform/neteye-keycloak"],
-      "groupName": "Keycloak operand image"
-    },
-    {
-      "description": "One pull request per operand image: the OpenTelemetry collector image is updated in every place it is referenced so the copies cannot drift (overrides the shared digest grouping)",
-      "matchDatasources": ["docker"],
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["src/api/v1alpha1/neteyeconfig_types.go", "src/config/manifests/patches/deployment.yaml", "src/config/manifests/patches/metadata.yaml"],
-      "matchPackageNames": ["docker.io/otel/opentelemetry-collector-contrib"],
-      "groupName": "OpenTelemetry collector operand image"
-    },
-    {
-      "description": "One pull request per operand image: the EDOT gateway image is updated in every place it is referenced so the copies cannot drift (overrides the shared digest grouping)",
-      "matchDatasources": ["docker"],
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["src/api/v1alpha1/neteyeconfig_types.go", "src/config/manifests/patches/deployment.yaml", "src/config/manifests/patches/metadata.yaml"],
-      "matchPackageNames": ["docker.elastic.co/elastic-agent/elastic-otel-collector"],
-      "groupName": "EDOT gateway operand image"
-    },
-    {
-      "description": "One pull request per operand image: the CA bundle image is updated in every place it is referenced so the copies cannot drift (overrides the shared digest grouping)",
-      "matchDatasources": ["docker"],
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["src/api/v1alpha1/neteyeconfig_types.go", "src/config/manifests/patches/deployment.yaml", "src/config/manifests/patches/metadata.yaml"],
-      "matchPackageNames": ["docker.io/alpine"],
-      "groupName": "CA bundle operand image"
+      "groupName": "operand image {{{depName}}}"
     }
   ],
   "customManagers": [
