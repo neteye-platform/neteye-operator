@@ -123,11 +123,11 @@ spec:
                     env:
                       - {
                         name: RELATED_IMAGE_KEYCLOAK,
-                        value: ghcr.io/neteye-platform/neteye-keycloak:1.0.7@sha256:1211d99c1d9350f8049485ae843e5e374fadc920d019c9c614bfc15202fc220c,
+                        value: ghcr.io/neteye-platform/neteye-keycloak:1.1.1@sha256:abcf21e22146e9d8a8c07dcc1722a7526a5618fd512000a09838589066aac2ab,
                       }
                       - {
                         name: RELATED_IMAGE_OTEL_COLLECTOR,
-                        value: docker.io/otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6,
+                        value: docker.io/otel/opentelemetry-collector-contrib:0.163.1@sha256:1175b03003053962012f5a231f5567f66a3e8fdb960c7835c0e48f7aa1555806,
                       }
                       - {
                         name: RELATED_IMAGE_EDOT_GATEWAY,
