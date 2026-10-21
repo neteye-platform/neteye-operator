@@ -127,7 +127,7 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 			PasswordSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
 		},
 	}
-	spec := keycloakInstanceSpec("ghcr.io/example/keycloak:1.0.0", "docker.io/alpine:3", identity)
+	spec := keycloakInstanceSpec("ghcr.io/example/keycloak:1.0.0", "docker.io/alpine:3", identity, testLoginSyncWiring())
 
 	if spec["image"] != "ghcr.io/example/keycloak:1.0.0" {
 		t.Errorf("image = %v", spec["image"])
@@ -162,7 +162,7 @@ func TestKeycloakInstanceSpec(t *testing.T) {
 	if want := keycloakEnv(identity.PodExtraEnvVars); !reflect.DeepEqual(spec["env"], want) {
 		t.Errorf("env = %#v, want %#v", spec["env"], want)
 	}
-	if want := keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry); !reflect.DeepEqual(spec["additionalOptions"], want) {
+	if want := append(keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry), loginSyncOptions(testLoginSyncWiring())...); !reflect.DeepEqual(spec["additionalOptions"], want) {
 		t.Errorf("additionalOptions = %#v, want %#v", spec["additionalOptions"], want)
 	}
 	if _, ok := spec["networkPolicy"]; !ok {
@@ -209,7 +209,7 @@ func TestKeycloakInstanceSpecDatabaseDefaultsAndOverrides(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "kc.example.com", DBConnection: tt.database})
+			spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "kc.example.com", DBConnection: tt.database}, testLoginSyncWiring())
 			if got := spec["db"]; !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("database spec = %#v, want %#v", got, tt.want)
 			}
@@ -218,7 +218,7 @@ func TestKeycloakInstanceSpecDatabaseDefaultsAndOverrides(t *testing.T) {
 }
 
 func TestKeycloakInstanceSpecOmitsEnvWhenEmpty(t *testing.T) {
-	spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "h"})
+	spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "h"}, testLoginSyncWiring())
 	if _, ok := spec["env"]; ok {
 		t.Errorf("env should not be set when Env is empty")
 	}
@@ -239,7 +239,7 @@ func TestKeycloakInstanceSpecTelemetrySignals(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", Telemetry: tt.telemetry})
+			spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", Telemetry: tt.telemetry}, testLoginSyncWiring())
 			if got, found := spec["features"]; (len(tt.features) > 0 && (!reflect.DeepEqual(got, map[string]any{"enabled": tt.features}) || !found)) || (len(tt.features) == 0 && found) {
 				t.Errorf("features = %#v, found=%t", got, found)
 			}
@@ -252,7 +252,7 @@ func TestKeycloakInstanceSpecTelemetrySignals(t *testing.T) {
 					t.Errorf("additionalOptions = %#v, missing %#v", options, want)
 				}
 			}
-			if len(options) != emittedManagedOptionCount()+len(tt.options) {
+			if len(options) != emittedManagedOptionCount()+len(tt.options)+len(loginSyncOptions(testLoginSyncWiring())) {
 				t.Errorf("additionalOptions = %#v, want no telemetry option leakage", options)
 			}
 			if spec["startOptimized"] != false {
@@ -287,7 +287,7 @@ func TestKeycloakInstanceSpecEnabledFeatures(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", EnabledFeatures: tt.features, Telemetry: tt.telemetry})
+			spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", EnabledFeatures: tt.features, Telemetry: tt.telemetry}, testLoginSyncWiring())
 			got, found := spec["features"]
 			if len(tt.want) == 0 {
 				if found {
@@ -316,7 +316,7 @@ func TestKeycloakTelemetryResourceAttributes(t *testing.T) {
 		{ResourceAttributes: attributes},
 	} {
 		*identity.Telemetry = flags
-		spec := keycloakInstanceSpec("img", "ca-img", identity)
+		spec := keycloakInstanceSpec("img", "ca-img", identity, testLoginSyncWiring())
 		telemetry, found := spec["telemetry"].(map[string]any)
 		if enabled := flags.LogsEnabled || flags.MetricsEnabled; !enabled {
 			if found {
@@ -368,7 +368,7 @@ func containsOption(options []any, want any) bool {
 }
 
 func TestKeycloakHostCATrust(t *testing.T) {
-	spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "kc.example.com"})
+	spec := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "kc.example.com"}, testLoginSyncWiring())
 
 	options, ok := spec["additionalOptions"].([]any)
 	if !ok {
@@ -437,7 +437,7 @@ func TestKeycloakHostCATrust(t *testing.T) {
 }
 
 func TestKeycloakNetworkPolicies(t *testing.T) {
-	instance := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "h"})
+	instance := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "h"}, testLoginSyncWiring())
 	if !reflect.DeepEqual(instance["networkPolicy"], map[string]any{"enabled": false}) {
 		t.Errorf("native network policy = %#v, want disabled", instance["networkPolicy"])
 	}
@@ -498,4 +498,8 @@ func TestKeycloakNetworkPolicies(t *testing.T) {
 	if _, found := egress["policyTypes"]; found {
 		t.Error("CiliumNetworkPolicy must not carry native NetworkPolicy policyTypes")
 	}
+}
+
+func testLoginSyncWiring() loginSyncWiring {
+	return loginSyncWiring{overallDeadlineMilliseconds: 10000}
 }

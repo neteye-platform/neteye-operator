@@ -390,6 +390,9 @@ func TestComponentsForVersion(t *testing.T) {
 	if c.CABundleImage == "" || !strings.Contains(c.CABundleImage, "@sha256:") {
 		t.Errorf("expected a digest-pinned CA-bundle image, got %q", c.CABundleImage)
 	}
+	if c.PermissionSyncImage == "" || !strings.Contains(c.PermissionSyncImage, "@sha256:") {
+		t.Errorf("expected a digest-pinned PermissionSync image, got %q", c.PermissionSyncImage)
+	}
 	if _, ok := ComponentsForVersion("0.0"); ok {
 		t.Error("ComponentsForVersion(\"0.0\") found, want not found")
 	}

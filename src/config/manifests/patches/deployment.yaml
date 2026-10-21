@@ -15,7 +15,7 @@ spec:
               verbs: [create, delete, get, list, patch, update, watch]
             - apiGroups: [""]
               resources: [secrets]
-              verbs: [create, get, list, update, watch]
+              verbs: [create, delete, get, list, update, watch]
             - apiGroups: [""]
               resources: [pods, pods/log]
               verbs: [get, list, watch]
@@ -123,7 +123,7 @@ spec:
                     env:
                       - {
                         name: RELATED_IMAGE_KEYCLOAK,
-                        value: ghcr.io/neteye-platform/neteye-keycloak:1.0.7@sha256:1211d99c1d9350f8049485ae843e5e374fadc920d019c9c614bfc15202fc220c,
+                        value: ghcr.io/neteye-platform/neteye-keycloak:1.1.1@sha256:abcf21e22146e9d8a8c07dcc1722a7526a5618fd512000a09838589066aac2ab,
                       }
                       - {
                         name: RELATED_IMAGE_OTEL_COLLECTOR,
@@ -136,6 +136,10 @@ spec:
                       - {
                         name: RELATED_IMAGE_CA_BUNDLE,
                         value: docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6,
+                      }
+                      - {
+                        name: RELATED_IMAGE_PERMISSIONSYNC,
+                        value: ghcr.io/neteye-platform/permissionsync:0.1.0@sha256:2697e46cc8e672f2060d472e8f225e8fd258d650ac948ce4cb4f910d9a474d36,
                       }
                     securityContext:
                       {

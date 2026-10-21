@@ -35,6 +35,41 @@ func EnsureConfigMap(ctx context.Context, c client.Client, namespace, name strin
 	return c.Update(ctx, live)
 }
 
+// EnsureSecret reconciles operator-rendered Secret data and controller
+// ownership without touching unrelated metadata. It is used for a Secret the
+// operator itself renders, never to overwrite a user-managed one: adoption
+// still goes through RequireManagedOwner, so an existing Secret the operator
+// does not control is reported as a conflict instead of being replaced.
+//
+// It returns the resource version of the Secret as written. Callers must use
+// it rather than read the Secret back: a manager client reads from its cache,
+// which does not yet hold an object this call has just created.
+func EnsureSecret(ctx context.Context, c client.Client, namespace, name string, data map[string][]byte, owner metav1.OwnerReference) (string, error) {
+	live := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: namespace, Name: name}
+	if err := c.Get(ctx, key, live); apierrors.IsNotFound(err) {
+		created := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, OwnerReferences: []metav1.OwnerReference{owner}}, Type: corev1.SecretTypeOpaque, Data: data}
+		if err := c.Create(ctx, created); err != nil {
+			return "", err
+		}
+		return created.ResourceVersion, nil
+	} else if err != nil {
+		return "", err
+	}
+	ownerChanged, err := setControllerOwnerReference(live, owner)
+	if err != nil {
+		return "", err
+	}
+	if reflect.DeepEqual(live.Data, data) && !ownerChanged {
+		return live.ResourceVersion, nil
+	}
+	live.Data = data
+	if err := c.Update(ctx, live); err != nil {
+		return "", err
+	}
+	return live.ResourceVersion, nil
+}
+
 // EnsureDeployment reconciles the workload spec and controller ownership.
 func EnsureDeployment(ctx context.Context, c client.Client, desired *appsv1.Deployment, owner metav1.OwnerReference) error {
 	live := &appsv1.Deployment{}

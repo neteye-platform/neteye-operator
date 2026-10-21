@@ -23,6 +23,7 @@ import (
 	"github.com/neteye-platform/neteye-operator/controllers"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
+	"github.com/neteye-platform/neteye-operator/internal/permissionsync"
 )
 
 var (
@@ -108,6 +109,7 @@ func main() {
 	keycloakComponent := keycloak.NewComponent(mgr.GetClient(), ctrl.Log.WithName("keycloak-component"))
 	otelCollectorComponent := elasticstack.NewOTelCollectorComponent(mgr.GetClient())
 	edotGatewayComponent := elasticstack.NewEDOTGatewayComponent(mgr.GetClient())
+	permissionSyncComponent := permissionsync.NewComponent(mgr.GetClient())
 	if err := mgr.Add(keycloakComponent); err != nil {
 		setupLog.Error(err, "unable to add keycloak component")
 		os.Exit(1)
@@ -124,6 +126,7 @@ func main() {
 		AdminProviders:                 adminProviders,
 		OTelCollectorComponent:         otelCollectorComponent,
 		EDOTGatewayComponent:           edotGatewayComponent,
+		PermissionSyncComponent:        permissionSyncComponent,
 		WaitForProgressingRequeueAfter: waitForProgressingRequeue,
 		FailureRequeueAfter:            failureRequeue,
 		ReconciliationRequeueAfter:     reconciliationRequeue,

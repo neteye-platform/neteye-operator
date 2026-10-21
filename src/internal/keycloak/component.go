@@ -190,7 +190,7 @@ func clusterExtensionSpec() map[string]any {
 
 // EnsureResources reconciles the identity component resources owned by the Keycloak
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
-func (c *Component) EnsureResources(ctx context.Context, namespace string, image, caBundleImage string, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
+func (c *Component) EnsureResources(ctx context.Context, namespace string, image, caBundleImage string, identity neteye.NetEyeIdentitySpec, permissionSync neteye.NetEyePermissionSyncSpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
 	ctx = logf.IntoContext(ctx, c.log)
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, RouteHostname, []string{RouteHostname}, issuerRef, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
@@ -204,6 +204,15 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := c.EnsureHostManagementPolicy(ctx, namespace, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak host management policy: %w", err)
 	}
+	// PermissionSync is part of every deployment, so the instance always runs
+	// the login-sync authenticator, and its client secret must exist before the
+	// instance references it. The authenticator reaches PermissionSync through
+	// the Gateway: the egress policy above allows it, and the host trust bundle
+	// the pod template mounts covers the CA that signs the Gateway certificates.
+	wiring := loginSyncWiringFor(permissionSync)
+	if err := c.ensureCallerClientSecret(ctx, namespace, &owner); err != nil {
+		return false, "", err
+	}
 	certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
 	if err != nil {
 		return false, "", fmt.Errorf("check tls certificate readiness: %w", err)
@@ -211,7 +220,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if !certificateReady {
 		return false, certificateMessage, nil
 	}
-	if err := c.EnsureInstance(ctx, namespace, image, caBundleImage, identity, &owner); err != nil {
+	if err := c.EnsureInstance(ctx, namespace, image, caBundleImage, identity, wiring, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
 
@@ -301,12 +310,12 @@ func (c *Component) IsUserReady(ctx context.Context, namespace, name string) (bo
 	return true, "", nil
 }
 
-func (c *Component) EnsureInstance(ctx context.Context, namespace, image, caBundleImage string, identity neteye.NetEyeIdentitySpec, owner *metav1.OwnerReference) error {
+func (c *Component) EnsureInstance(ctx context.Context, namespace, image, caBundleImage string, identity neteye.NetEyeIdentitySpec, wiring loginSyncWiring, owner *metav1.OwnerReference) error {
 	outcome, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
 		GVK:       keycloakGVK(),
 		Name:      InstanceName,
 		Namespace: namespace,
-		Spec:      keycloakInstanceSpec(image, caBundleImage, identity),
+		Spec:      keycloakInstanceSpec(image, caBundleImage, identity, wiring),
 		Owner:     owner,
 	})
 	if err != nil {
@@ -321,7 +330,7 @@ func (c *Component) EnsureInstance(ctx context.Context, namespace, image, caBund
 	return nil
 }
 
-func keycloakInstanceSpec(image, caBundleImage string, identity neteye.NetEyeIdentitySpec) map[string]any {
+func keycloakInstanceSpec(image, caBundleImage string, identity neteye.NetEyeIdentitySpec, wiring loginSyncWiring) map[string]any {
 	database := identity.DBConnection
 	usernameSecret := database.EffectiveUsernameSecret()
 	passwordSecret := database.EffectivePasswordSecret()
@@ -358,7 +367,7 @@ func keycloakInstanceSpec(image, caBundleImage string, identity neteye.NetEyeIde
 		"proxy": map[string]any{
 			"headers": "xforwarded",
 		},
-		"additionalOptions": keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry),
+		"additionalOptions": append(keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry), loginSyncOptions(wiring)...),
 		"unsupported":       map[string]any{"podTemplate": keycloakPodTemplate(caBundleImage)},
 	}
 	if features := keycloakFeatures(identity); len(features) > 0 {

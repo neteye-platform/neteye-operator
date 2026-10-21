@@ -19,7 +19,7 @@ type FlowSyncResult struct {
 }
 
 // flowExecution is a runtime-only mirror of KeycloakAuthFlowExecution that
-// can nest arbitrarily, unlike the API type which caps nesting at 3 fixed
+// can nest arbitrarily, unlike the API type which caps nesting at 4 fixed
 // levels for CRD schema generation. Reconciliation recurses freely over this
 // type; toRuntimeExecutions and friends build it once from the depth-capped
 // API types so the reconciliation logic below is written once, not per level.
@@ -62,7 +62,18 @@ func toRuntimeSpecL3(spec *neteye.KeycloakAuthFlowExecutionSpecL3) *flowSpec {
 	}
 	execs := make([]flowExecution, len(spec.Executions))
 	for i, e := range spec.Executions {
-		// Level 3 is the deepest allowed level: its executions are leaves and
+		execs[i] = flowExecution{Alias: e.Alias, Requirement: e.Requirement, Authenticator: e.Authenticator, Config: e.Config, Flow: toRuntimeSpecL4(e.Flow)}
+	}
+	return &flowSpec{Alias: spec.Alias, Provider: spec.Provider, Executions: execs}
+}
+
+func toRuntimeSpecL4(spec *neteye.KeycloakAuthFlowExecutionSpecL4) *flowSpec {
+	if spec == nil {
+		return nil
+	}
+	execs := make([]flowExecution, len(spec.Executions))
+	for i, e := range spec.Executions {
+		// Level 4 is the deepest allowed level: its executions are leaves and
 		// never carry a further nested Flow.
 		execs[i] = flowExecution{Alias: e.Alias, Requirement: e.Requirement, Authenticator: e.Authenticator, Config: e.Config}
 	}
@@ -71,11 +82,15 @@ func toRuntimeSpecL3(spec *neteye.KeycloakAuthFlowExecutionSpecL3) *flowSpec {
 
 func ReconcileFlow(ctx context.Context, api *AdminAPI, spec neteye.KeycloakAuthFlowSpec) (FlowSyncResult, error) {
 	result := FlowSyncResult{}
+	executions := toRuntimeExecutions(spec.Executions)
+	if err := validateFlowExecutions(spec.Alias, executions); err != nil {
+		return result, err
+	}
 	rootCreated, err := ensureRootFlow(ctx, api, flowRealm(spec), spec.Alias, spec.Provider)
 	if err != nil {
 		return result, err
 	}
-	created, updated, err := reconcileFlowExecutions(ctx, api, flowRealm(spec), spec.Alias, toRuntimeExecutions(spec.Executions))
+	created, updated, err := reconcileFlowExecutions(ctx, api, flowRealm(spec), spec.Alias, executions)
 	if err != nil {
 		result.Created, result.Updated = rootCreated || created, updated
 		return result, err
@@ -83,6 +98,27 @@ func ReconcileFlow(ctx context.Context, api *AdminAPI, spec neteye.KeycloakAuthF
 	boundChanged, err := reconcileBindings(ctx, api, flowRealm(spec), spec.Alias, spec.Bindings)
 	result.Created, result.Updated = rootCreated || created, updated || boundChanged
 	return result, err
+}
+
+// validateFlowExecutions enforces at every level what the CRD schema enforces
+// with CEL rules only on the levels that can carry them (see
+// KeycloakAuthFlowExecutionL3), so an invalid tree is refused before any
+// part of it reaches Keycloak.
+func validateFlowExecutions(alias string, executions []flowExecution) error {
+	for _, e := range executions {
+		if (e.Authenticator != "") == (e.Flow != nil) {
+			return fmt.Errorf("execution in flow %q: exactly one of authenticator or flow must be set", alias)
+		}
+		if e.Config != nil && e.Authenticator == "" {
+			return fmt.Errorf("execution in flow %q: config requires authenticator", alias)
+		}
+		if e.Flow != nil {
+			if err := validateFlowExecutions(e.Flow.Alias, e.Flow.Executions); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // realmFlowFields maps a KeycloakAuthFlowSpec binding purpose to the realm

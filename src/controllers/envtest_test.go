@@ -27,6 +27,7 @@ import (
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
+	"github.com/neteye-platform/neteye-operator/internal/permissionsync"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -133,9 +134,6 @@ func TestReconcileTelemetryFailureDoesNotReturnGlobalErrorOrHideIdentityStatus(t
 	if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultBasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("hash")}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultRootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("ca")}}); err != nil {
-		t.Fatal(err)
-	}
 	if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultIcingaApiKeySecretName}, Data: map[string][]byte{elasticstack.DefaultIcingaApiKeySecretKey: []byte("key")}}); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +171,6 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultIcingaApiKeySecretName}, Data: map[string][]byte{elasticstack.DefaultIcingaApiKeySecretKey: []byte("key")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultAPMAPIKeySecretName}, Data: map[string][]byte{elasticstack.DefaultAPMAPIKeySecretKey: []byte("key")}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultBasicAuthSecretName}, Data: map[string][]byte{"htpasswd": []byte("user:hash")}},
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DefaultRootCASecretName}, Data: map[string][]byte{"tls.crt": []byte("certificate")}},
 	}
 	for _, prerequisite := range prerequisites {
 		if err := c.Create(ctx, prerequisite); err != nil {
@@ -416,7 +413,6 @@ func TestReconcileIdentityTelemetryEnableAndDisable(t *testing.T) {
 		key  string
 	}{
 		{elasticstack.DefaultAPMAPIKeySecretName, elasticstack.DefaultAPMAPIKeySecretKey},
-		{elasticstack.DefaultRootCASecretName, "tls.crt"},
 	} {
 		if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: secret.name}, Data: map[string][]byte{secret.key: []byte("value")}}); err != nil {
 			t.Fatal(err)
@@ -515,6 +511,11 @@ func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeEla
 	if err := c.Create(ctx, newUnstructured(issuerGVK, namespace, "internal-issuer")); err != nil {
 		t.Fatal(err)
 	}
+	// The internal issuer's CA, a platform prerequisite: the telemetry
+	// workloads and the Keycloak truststore both trust it.
+	if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: neteye.DefaultPermissionSyncRootCAName}, Data: map[string][]byte{corev1.TLSCertKey: []byte("ca certificate")}}); err != nil {
+		t.Fatal(err)
+	}
 	ne := &neteye.NetEye{
 		ObjectMeta: metav1.ObjectMeta{Name: "platform", Namespace: namespace},
 		Spec: neteye.NetEyeSpec{
@@ -543,7 +544,7 @@ func readyElasticStackTestPlatform(t *testing.T, elasticConfig *neteye.NetEyeEla
 	if err := c.Create(ctx, ne); err != nil {
 		t.Fatal(err)
 	}
-	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard()), OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c), EDOTGatewayComponent: elasticstack.NewEDOTGatewayComponent(c)}
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: s, KeycloakComponent: keycloak.NewComponent(c, logr.Discard()), OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c), EDOTGatewayComponent: elasticstack.NewEDOTGatewayComponent(c), PermissionSyncComponent: permissionsync.NewComponent(c)}
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}
 	if _, err := r.Reconcile(ctx, request); err != nil {
 		t.Fatal(err)
@@ -644,6 +645,9 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if err := c.Create(ctx, newUnstructured(issuerGVK, ns, "internal-issuer")); err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
+	if err := c.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: neteye.DefaultPermissionSyncRootCAName}, Data: map[string][]byte{corev1.TLSCertKey: []byte("ca certificate")}}); err != nil {
+		t.Fatalf("create CA Secret: %v", err)
+	}
 
 	ne := &neteye.NetEye{
 		ObjectMeta: metav1.ObjectMeta{Name: "platform", Namespace: ns},
@@ -670,12 +674,13 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	}
 
 	r := &NetEyeReconciler{
-		Client:                 c,
-		Log:                    logr.Discard(),
-		Scheme:                 s,
-		KeycloakComponent:      keycloak.NewComponent(c, logr.Discard()),
-		OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c),
-		EDOTGatewayComponent:   elasticstack.NewEDOTGatewayComponent(c),
+		Client:                  c,
+		Log:                     logr.Discard(),
+		Scheme:                  s,
+		KeycloakComponent:       keycloak.NewComponent(c, logr.Discard()),
+		OTelCollectorComponent:  elasticstack.NewOTelCollectorComponent(c),
+		EDOTGatewayComponent:    elasticstack.NewEDOTGatewayComponent(c),
+		PermissionSyncComponent: permissionsync.NewComponent(c),
 	}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "platform"}}
 
@@ -699,8 +704,8 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	gateway := requireExists(ctx, t, c, gatewayGVK, ns, "neteye-gw")
 	assertNetEyeOwner(t, gateway)
 	listeners, _, _ := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
-	if len(listeners) != 2 {
-		t.Fatalf("gateway listeners = %d, want 2 (http + keycloak)", len(listeners))
+	if len(listeners) != 3 {
+		t.Fatalf("gateway listeners = %d, want 3 (http, keycloak and permissionsync)", len(listeners))
 	}
 	for _, listener := range listeners {
 		namespaces, _, _ := unstructured.NestedMap(listener.(map[string]any), "allowedRoutes", "namespaces")

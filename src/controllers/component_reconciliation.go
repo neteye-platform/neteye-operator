@@ -14,9 +14,10 @@ type componentID string
 type componentState string
 
 const (
-	identityComponentID      componentID = "identity"
-	otelCollectorComponentID componentID = "otel-collector"
-	edotGatewayComponentID   componentID = "edot-gateway"
+	identityComponentID       componentID = "identity"
+	otelCollectorComponentID  componentID = "otel-collector"
+	edotGatewayComponentID    componentID = "edot-gateway"
+	permissionSyncComponentID componentID = "permission-sync"
 
 	componentStateReady       componentState = "Ready"
 	componentStateProgressing componentState = "Progressing"

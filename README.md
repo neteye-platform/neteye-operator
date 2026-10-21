@@ -17,6 +17,43 @@ Reconciliation is version-aware — a validating webhook guards the declared
 product `version` and its allowed upgrade transitions — and reports progress
 through the resource `status`.
 
+### PermissionSync
+
+The PermissionSync component synchronizes a user's permissions with a selected
+target when that user logs in. It is part of every NetEye deployment and
+cannot be switched off, so `spec.permissionSync` is required. The operator
+renders PermissionSync's single configuration document into a Secret it owns,
+publishes the service over HTTPS on the shared Gateway as
+`permissionsync.neteyelocal`, and provisions the Keycloak side of the
+contract: one `permissionsync:<target>` client scope per declared target, the
+confidential `login-sync` client with an operator-generated secret, the
+login-sync authenticator configuration, and a browser flow running it, bound
+only to the Keycloak clients that are targets.
+
+A logical target must be named after the Keycloak login client it serves,
+because the authenticator derives the target from that client's `clientId`.
+The GLPI credentials and the trusted-CA Secret stay user-managed and must
+exist in the shared namespace before the component can become ready.
+
+Every deployment bound — request deadline, inbound admission limit,
+synchronization capacity, shutdown grace, verification cache policy, clock
+skew, and operation timeout — is a field with the operator's own value as its
+default, and endpoints the platform itself provides default to it: the
+Permission Provider to
+`https://httpd.neteyelocal/neteye/api/v2/permission-provider/desired-state`
+and GLPI to `https://glpi.neteyelocal/apirest.php`. The
+relations between the bounds are validated at admission, because
+PermissionSync aborts startup on an impossible combination rather than
+degrading one component.
+
+The deployment has to resolve `permissionsync.neteyelocal` to the Gateway, as
+it does for the identity hostname. Because the authenticator is fail-closed, a
+PermissionSync outage refuses logins on target clients only. See
+[ADR-0005](docs/adr/0005-permissionsync-component-and-caller-provisioning.md)
+and
+[ADR-0006](docs/adr/0006-login-sync-wiring-and-permissionsync-exposure.md)
+for the full boundary.
+
 ## Documentation and support
 
 This repository contains the operator only. NetEye itself is a commercial
