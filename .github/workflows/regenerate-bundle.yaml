@@ -1,0 +1,172 @@
+# Workflow: regenerate the OLM bundle of a pull request on demand.
+#
+# Comment `/regenerate-bundle` on a pull request (e.g. a Renovate operand image
+# update, where the committed bundle goes stale) to run `make bundle` on its
+# branch and push the result as a signed commit. The outcome is reported back
+# as a comment on the pull request.
+#
+# Only users with write access can trigger it and only for branches of this
+# repository (never forks), since the workflow runs with the base repository
+# context and secrets.
+
+name: Regenerate Bundle
+
+on:
+  issue_comment:
+    types:
+      - created
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  regenerate-bundle:
+    name: Regenerate and push the OLM bundle
+    if: ${{ github.event.issue.pull_request && startsWith(github.event.comment.body, '/regenerate-bundle') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - name: Check the requester and resolve the pull request
+        id: pr
+        env:
+          ACTOR: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+
+          permission="$(gh api "repos/${GH_REPO}/collaborators/${ACTOR}/permission" --jq .permission)"
+          if [[ ! "$permission" =~ ^(admin|maintain|write)$ ]]; then
+            echo "::error::${ACTOR} needs write access to regenerate the bundle (has: ${permission})"
+            exit 1
+          fi
+
+          pr="$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}")"
+          if [[ "$(jq -r '.state' <<<"$pr")" != open ]]; then
+            echo "::error::Pull request #${PR_NUMBER} is not open"
+            exit 1
+          fi
+          if [[ "$(jq -r '.head.repo.full_name' <<<"$pr")" != "$GH_REPO" ]]; then
+            echo "::error::Pull request #${PR_NUMBER} comes from a fork, refusing to run it with repository secrets"
+            exit 1
+          fi
+
+          {
+            echo "branch=$(jq -r '.head.ref' <<<"$pr")"
+            echo "sha=$(jq -r '.head.sha' <<<"$pr")"
+          } >> "$GITHUB_OUTPUT"
+
+      # No credentials are available to the steps that execute the pull
+      # request's code (make): the App token is only created afterwards.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Regenerate the OLM bundle
+        env:
+          GH_TOKEN: ""
+        run: make bundle
+
+      - name: Detect bundle changes
+        id: changes
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --cached --stat
+          fi
+
+      - name: Create write token
+        if: ${{ steps.changes.outputs.changed == 'true' }}
+        id: write-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.NETEYE_APP_ID }}
+          private-key: ${{ secrets.NETEYE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      # The branch requires verified signatures; a plain `git commit` on the
+      # runner is unsigned, so create the commit through the GraphQL API
+      # instead, where GitHub signs it on the App's behalf. Pushing with the
+      # App token (unlike GITHUB_TOKEN) also re-triggers the pull request checks.
+      - name: Push the signed commit
+        if: ${{ steps.changes.outputs.changed == 'true' }}
+        id: push
+        env:
+          GH_TOKEN: ${{ steps.write-token.outputs.token }}
+          BRANCH: ${{ steps.pr.outputs.branch }}
+          HEAD_SHA: ${{ steps.pr.outputs.sha }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          while IFS= read -r file; do
+            jq -n --arg path "$file" --arg contents "$(base64 -w0 "$file")" \
+              '{path: $path, contents: $contents}'
+          done < <(git diff --cached --no-renames --name-only --diff-filter=ACMR) \
+            | jq -s . > "$tmp/additions.json"
+          git diff --cached --no-renames --name-only --diff-filter=D \
+            | jq -R '{path: .}' | jq -s . > "$tmp/deletions.json"
+
+          commit_sha="$(
+            jq -n \
+              --arg repo "$GH_REPO" \
+              --arg branch "$BRANCH" \
+              --arg head "$HEAD_SHA" \
+              --arg headline "chore: regenerate OLM bundle" \
+              --slurpfile additions "$tmp/additions.json" \
+              --slurpfile deletions "$tmp/deletions.json" \
+              '{
+                query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+                variables: {input: {
+                  branch: {repositoryNameWithOwner: $repo, branchName: $branch},
+                  message: {headline: $headline},
+                  expectedHeadOid: $head,
+                  fileChanges: {additions: $additions[0], deletions: $deletions[0]}
+                }}
+              }' \
+              | gh api graphql --input - --jq '.data.createCommitOnBranch.commit.oid'
+          )"
+          if [[ -z "$commit_sha" ]]; then
+            echo "error: GitHub did not return a commit SHA" >&2
+            exit 1
+          fi
+          echo "sha=$commit_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on the pull request
+        if: ${{ always() && steps.pr.outcome == 'success' }}
+        env:
+          CHANGED: ${{ steps.changes.outputs.changed }}
+          COMMIT_SHA: ${{ steps.push.outputs.sha }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$JOB_STATUS" != success ]]; then
+            body="Regenerating the OLM bundle failed, see the [workflow run](${RUN_URL})."
+          elif [[ "$CHANGED" != true ]]; then
+            body="The OLM bundle is already up to date, nothing to commit."
+          else
+            body="Regenerated the OLM bundle and pushed the signed commit ${COMMIT_SHA}. The pull request checks will run again."
+          fi
+          gh pr comment "$PR_NUMBER" --body "$body"
