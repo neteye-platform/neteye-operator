@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -20,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -44,6 +46,14 @@ var (
 // envtest binaries are not installed (run "make envtest" / set KUBEBUILDER_ASSETS)
 // so that a plain "go test ./..." stays green without them.
 func startEnvtest(t *testing.T) (client.Client, *runtime.Scheme) {
+	t.Helper()
+	c, s, _ := startEnvtestWithConfig(t)
+	return c, s
+}
+
+// startEnvtestWithConfig is startEnvtest for tests that also need the REST
+// configuration, for example to act as another user.
+func startEnvtestWithConfig(t *testing.T) (client.Client, *runtime.Scheme, *rest.Config) {
 	t.Helper()
 
 	s := runtime.NewScheme()
@@ -80,7 +90,7 @@ func startEnvtest(t *testing.T) (client.Client, *runtime.Scheme) {
 	if err != nil {
 		t.Fatalf("build client: %v", err)
 	}
-	return c, s
+	return c, s, cfg
 }
 
 func TestReconcileElasticStackDisabledDoesNotCreateCollector(t *testing.T) {
@@ -900,4 +910,44 @@ func gatewayListenerByName(t *testing.T, listeners []any, name string) map[strin
 	}
 	t.Fatalf("gateway listener %q not found", name)
 	return nil
+}
+
+func TestAPIServerValidatesNetEyeTenantSchema(t *testing.T) {
+	c, _ := startEnvtest(t)
+	ctx := context.Background()
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testTenant}}); err != nil {
+		t.Fatal(err)
+	}
+	for name, test := range map[string]struct {
+		name, displayName, want string
+	}{
+		"missing display name": {testTenant, "", "spec.displayName"},
+		"too long":             {testTenant, strings.Repeat("x", 64), "spec.displayName"},
+		"surrounding spaces":   {testTenant, " Default", "surrounding whitespace"},
+		"control character":    {testTenant, "De\nfault", "control or format characters"},
+		"format character":     {testTenant, "De\u200bfault", "control or format characters"},
+		"id too short":         {"neteye-tenant-abc", "Default", "metadata.name must be"},
+		"look-alike character": {"neteye-tenant-2bh46bf0", "Default", "metadata.name must be"},
+		"shared namespace":     {neteye.NetEyeNamespace, "Default", "metadata.name must be"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tenant := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: test.name}, Spec: neteye.NetEyeTenantSpec{DisplayName: test.displayName}}
+			if err := c.Create(ctx, tenant); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, test.want)
+			}
+		})
+	}
+
+	tenant := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{DisplayName: "Würth Italy"}}
+	if err := c.Create(ctx, tenant); err != nil {
+		t.Fatalf("valid tenant rejected: %v", err)
+	}
+	tenant.Status = neteye.NetEyeTenantStatus{
+		ObservedGeneration: tenant.Generation,
+		Conditions:         []metav1.Condition{{Type: neteye.ConditionReady, Status: metav1.ConditionTrue, Reason: neteye.ReasonAllComponentsReady, Message: "ready", LastTransitionTime: metav1.Now()}},
+		Components:         map[string]neteye.NetEyeComponentStatus{"namespace": {Status: neteye.ComponentStateReady, ResolvedImages: []neteye.NetEyeResolvedImage{}}},
+	}
+	if err := c.Status().Update(ctx, tenant); err != nil {
+		t.Fatalf("status subresource update: %v", err)
+	}
 }

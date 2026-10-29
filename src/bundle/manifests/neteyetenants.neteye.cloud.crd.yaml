@@ -12,12 +12,12 @@ spec:
     listKind: NetEyeTenantList
     plural: neteyetenants
     shortNames:
-    - nt
+    - netenant
     singular: neteyetenant
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.name
+    - jsonPath: .spec.displayName
       name: Display Name
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
@@ -54,34 +54,49 @@ spec:
           spec:
             description: NetEyeTenantSpec defines the desired state of a NetEye tenant.
             properties:
-              name:
+              displayName:
                 description: |-
-                  Name is the name of the tenant that people see and use. It can change at
-                  any time; resources derived from the tenant use metadata.name, which never
-                  changes.
+                  DisplayName is the name of the tenant that people see and use. It can
+                  change at any time; resources derived from the tenant use metadata.name,
+                  which never changes.
                 maxLength: 63
                 minLength: 1
                 type: string
+                x-kubernetes-validations:
+                - message: must not contain surrounding whitespace
+                  rule: self == self.trim()
+                - message: must not contain control or format characters
+                  rule: '!self.matches(''[\\p{Cc}\\p{Cf}]'')'
             required:
-            - name
+            - displayName
             type: object
           status:
-            description: NetEyeTenantStatus defines the observed state of a NetEye
-              tenant.
+            description: |-
+              NetEyeTenantStatus defines the observed state of a NetEye tenant, following
+              the status contract of ADR-0002.
             properties:
               components:
                 additionalProperties:
-                  description: TenantComponentStatus reports the observed state of
-                    one tenant component.
+                  description: NetEyeComponentStatus reports the observed state of
+                    one logical component.
                   properties:
+                    blockingDependencies:
+                      description: |-
+                        BlockingDependencies lists the prerequisite components that are not
+                        ready. It is only set when Status is Blocked.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: set
                     message:
                       description: |-
                         Message is a concise explanation for humans and is not a
                         machine-readable API.
                       type: string
                     observedGeneration:
-                      description: ObservedGeneration is the NetEyeTenant generation
-                        this entry describes.
+                      description: |-
+                        ObservedGeneration is the generation of the resource this entry
+                        describes.
                       format: int64
                       type: integer
                     reason:
@@ -91,12 +106,15 @@ spec:
                     resolvedImages:
                       description: |-
                         ResolvedImages is the complete set of container images the operator
-                        selected for this component. A component with no container images reports
-                        an empty list.
+                        selected for this component. A component with no container images
+                        reports an empty list, so the field is always present. While the
+                        component is progressing this is the target set; once it is ready, the
+                        operator has confirmed its required workloads use that set.
                       items:
                         description: |-
-                          TenantResolvedImage is one container image selected by the operator for a
-                          tenant component.
+                          NetEyeResolvedImage is one container image selected by the operator for a
+                          component. Name is a stable logical identifier within that component, and
+                          Image is a complete OCI reference pinned by digest.
                         properties:
                           image:
                             description: Image is the exact, digest-pinned image reference.
@@ -115,7 +133,15 @@ spec:
                       x-kubernetes-list-type: map
                     status:
                       description: Status is the component's readiness state.
+                      enum:
+                      - Ready
+                      - Progressing
+                      - Degraded
+                      - Blocked
+                      - Disabled
                       type: string
+                  required:
+                  - resolvedImages
                   type: object
                 description: |-
                   Components reports observed state keyed by stable logical component
@@ -192,7 +218,13 @@ spec:
                 format: int64
                 type: integer
             type: object
+        required:
+        - spec
         type: object
+        x-kubernetes-validations:
+        - message: metadata.name must be neteye-tenant- followed by an id of 8 characters
+            from abcdefghjkmnpqrstuvwxyz23456789
+          rule: self.metadata.name.matches('^neteye-tenant-[a-hjkmnp-z2-9]{8}$')
     served: true
     storage: true
     subresources:

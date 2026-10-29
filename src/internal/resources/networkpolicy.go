@@ -23,8 +23,16 @@ func EnsureDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namesp
 	if err := deleteLegacyDefaultDenyNetworkPolicy(ctx, c, namespace); err != nil {
 		return err
 	}
+	return ApplyDefaultDenyNetworkPolicy(ctx, c, namespace, owner)
+}
+
+// ApplyDefaultDenyNetworkPolicy reconciles the namespace-wide Cilium
+// default-deny baseline only. It is for namespaces that never had the legacy
+// native policy, such as tenant namespaces, where deleting an object the
+// operator did not create would be wrong.
+func ApplyDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namespace string, owner metav1.OwnerReference) error {
 	_, err := Apply(ctx, c, ObjectDefinition{
-		GVK:       ciliumNetworkPolicyGVK(),
+		GVK:       CiliumNetworkPolicyGVK(),
 		Name:      DefaultDenyPolicyName,
 		Namespace: namespace,
 		Spec:      defaultDenyNetworkPolicySpec(),
@@ -65,6 +73,7 @@ func nativeNetworkPolicyGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"}
 }
 
-func ciliumNetworkPolicyGVK() schema.GroupVersionKind {
+// CiliumNetworkPolicyGVK identifies the Cilium network policies the operator manages.
+func CiliumNetworkPolicyGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}
 }
