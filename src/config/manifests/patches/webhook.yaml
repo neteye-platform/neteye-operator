@@ -20,3 +20,18 @@ spec:
           operations: [CREATE, UPDATE]
           resources: [neteyes]
           scope: Namespaced
+    - type: ValidatingAdmissionWebhook
+      generateName: vneteyetenant-v1alpha1.neteye.cloud
+      deploymentName: neteye-operator
+      containerPort: 9443
+      targetPort: 9443
+      webhookPath: /validate-neteye-cloud-v1alpha1-neteyetenant
+      admissionReviewVersions: [v1]
+      failurePolicy: Fail
+      sideEffects: None
+      rules:
+        - apiGroups: [neteye.cloud]
+          apiVersions: [v1alpha1]
+          operations: [CREATE, UPDATE]
+          resources: [neteyetenants]
+          scope: Namespaced

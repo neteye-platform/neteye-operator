@@ -34,6 +34,10 @@ var (
 	waitForProgressingRequeueEnvVar = "WAIT_FOR_PROGRESSING_REQUEUE_AFTER"
 	failureRequeueEnvVar            = "FAILURE_REQUEUE_AFTER"
 	reconciliationRequeueEnvVar     = "RECONCILIATION_REQUEUE_AFTER"
+
+	// The operator learns its own Kubernetes identity from the downward API.
+	podNamespaceEnvVar       = "POD_NAMESPACE"
+	serviceAccountNameEnvVar = "SERVICE_ACCOUNT_NAME"
 )
 
 func init() {
@@ -183,8 +187,27 @@ func main() {
 		setupLog.Error(err, "unable to create KeycloakRealm controller")
 		os.Exit(1)
 	}
+	operatorUsername := operatorUsernameFromEnv()
+	if operatorUsername == "" {
+		setupLog.Info("operator service account is unknown; the tenant namespace admission policy is not managed", "severity", "warning", "envVars", []string{podNamespaceEnvVar, serviceAccountNameEnvVar})
+	}
+	if err := (&controllers.NetEyeTenantReconciler{
+		Client:                     mgr.GetClient(),
+		Log:                        ctrl.Log.WithName("neteye-tenant-reconciler"),
+		Scheme:                     mgr.GetScheme(),
+		OperatorUsername:           operatorUsername,
+		FailureRequeueAfter:        failureRequeue,
+		ReconciliationRequeueAfter: reconciliationRequeue,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create NetEyeTenant controller")
+		os.Exit(1)
+	}
 	if err := neteye.SetupNetEyeWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create NetEye webhook")
+		os.Exit(1)
+	}
+	if err := neteye.SetupNetEyeTenantWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create NetEyeTenant webhook")
 		os.Exit(1)
 	}
 
@@ -248,4 +271,15 @@ func durationFromEnv(envVar string, fallback time.Duration) (time.Duration, erro
 		return fallback, fmt.Errorf("unsupported value %q, expected a positive duration", raw)
 	}
 	return d, nil
+}
+
+// operatorUsernameFromEnv returns the Kubernetes username of the operator
+// service account, or an empty string when the environment does not say.
+func operatorUsernameFromEnv() string {
+	namespace := strings.TrimSpace(os.Getenv(podNamespaceEnvVar))
+	serviceAccount := strings.TrimSpace(os.Getenv(serviceAccountNameEnvVar))
+	if namespace == "" || serviceAccount == "" {
+		return ""
+	}
+	return "system:serviceaccount:" + namespace + ":" + serviceAccount
 }

@@ -7,6 +7,11 @@
         kind: NetEye
         name: neteyes.neteye.cloud
         version: v1alpha1
+      - description: NetEyeTenant represents one NetEye tenant; it lives in the namespace of the tenant, which has the same name, and reconciles the tenant namespace.
+        displayName: NetEye Tenant
+        kind: NetEyeTenant
+        name: neteyetenants.neteye.cloud
+        version: v1alpha1
       - description: KeycloakClient declares an OpenID Connect client the operator keeps continuously reconciled in the identity service.
         displayName: Keycloak Client
         kind: KeycloakClient
