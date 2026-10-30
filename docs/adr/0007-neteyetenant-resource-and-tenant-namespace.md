@@ -39,11 +39,12 @@ breaks them.
 
 `spec.displayName` is the name that people see. It can change at any time.
 Derived names use `metadata.name`, so a change of the display name moves
-nothing. The display name is unique among tenants, ignoring case and Unicode
-normalization. The webhook checks it on creation and when the display name
-changes; it does not lock the resource, so two concurrent creates can still
-produce a duplicate. No other update is refused, so that an existing conflict
-never blocks unrelated changes.
+nothing. The display name must be unique among tenants, ignoring case and
+Unicode normalization. This uniqueness is best effort, not a guarantee. The
+webhook checks it on creation and when the display name changes. It does not
+lock the resource, so two concurrent creates can still produce a duplicate. No
+other update is refused, so that an existing conflict never blocks unrelated
+changes.
 
 No tenant has a special status. The code reads fields of the resource, never
 the identity of a tenant.
