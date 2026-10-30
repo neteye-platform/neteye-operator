@@ -1,6 +1,6 @@
 # ADR-0007: NetEyeTenant Resource and Tenant Namespace
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-29
 
 ## Context
