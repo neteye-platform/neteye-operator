@@ -32,20 +32,17 @@ Use this README as the entry point. Do not read every ADR for every task.
 2. Read the accepted ADRs whose scope matches that area.
 3. Follow links to other ADRs only when the selected ADR depends on them or
    more decision history is needed.
-4. Read proposed ADRs only when reviewing them, working on the decision they
-   describe, or when the task explicitly refers to them.
-5. Read superseded or deprecated ADRs only when historical rationale is
+4. Read superseded or deprecated ADRs only when historical rationale is
    required.
 
 If an implementation change conflicts with an accepted ADR, the ADR remains
-authoritative. Change the implementation or propose a new ADR that replaces
+authoritative. Change the implementation or add a new ADR that replaces
 the old decision.
 
 ## Statuses
 
 The following statuses are used:
 
-- **Proposed:** Under review. It does not yet guide the architecture.
 - **Accepted:** Approved and active. It guides the architecture and
   implementation.
 - **Superseded:** Replaced by a newer ADR and retained as decision history.
@@ -53,8 +50,9 @@ The following statuses are used:
 
 ## Lifecycle and numbering
 
-- New ADRs start as `Proposed`.
-- The approving pull request changes the status to `Accepted` before merge.
+- Review an ADR in its pull request. An ADR merges as `Accepted`.
+- Do not merge a design that review rejects. Keep its useful rationale in the
+  alternatives of the selected ADR.
 - Every ADR is added to the index below.
 - Use the next available four-digit number. Never reuse or renumber an ADR.
 - A material change to an accepted decision requires a new ADR.
@@ -71,3 +69,4 @@ The following statuses are used:
 | [ADR-0001](0001-neteye-resource-scope-and-ownership.md) | NetEye Resource Scope and Ownership | Singleton `NetEye`, tenants, resource ownership, and deletion policy | Accepted |
 | [ADR-0002](0002-reconciliation-and-resource-application.md) | Reconciliation and Resource Application | Server-Side Apply, field ownership, delegated resources, readiness, and component status | Accepted |
 | [ADR-0003](0003-neteye-and-operator-version-model.md) | NetEye and Operator Version Model | Product and operator versions, OLM channels, upgrade authorization, and resolved images | Accepted |
+| [ADR-0007](0007-neteyetenant-resource-and-tenant-namespace.md) | NetEyeTenant Resource and Tenant Namespace | `NetEyeTenant` shape and names, tenant namespace metadata and network baseline | Accepted |

@@ -1,0 +1,231 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: neteyetenants.neteye.cloud
+spec:
+  group: neteye.cloud
+  names:
+    kind: NetEyeTenant
+    listKind: NetEyeTenantList
+    plural: neteyetenants
+    shortNames:
+    - netenant
+    singular: neteyetenant
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.displayName
+      name: Display Name
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          NetEyeTenant is the Schema for the neteyetenants API. It represents one
+          NetEye tenant and its dedicated resources. It lives in the namespace of the
+          tenant and has the same name as that namespace.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NetEyeTenantSpec defines the desired state of a NetEye tenant.
+            properties:
+              displayName:
+                description: |-
+                  DisplayName is the name of the tenant that people see and use. It can
+                  change at any time; resources derived from the tenant use metadata.name,
+                  which never changes.
+                maxLength: 63
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: must not contain surrounding whitespace
+                  rule: self == self.trim()
+                - message: must not contain control or format characters
+                  rule: '!self.matches(''[\\p{Cc}\\p{Cf}]'')'
+            required:
+            - displayName
+            type: object
+          status:
+            description: |-
+              NetEyeTenantStatus defines the observed state of a NetEye tenant, following
+              the status contract of ADR-0002.
+            properties:
+              components:
+                additionalProperties:
+                  description: NetEyeComponentStatus reports the observed state of
+                    one logical component.
+                  properties:
+                    blockingDependencies:
+                      description: |-
+                        BlockingDependencies lists the prerequisite components that are not
+                        ready. It is only set when Status is Blocked.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: set
+                    message:
+                      description: |-
+                        Message is a concise explanation for humans and is not a
+                        machine-readable API.
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        ObservedGeneration is the generation of the resource this entry
+                        describes.
+                      format: int64
+                      type: integer
+                    reason:
+                      description: Reason is a stable, machine-readable identifier
+                        for the current state.
+                      type: string
+                    resolvedImages:
+                      description: |-
+                        ResolvedImages is the complete set of container images the operator
+                        selected for this component. A component with no container images
+                        reports an empty list, so the field is always present. While the
+                        component is progressing this is the target set; once it is ready, the
+                        operator has confirmed its required workloads use that set.
+                      items:
+                        description: |-
+                          NetEyeResolvedImage is one container image selected by the operator for a
+                          component. Name is a stable logical identifier within that component, and
+                          Image is a complete OCI reference pinned by digest.
+                        properties:
+                          image:
+                            description: Image is the exact, digest-pinned image reference.
+                            type: string
+                          name:
+                            description: Name is the stable logical image name within
+                              its component.
+                            type: string
+                        required:
+                        - image
+                        - name
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
+                    status:
+                      description: Status is the component's readiness state.
+                      enum:
+                      - Ready
+                      - Progressing
+                      - Degraded
+                      - Blocked
+                      - Disabled
+                      type: string
+                  required:
+                  - resolvedImages
+                  type: object
+                description: |-
+                  Components reports observed state keyed by stable logical component
+                  name. Adding a key is backward compatible, and callers must tolerate
+                  component keys they do not recognize.
+                type: object
+              conditions:
+                description: |-
+                  Conditions is the stable machine-readable status interface. It uses the
+                  Kubernetes standard condition schema. Callers must tolerate condition
+                  types they do not recognize.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the generation of the most recently observed
+                  NetEyeTenant.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: metadata.name must be neteye-tenant- followed by an id of 8 characters
+            from abcdefghjkmnpqrstuvwxyz23456789
+          rule: self.metadata.name.matches('^neteye-tenant-[a-hjkmnp-z2-9]{8}$')
+    served: true
+    storage: true
+    subresources:
+      status: {}

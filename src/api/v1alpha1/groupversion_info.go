@@ -32,6 +32,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 
 		&NetEye{},
 		&NetEyeList{},
+		&NetEyeTenant{},
+		&NetEyeTenantList{},
 		&KeycloakClient{},
 		&KeycloakClientList{},
 		&KeycloakUser{},

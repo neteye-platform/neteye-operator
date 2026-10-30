@@ -1,6 +1,6 @@
 # ADR-NNNN: Short title
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** YYYY-MM-DD
 
 ## Context
