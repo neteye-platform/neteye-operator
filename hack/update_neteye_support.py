@@ -120,25 +120,6 @@ def update_repository(repo_root: Path, target_version: str) -> bool:
     )
     source_path.write_text(updated_source, encoding="utf-8")
 
-    target_match = VERSION_PATTERN.fullmatch(target_version)
-    assert target_match is not None
-    next_version = f"{target_match['major']}.{int(target_match['minor']) + 1}"
-    adr_path = repo_root / "docs/adr/0003-neteye-and-operator-version-model.md"
-    adr = adr_path.read_text(encoding="utf-8")
-    adr = replace_once(
-        adr,
-        f"`stable-{current_version}`",
-        f"`stable-{target_version}`",
-        "stable channel",
-    )
-    adr = replace_once(
-        adr,
-        f"`experimental-{target_version}`",
-        f"`experimental-{next_version}`",
-        "experimental channel",
-    )
-    adr_path.write_text(adr, encoding="utf-8")
-
     catalog_path = repo_root / "hack/update_catalog.py"
     catalog = catalog_path.read_text(encoding="utf-8")
     catalog = replace_once(
