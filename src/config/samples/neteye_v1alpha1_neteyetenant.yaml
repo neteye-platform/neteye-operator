@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Namespace
 metadata:
+  # The installer creates the namespace without tenant metadata: the operator
+  # adds the neteye.cloud/tenant label and the display name annotation.
   name: neteye-tenant-2bh46bfv
-  labels:
-    neteye.cloud/tenant: neteye-tenant-2bh46bfv
 ---
 apiVersion: neteye.cloud/v1alpha1
 kind: NetEyeTenant
@@ -12,4 +12,4 @@ metadata:
   name: neteye-tenant-2bh46bfv
   namespace: neteye-tenant-2bh46bfv
 spec:
-  name: Default
+  displayName: Default

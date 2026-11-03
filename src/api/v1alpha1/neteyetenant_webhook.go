@@ -7,8 +7,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"unicode"
 
+	"golang.org/x/text/unicode/norm"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,20 +31,39 @@ func SetupNetEyeTenantWebhookWithManager(mgr ctrl.Manager) error {
 
 // +kubebuilder:object:generate=false
 
-// NetEyeTenantValidator validates NetEyeTenant admission requests.
+// NetEyeTenantValidator validates the NetEyeTenant rules that the CRD schema
+// cannot express: the namespace of a tenant, and a display name that is unique
+// among tenants. The CRD validates everything that depends on one field only.
 type NetEyeTenantValidator struct {
 	reader client.Reader
 }
 
 // ValidateCreate validates NetEyeTenant resources on creation.
 func (v *NetEyeTenantValidator) ValidateCreate(ctx context.Context, obj *NetEyeTenant) (admission.Warnings, error) {
-	return nil, v.validate(ctx, obj)
+	errors := ValidateTenantNamespace(obj)
+	if len(errors) == 0 {
+		uniqueness, err := v.validateUniqueDisplayName(ctx, obj)
+		if err != nil {
+			return nil, err
+		}
+		errors = append(errors, uniqueness...)
+	}
+	return nil, tenantInvalid(obj, errors)
 }
 
 // ValidateUpdate validates NetEyeTenant resources on update. The name and the
-// namespace of a resource never change, so the same rules as on creation apply.
-func (v *NetEyeTenantValidator) ValidateUpdate(ctx context.Context, _, newObj *NetEyeTenant) (admission.Warnings, error) {
-	return nil, v.validate(ctx, newObj)
+// namespace of a resource never change, so only a new display name is checked.
+// Every other update is accepted, so that an existing conflict never blocks
+// unrelated changes such as the removal of a finalizer.
+func (v *NetEyeTenantValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *NetEyeTenant) (admission.Warnings, error) {
+	if !newObj.DeletionTimestamp.IsZero() || sameDisplayName(oldObj.Spec.DisplayName, newObj.Spec.DisplayName) {
+		return nil, nil
+	}
+	uniqueness, err := v.validateUniqueDisplayName(ctx, newObj)
+	if err != nil {
+		return nil, err
+	}
+	return nil, tenantInvalid(newObj, uniqueness)
 }
 
 // ValidateDelete allows NetEyeTenant deletion.
@@ -52,60 +71,22 @@ func (v *NetEyeTenantValidator) ValidateDelete(_ context.Context, _ *NetEyeTenan
 	return nil, nil
 }
 
-func (v *NetEyeTenantValidator) validate(ctx context.Context, tenant *NetEyeTenant) error {
-	errors := validateTenantIdentity(tenant)
-	errors = append(errors, validateTenantDisplayName(tenant)...)
-	if len(errors) == 0 {
-		uniqueness, err := v.validateUniqueDisplayName(ctx, tenant)
-		if err != nil {
-			return err
-		}
-		errors = append(errors, uniqueness...)
+// ValidateTenantNamespace enforces that a tenant lives in its own namespace,
+// which has the same name. This also allows only one tenant in each namespace.
+// The controller checks it too, so a tenant that bypassed admission never
+// changes another namespace.
+func ValidateTenantNamespace(tenant *NetEyeTenant) field.ErrorList {
+	if tenant.Namespace == tenant.Name {
+		return nil
 	}
-	if len(errors) > 0 {
-		return apierrors.NewInvalid(GroupVersion.WithKind("NetEyeTenant").GroupKind(), tenant.Name, errors)
-	}
-	return nil
+	return field.ErrorList{field.Invalid(field.NewPath("metadata", "namespace"), tenant.Namespace, "must equal metadata.name: a tenant lives in its own namespace, which has the same name")}
 }
 
-// validateTenantIdentity enforces the naming rule of a tenant: the namespace,
-// the NetEyeTenant and the realm share one name. Requiring the name to equal
-// the namespace also allows only one tenant in each namespace.
-func validateTenantIdentity(tenant *NetEyeTenant) field.ErrorList {
-	var errors field.ErrorList
-	namePath := field.NewPath("metadata", "name")
-	if !strings.HasPrefix(tenant.Name, TenantNamePrefix) || len(tenant.Name) == len(TenantNamePrefix) {
-		errors = append(errors, field.Invalid(namePath, tenant.Name, fmt.Sprintf("must start with %q followed by the tenant id", TenantNamePrefix)))
-	}
-	if tenant.Name == NetEyeNamespace {
-		errors = append(errors, field.Forbidden(namePath, fmt.Sprintf("%q is the shared namespace, not a tenant", NetEyeNamespace)))
-	}
-	if tenant.Namespace != tenant.Name {
-		errors = append(errors, field.Invalid(field.NewPath("metadata", "namespace"), tenant.Namespace, "must equal metadata.name: a tenant lives in its own namespace, which has the same name"))
-	}
-	return errors
-}
-
-func validateTenantDisplayName(tenant *NetEyeTenant) field.ErrorList {
-	path := field.NewPath("spec", "name")
-	name := tenant.Spec.Name
-	if strings.TrimSpace(name) == "" {
-		return field.ErrorList{field.Required(path, "must not be empty")}
-	}
-	if strings.TrimSpace(name) != name {
-		return field.ErrorList{field.Invalid(path, name, "must not contain surrounding whitespace")}
-	}
-	for _, character := range name {
-		if unicode.IsControl(character) {
-			return field.ErrorList{field.Invalid(path, name, "must not contain control characters")}
-		}
-	}
-	return nil
-}
-
-// validateUniqueDisplayName refuses a spec.name that another tenant already
-// uses. The comparison ignores case, because two tenants that differ only in
-// case cannot be told apart by the people who choose between them.
+// validateUniqueDisplayName refuses a display name that another tenant already
+// uses. Two names that look the same to the people who choose between them are
+// the same name: the comparison ignores case and Unicode normalization. The
+// check reads the existing tenants before the write, so two concurrent creates
+// can still both pass; it prevents mistakes, it is not a guarantee.
 func (v *NetEyeTenantValidator) validateUniqueDisplayName(ctx context.Context, tenant *NetEyeTenant) (field.ErrorList, error) {
 	if v.reader == nil {
 		return nil, nil
@@ -119,9 +100,20 @@ func (v *NetEyeTenantValidator) validateUniqueDisplayName(ctx context.Context, t
 		if other.Namespace == tenant.Namespace && other.Name == tenant.Name {
 			continue
 		}
-		if strings.EqualFold(other.Spec.Name, tenant.Spec.Name) {
-			return field.ErrorList{field.Duplicate(field.NewPath("spec", "name"), tenant.Spec.Name)}, nil
+		if sameDisplayName(other.Spec.DisplayName, tenant.Spec.DisplayName) {
+			return field.ErrorList{field.Duplicate(field.NewPath("spec", "displayName"), tenant.Spec.DisplayName)}, nil
 		}
 	}
 	return nil, nil
+}
+
+func sameDisplayName(a, b string) bool {
+	return strings.EqualFold(norm.NFC.String(a), norm.NFC.String(b))
+}
+
+func tenantInvalid(tenant *NetEyeTenant, errors field.ErrorList) error {
+	if len(errors) == 0 {
+		return nil
+	}
+	return apierrors.NewInvalid(GroupVersion.WithKind("NetEyeTenant").GroupKind(), tenant.Name, errors)
 }

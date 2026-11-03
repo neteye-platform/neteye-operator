@@ -187,20 +187,28 @@ func main() {
 		setupLog.Error(err, "unable to create KeycloakRealm controller")
 		os.Exit(1)
 	}
-	operatorUsername := operatorUsernameFromEnv()
-	if operatorUsername == "" {
-		setupLog.Info("operator service account is unknown; the tenant namespace admission policy is not managed", "severity", "warning", "envVars", []string{podNamespaceEnvVar, serviceAccountNameEnvVar})
-	}
 	if err := (&controllers.NetEyeTenantReconciler{
 		Client:                     mgr.GetClient(),
 		Log:                        ctrl.Log.WithName("neteye-tenant-reconciler"),
 		Scheme:                     mgr.GetScheme(),
-		OperatorUsername:           operatorUsername,
 		FailureRequeueAfter:        failureRequeue,
 		ReconciliationRequeueAfter: reconciliationRequeue,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create NetEyeTenant controller")
 		os.Exit(1)
+	}
+	if operatorUsername := operatorUsernameFromEnv(); operatorUsername != "" {
+		if err := mgr.Add(&controllers.TenantNamespacePolicy{
+			Client:           mgr.GetClient(),
+			Log:              ctrl.Log.WithName("tenant-namespace-policy"),
+			OperatorUsername: operatorUsername,
+			Interval:         reconciliationRequeue,
+		}); err != nil {
+			setupLog.Error(err, "unable to add the tenant namespace admission policy")
+			os.Exit(1)
+		}
+	} else {
+		setupLog.Info("operator service account is unknown; the tenant namespace metadata is not protected", "severity", "warning", "envVars", []string{podNamespaceEnvVar, serviceAccountNameEnvVar})
 	}
 	if err := neteye.SetupNetEyeWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create NetEye webhook")

@@ -286,6 +286,8 @@ spec:
           verbs:
           - get
           - list
+          - patch
+          - update
           - watch
         - apiGroups:
           - neteye.cloud
@@ -294,6 +296,12 @@ spec:
           verbs:
           - get
           - patch
+          - update
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - neteyetenants/finalizers
+          verbs:
           - update
         - apiGroups:
           - neteye.cloud
