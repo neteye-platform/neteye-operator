@@ -34,8 +34,8 @@ type GatewayListener struct {
 
 // EnsureGateway ensures a Gateway API Gateway exists. It exposes the cleartext
 // HTTP listener used for the HTTP->HTTPS redirect and one HTTPS listener per
-// supplied GatewayListener. Existing Gateways are adopted when they have no
-// conflicting controller owner.
+// supplied GatewayListener. An existing Gateway must already be controlled by
+// owner; otherwise it is rejected and left unchanged.
 func EnsureGateway(ctx context.Context, client client.Client, namespace string, name string, gatewayClassName string, annotations map[string]string, listeners []GatewayListener, owner metav1.OwnerReference) error {
 	desiredListeners := []any{
 		map[string]any{

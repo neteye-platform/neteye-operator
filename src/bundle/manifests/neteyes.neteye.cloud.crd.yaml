@@ -202,8 +202,9 @@ spec:
                     type: string
                   name:
                     description: |-
-                      Name is the Gateway name in the shared NetEye namespace. If it already exists,
-                      the operator adopts and reconciles it; otherwise the operator creates it.
+                      Name is the Gateway name in the shared NetEye namespace. The operator
+                      creates the Gateway. An existing Gateway that this NetEye does not control
+                      is rejected and is not changed.
                     example: neteye
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                     type: string

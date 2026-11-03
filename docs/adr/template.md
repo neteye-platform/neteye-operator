@@ -1,24 +1,24 @@
 # ADR-NNNN: Short title
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** YYYY-MM-DD
 
 ## Context
 
-Describe the problem, constraints, and relevant background.
+Give the problem, the constraints, and the background.
 
 ## Decision
 
-State the chosen approach, its scope, and the rules it establishes.
+Give the selected solution, its scope, and its rules.
 
 ## Alternatives considered
 
-List the relevant alternatives and briefly explain why they were not chosen.
+Give the other options. For each option, tell why we did not select it.
 
 ## Consequences
 
-Record the expected benefits, costs, risks, and follow-up work.
+Give the benefits, costs, and risks.
 
 ## References
 
-List related ADRs, specifications, and other relevant material.
+Give the related ADRs and other documents.

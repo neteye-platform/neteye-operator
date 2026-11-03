@@ -3,71 +3,69 @@
 This directory contains the Architecture Decision Records (ADRs) for the
 NetEye Operator and its OLM catalog.
 
-ADRs capture durable architectural decisions, their context, the alternatives
-considered, and their consequences. They define architectural rules. They do
-not describe the current implementation or replace detailed API and component
+An ADR records one architectural decision, its context, the alternatives, and
+the consequences. An ADR gives rules. It does not replace the API or component
 specifications.
 
-New ADRs must use the [ADR template](template.md).
+Use the [ADR template](template.md) for new ADRs.
 
 ## Record structure
 
-Every ADR contains:
+Each ADR has these sections:
 
-- **Status:** The current standing of the decision.
-- **Date:** The record date in `YYYY-MM-DD` format.
-- **Context:** The problem, constraints, and relevant background.
-- **Decision:** The selected approach and the rules it establishes.
-- **Alternatives considered:** Relevant options and why they were not chosen.
-- **Consequences:** Expected benefits, costs, risks, and follow-up work.
-- **References:** Related ADRs, specifications, or external material.
+- **Status:** The current status of the decision.
+- **Date:** The date of the record, in `YYYY-MM-DD` format.
+- **Context:** The problem, the constraints, and the background.
+- **Decision:** The selected solution and its rules.
+- **Alternatives considered:** The other options and why we did not select
+  them.
+- **Consequences:** The benefits, costs, and risks.
+- **References:** Related ADRs and other documents.
 
-Authors and approvers are recorded by Git history and pull-request reviews.
+Git history and pull-request reviews record the authors and the approvers.
 
 ## How to use the ADRs
 
-Use this README as the entry point. Do not read every ADR for every task.
+Use this README as the start point. Do not read all ADRs for each task.
 
-1. Find the area affected by the task in the index below.
-2. Read the accepted ADRs whose scope matches that area.
-3. Follow links to other ADRs only when the selected ADR depends on them or
-   more decision history is needed.
-4. Read proposed ADRs only when reviewing them, working on the decision they
-   describe, or when the task explicitly refers to them.
-5. Read superseded or deprecated ADRs only when historical rationale is
-   required.
+1. Find the area of the task in the index.
+2. Read the accepted ADRs for that area.
+3. Read a linked ADR only if the selected ADR refers to it.
+4. Read superseded or deprecated ADRs only if you need the history of a
+   decision.
 
-If an implementation change conflicts with an accepted ADR, the ADR remains
-authoritative. Change the implementation or propose a new ADR that replaces
-the old decision.
+If a change to the implementation conflicts with an accepted ADR, the ADR
+applies. Change the implementation, or write a new ADR that replaces the old
+decision.
 
 ## Statuses
 
-The following statuses are used:
-
-- **Proposed:** Under review. It does not yet guide the architecture.
-- **Accepted:** Approved and active. It guides the architecture and
+- **Accepted:** The decision applies to the architecture and the
   implementation.
-- **Superseded:** Replaced by a newer ADR and retained as decision history.
-- **Deprecated:** No longer applicable and without a replacement ADR.
+- **Superseded:** A newer ADR replaces the decision. We keep the ADR as
+  history.
+- **Deprecated:** The decision does not apply and no ADR replaces it.
 
 ## Lifecycle and numbering
 
-- New ADRs start as `Proposed`.
-- The approving pull request changes the status to `Accepted` before merge.
-- Every ADR is added to the index below.
-- Use the next available four-digit number. Never reuse or renumber an ADR.
-- A material change to an accepted decision requires a new ADR.
-- A replacement ADR links to the old ADR and marks it as `Superseded`.
-- Small clarifications may update an accepted ADR when they do not change its
-  decision.
-- The exact implementation may change without a new ADR as long as it remains
-  consistent with the accepted decisions.
+- A new ADR has the status `Accepted` when its pull request merges. Review
+  occurs in the pull request.
+- Add each ADR to the index.
+- Use the next free four-digit number. Do not use a number again. Do not
+  change the number of an ADR.
+- A material change to an accepted decision needs a new ADR. The new ADR links
+  to the old ADR. Set the old ADR to `Superseded`.
+- You can update an accepted ADR to make it clearer if the decision does not
+  change.
+- The implementation can change without a new ADR if it agrees with the
+  accepted decisions.
 
 ## Index
 
 | ADR | Decision | Scope | Status |
 | --- | --- | --- | --- |
-| [ADR-0001](0001-neteye-resource-scope-and-ownership.md) | NetEye Resource Scope and Ownership | Singleton `NetEye`, tenants, resource ownership, and deletion policy | Accepted |
-| [ADR-0002](0002-reconciliation-and-resource-application.md) | Reconciliation and Resource Application | Server-Side Apply, field ownership, delegated resources, readiness, and component status | Accepted |
-| [ADR-0003](0003-neteye-and-operator-version-model.md) | NetEye and Operator Version Model | Product and operator versions, OLM channels, upgrade authorization, and resolved images | Accepted |
+| [ADR-0001](0001-neteye-resource-scope-and-ownership.md) | NetEye Resource Scope and Ownership | Singleton `NetEye`, owned, delegated, and external resources, deletion | Accepted |
+| [ADR-0002](0002-reconciliation-and-resource-application.md) | Reconciliation and Resource Application | Create and update of resources, ownership checks, readiness, status contract | Accepted |
+| [ADR-0003](0003-neteye-and-operator-version-model.md) | NetEye and Operator Version Model | Product and operator versions, supported upgrades, component images, OLM channels | Accepted |
+| [ADR-0004](0004-automated-neteye-line-release.md) | Automated Operator Release for New NetEye Lines | Release workflow for a new NetEye release line | Accepted |
+| [ADR-0005](0005-keycloak-configuration-resources.md) | Keycloak Configuration Resources | `KeycloakRealm`, `KeycloakClient`, `KeycloakUser`, and `KeycloakAuthFlow` | Accepted |

@@ -5,150 +5,123 @@
 
 ## Context
 
-NetEye is being migrated gradually from services running on RHEL and managed by
-systemd, PCS, and Ansible to applications running on Kubernetes.
+NetEye moves step by step from RHEL services to Kubernetes. Ansible installs
+the Kubernetes cluster and the NetEye Operator. Ansible also creates the
+`NetEye` custom resource. Then the operator manages the Kubernetes resources
+for that `NetEye` resource.
 
-During this transition, Ansible installs the Kubernetes cluster and everything
-required to install the NetEye Operator. Ansible also creates and updates the
-`NetEye` custom resource. After that point, the operator must manage the
-Kubernetes resources represented by the custom resource.
-
-Some NetEye components are shared by the whole installation. Keycloak is one
-example. Other components need a separate instance for each tenant. The exact
-classification of every component is not yet complete and will change as more
-components are moved to Kubernetes.
-
-We need clear ownership boundaries. Without them, Ansible, users, and operators
-could update the same Kubernetes resources. This would cause configuration
-drift and repeated reconciliation conflicts.
-
-NetEye is normally deployed as one installation per Kubernetes cluster. We do
-not have a production requirement for multiple independent NetEye
-installations in the same cluster.
+There is one NetEye installation in each cluster. If two systems change the
+same resource, the configuration drifts and the reconciliation does not stop.
+Thus each resource must have one owner.
 
 ## Decision
 
-### NetEye installation
+### One NetEye per cluster
 
-A Kubernetes cluster can contain only one active `NetEye` custom resource.
-This resource represents the shared part of the NetEye installation.
+- A cluster contains a maximum of one `NetEye` resource.
+- The `NetEye` resource must be in the namespace `neteye-tenant-shared`. The
+  shared workloads are also in this namespace.
+- The validating webhook rejects a create or an update of a `NetEye` resource
+  if a different `NetEye` resource exists.
+- The controller also uses the Lease `neteye-cluster-authority` in
+  `neteye-tenant-shared`. The holder of the Lease is the UID of the `NetEye`
+  resource. The `NetEye` resource owns the Lease.
+- If a `NetEye` resource does not hold the Lease, the controller sets its
+  phase to `Failed`. The controller does not change other resources for it.
 
-The singleton rule applies to the whole cluster, regardless of the namespace
-of the `NetEye` resource. The operator must not reconcile a second `NetEye`
-resource. The enforcement mechanism is an implementation detail and is not
-defined by this ADR.
+### Resource classes
 
-There can be multiple `NetEyeTenant` custom resources. Each one represents one
-tenant and its dedicated resources. Tenant resources may use shared services,
-but they must not own or delete them.
+Each resource that the operator uses is in one of these classes:
 
-Every component managed by the operator must be classified as one of the
-following before it is added to reconciliation:
+- **Owned:** The operator creates the resource. The resource has a controller
+  owner reference to the `NetEye` resource.
+- **Delegated:** The operator owns a custom resource of a different operator.
+  The other operator owns the resources that it makes from that custom
+  resource.
+- **External:** A user or other automation manages the resource. The operator
+  only reads it.
 
-- **Shared:** owned by the `NetEye` resource.
-- **Tenant-specific:** owned by one `NetEyeTenant` resource.
-- **External:** referenced by NetEye but managed outside the NetEye Operator.
+The operator does not adopt resources that it did not create. ADR-0002 gives
+the rules.
 
-A Kubernetes resource must not be managed by both `NetEye` and
-`NetEyeTenant`. The exact component classification will be documented as the
-components are migrated. It is not decided by this ADR.
+### Delegated components
 
-### Configuration ownership
+- The operator owns the Keycloak custom resource `neteye-kc`
+  (`k8s.keycloak.org`). The Keycloak Operator owns the Pods and StatefulSets.
+- The operator installs the Keycloak Operator. It applies the OLM
+  `ClusterExtension` `keycloak-operator` with the channel `fast` from the
+  catalog `operatorhubio`, into the namespace `keycloak-system`.
+- The `ClusterExtension` has no owner. The operator applies it at start and
+  every 10 minutes, also if no `NetEye` resource exists. The operator does not
+  delete it.
 
-During the transition, Ansible owns the installation of Kubernetes, the
-installation of the operator, and the desired content of the `NetEye` resource.
-The operator owns the Kubernetes resources that it creates from that desired
-state. Ansible must not also manage those generated resources.
+### External resources
 
-When the migration to Kubernetes is complete, users or their automation will
-own the `NetEye` resource. The custom resource API is the supported interface
-for configuring shared components.
+These resources are external:
 
-Users must not edit generated resources to configure NetEye. If a required
-setting is missing, it must be added to the custom resource API. This keeps the
-desired state explicit, reviewable, and reproducible.
+- The cert-manager `Issuer` in `spec.internalCertificateIssuerRef`.
+- The Secrets that the spec refers to, for example database credentials.
+- The external MariaDB database and the Elasticsearch endpoints.
 
-When the NetEye Operator delegates a component to another operator, the NetEye
-Operator owns the component's custom resource. The delegated operator owns the
-resources generated from it. For example, the NetEye Operator can own a
-Keycloak custom resource without owning the Keycloak Pods or StatefulSets.
+The operator does not change or delete external resources. If the `Issuer` is
+missing, the operator sets the phase to `Failed` and stops the reconciliation.
 
-External resources are referenced, not adopted. The NetEye Operator must not
-change or delete them unless a separate decision explicitly assigns that
-ownership.
+### Configuration interface
+
+- The `NetEye` spec is the supported configuration interface.
+- Do not edit owned resources to configure NetEye. The operator replaces the
+  spec of an owned resource on the next reconciliation.
+- If a necessary setting is missing, add it to the `NetEye` API.
+- The webhook rejects Keycloak options, Keycloak features, and telemetry
+  attributes that the operator manages, for example `service.name`.
+- ADR-0005 gives a different rule for the Keycloak configuration resources
+  that the operator creates.
 
 ### Deletion
 
-The `NetEye` custom resource exposes a `deletionPolicy`. It supports at least
-the following behaviors:
-
-- `Retain`: resources containing installation data must be preserved.
-  Resources that contain no data and are safe to recreate may be deleted.
-- `Delete`: resources owned by the `NetEye` installation may be deleted,
-  including data-bearing resources.
-
-`Retain` is the default because deleting a custom resource must not cause
-unexpected data loss.
-
-External resources are never deleted by either policy.
-
-Before a component is implemented, its data-bearing resources and any
-additional resources required for recovery must be identified. This produces a
-component-specific deletion contract without requiring this ADR to contain a
-list that will quickly become outdated.
-
-The deletion behavior of `NetEyeTenant` resources will be defined separately.
-Deleting a tenant must never delete resources owned by the shared `NetEye`
-resource.
+- The `NetEye` resource has no finalizer and no deletion policy.
+- When you delete the `NetEye` resource, Kubernetes garbage collection deletes
+  all owned resources. This includes the Keycloak custom resource, the
+  Gateway, the routes, the Certificates, the network policies, the telemetry
+  workloads, and the Lease.
+- External resources, the `ClusterExtension`, and the Keycloak configuration
+  resources (ADR-0005) stay.
+- When you disable `spec.elasticStack`, the operator deletes the owned
+  OpenTelemetry Collector and EDOT Gateway resources.
 
 ## Alternatives considered
 
-### Allow multiple NetEye resources in one cluster
+### Allow more than one NetEye resource in a cluster
 
-This would allow multiple independent installations to share a cluster. It was
-not chosen because there is no current production requirement for it. It would
-also make the ownership of cluster-wide and shared resources more complex.
+We did not select this option. There is no production requirement for it.
+Also, the owner of the shared and cluster-scoped resources is not clear.
 
-### Put shared and tenant-specific resources in one custom resource
+### Use only the webhook for the singleton rule
 
-This would reduce the number of API types. It was not chosen because the shared
-installation and tenant instances have different lifecycles and ownership.
+We did not select this option. A webhook can be bypassed or not available. The
+Lease makes sure that only one `NetEye` resource changes the shared resources.
 
-### Let Ansible and the operator manage the same Kubernetes resources
+### Let Ansible and the operator manage the same resources
 
-This was not chosen because both systems could continuously overwrite each
-other. The handover from Ansible to the operator must have a clear boundary.
+We did not select this option. The two systems would overwrite each other.
 
-### Allow direct customization of generated resources
+### Allow direct changes to owned resources
 
-This was not chosen because the custom resource would no longer describe the
-complete desired configuration. Reconciliation could also remove direct
-changes without a clear explanation to the user.
-
-### Always delete all resources with the NetEye resource
-
-This was not chosen because deleting the custom resource could cause accidental
-and irreversible data loss.
+We did not select this option. The custom resource would then not show the
+full configuration. Also, the reconciliation would remove the changes.
 
 ## Consequences
 
-The operator has one clear source of desired state for shared resources and one
-clear source for each tenant.
-
-Shared resources cannot be duplicated by creating another `NetEye` resource in
-a different namespace. Development and production installations that need
-independent shared components must use separate clusters.
-
-The custom resource API will grow when users need new supported configuration.
-This requires API design and compatibility work, but avoids hidden
-customization outside the declared desired state.
-
-Every new component needs an explicit ownership and deletion classification.
-This adds design work, but prevents ambiguous lifecycle behavior.
-
-The operator needs a cluster-wide singleton check and deletion handling that
-implements `Retain` and `Delete` safely.
+- Each cluster has one source of desired state for the shared resources.
+- Independent installations, for example development and production, need
+  different clusters.
+- The `NetEye` API must grow when users need new settings.
+- If you delete the `NetEye` resource, there is no option to keep the owned
+  resources.
+- When you delete the `NetEye` resource, garbage collection also deletes the
+  Lease. Then a new `NetEye` resource can get the Lease.
 
 ## References
 
-None.
+- [ADR-0002: Reconciliation and Resource Application](0002-reconciliation-and-resource-application.md)
+- [ADR-0005: Keycloak Configuration Resources](0005-keycloak-configuration-resources.md)

@@ -52,7 +52,6 @@ class UpdateRepositoryTest(unittest.TestCase):
                     "var netEyeVersionMap",
                     '// NetEye version, e.g. "4.50".\nvar netEyeVersionMap',
                 ),
-                "docs/adr/0003-neteye-and-operator-version-model.md": "`stable-4.50`\n`experimental-4.51`\n",
                 "hack/update_catalog.py": "NetEye release line, e.g. 4.50; defaults to latest\n",
                 "src/config/samples/neteye_v1alpha1_neteye.yaml": 'version: "4.50"\n',
                 "src/config/manifests/patches/metadata.yaml": '{"spec":{"version":"4.50"}}\n',
@@ -71,18 +70,6 @@ class UpdateRepositoryTest(unittest.TestCase):
             self.assertIn(
                 'PreviousNetEyeVersion = "4.50"',
                 (repo / "src/api/v1alpha1/neteyeconfig_types.go").read_text(),
-            )
-            self.assertIn(
-                "`stable-4.51`",
-                (
-                    repo / "docs/adr/0003-neteye-and-operator-version-model.md"
-                ).read_text(),
-            )
-            self.assertIn(
-                "`experimental-4.52`",
-                (
-                    repo / "docs/adr/0003-neteye-and-operator-version-model.md"
-                ).read_text(),
             )
             self.assertIn(
                 'version: "4.51"',

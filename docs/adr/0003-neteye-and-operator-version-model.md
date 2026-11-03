@@ -5,293 +5,125 @@
 
 ## Context
 
-The NetEye product, the NetEye Operator, its OLM bundle, and the individual
-NetEye components have separate versions. These versions change for different
-reasons and must not be treated as one value.
+The NetEye product, the operator, the OLM bundle, and the NetEye components
+have different versions. They change for different reasons.
 
-OLM must be able to install operator fixes and compatible component patches
-automatically. At the same time, an automatic operator update must not start a
-NetEye product upgrade. Product upgrades can contain migrations and require an
-explicit action from the administrator.
+OLM must install operator fixes and component patches automatically. An
+automatic operator update must not start a NetEye product upgrade. Only the
+administrator can start a product upgrade.
 
-NetEye has one stable release line and one in-development release line. For
-example, after NetEye 4.50 is released, 4.51 is available as an experimental
-line. Experimental installations receive changes continuously and move
-forward until that line becomes stable.
-
-The selected component versions are part of a tested NetEye release. They must
-be reproducible and easy to audit on a running installation.
+A NetEye release has a tested set of component images. This set must be
+reproducible and easy to audit.
 
 ## Decision
 
 ### Version identities
 
-`NetEye.spec.version` is the desired NetEye product release line. For example:
+- `NetEye.spec.version` is the NetEye release line in the format
+  `major.minor`, for example `"4.51"`. The CRD rejects other formats, for
+  example `4.51-sr1`.
+- The operator has its own Semantic Versioning sequence. Its version does not
+  come from the NetEye version.
+- The OLM bundle has the same version as the operator image.
+- Each operator minor line supports one NetEye release line. More than one
+  operator minor line can support the same NetEye release line. For example,
+  `0.1.x` supports `4.50` and `0.2.x` supports `4.51`.
+- The constants `CurrentNetEyeVersion` and `PreviousNetEyeVersion` in the
+  operator code give the supported lines.
+- A new NetEye release line always gives a new operator minor version
+  (ADR-0004). Other releases get a minor version if a merged pull request has
+  the label `feature` or `major`. Else they get a patch version.
 
-```yaml
-spec:
-  version: "4.51"
-```
+### Supported versions and upgrades
 
-The value identifies the release line, not an individual service release or
-component patch. Compatible fixes can therefore be delivered within `4.51`
-without changing `spec.version`.
+- The webhook accepts a new `NetEye` resource only with `CurrentNetEyeVersion`.
+- The webhook accepts an update only from `CurrentNetEyeVersion` to
+  `CurrentNetEyeVersion`, or from `PreviousNetEyeVersion` to
+  `CurrentNetEyeVersion`. It rejects all other updates, also downgrades.
+- If `spec.version` is `PreviousNetEyeVersion`, the controller sets the phase
+  to `PendingUpgrades`. It does not reconcile the resource.
+- If `spec.version` is a different unsupported value, the controller sets the
+  phase to `Failed`. It does not change workloads. The controller does this
+  check because a webhook can be bypassed.
+- Only a change to `spec.version` starts a product upgrade. An operator update
+  through OLM does not change `spec.version`.
+- Downgrades are not supported.
 
-The operator has its own Semantic Versioning sequence. Its version is not
-derived from the NetEye version. The OLM bundle uses the same version as the
-operator image and pins that image by digest.
+### Component images
 
-Each operator minor line supports one NetEye release line. The mapping is
-explicit release metadata and must not be inferred from the version numbers.
-For example, a valid mapping could be:
-
-| Operator line | NetEye line |
-| ------------- | ----------- |
-| `1.4.x`       | `4.50`      |
-| `1.5.x`       | `4.51`      |
-| `1.6.x`       | `4.52`      |
-
-Operator patch releases deliver operator fixes and compatible component
-patches. A new operator minor line introduces support for the next NetEye
-release line.
-
-Users cannot select individual component image versions in the `NetEye`
-custom resource. The tested component set selected by the operator is
-authoritative.
-
-### Operator release lines
-
-Development of a new NetEye release is isolated from the automatic patch
-stream of the current stable release. The project maintains:
-
-- a main development line for the next experimental NetEye release;
-- one maintenance line for the current stable NetEye release.
-
-Applicable fixes are forward-ported from the maintenance line to the
-development line.
-
-An operator line supports:
-
-- its target NetEye release during normal operation;
-- the immediately previous NetEye release as an upgrade source;
-- the defined forward upgrade from that previous release to its target.
-
-The previous release must remain fully manageable while the new operator is
-installed and the product upgrade is waiting to start. Older releases are not
-supported by that operator line. This bounds each operator line to two NetEye
-release descriptors and one forward transition.
-
-Component reconcilers should consume resolved release data and remain
-independent of product versions. Version-specific behavior belongs in explicit
-migrations. It must not be spread through the reconcilers as unrelated version
-checks.
+- The operator code contains the component image set for each supported
+  release line. Each image has a digest.
+- Users cannot set component images in the `NetEye` resource.
+- The environment variables `RELATED_IMAGE_KEYCLOAK`,
+  `RELATED_IMAGE_OTEL_COLLECTOR`, `RELATED_IMAGE_EDOT_GATEWAY`, and
+  `RELATED_IMAGE_CA_BUNDLE` on the operator Deployment replace the images in
+  the code. The ClusterServiceVersion sets these variables and lists the
+  images in `relatedImages`.
+- A component patch is an operator release, also if the Go code does not
+  change. The release builds a new operator image and a new bundle.
+- The status shows the selected image of each service in `resolvedImage`
+  (ADR-0002).
 
 ### OLM channels
 
-OLM channels are specific to a NetEye release line and its maturity. For
-example:
-
-- `stable-4.51`
-- `experimental-4.52`
-
-A channel is never changed to represent a different NetEye release line.
-Updates within a channel may contain compatible operator fixes and compatible
-component patches for that line.
-
-When an experimental line becomes generally available:
-
-- the tested bundle is published in the matching stable channel;
-- the experimental channel for that release is frozen;
-- the next experimental channel is created;
-- existing experimental installations can switch to the stable channel
-  without changing `spec.version`.
-
-For example, `experimental-4.51` does not become 4.52. It is frozen when
-`stable-4.51` is published, and development continues in
-`experimental-4.52`.
-
-Experimental channels move forward only. A broken experimental update is
-fixed by a newer update; downgrade is not a recovery mechanism.
-
-The OLM `ClusterExtension`, including its channel and version range, is owned
-by installation or lifecycle automation outside the NetEye Operator. The
-operator must not change its own `ClusterExtension` or trigger its own update.
-
-### Upgrade authorization
-
-Changing `NetEye.spec.version` is the only action that authorizes a NetEye
-product release upgrade.
-
-Updating the OLM channel or version range only installs an operator that is
-capable of managing the requested release. It does not authorize a product
-upgrade and must not run cross-release migrations.
-
-A product upgrade follows this order:
-
-1. Installation automation selects an operator that supports both the current
-   NetEye release and the target release.
-2. It waits until OLM has installed that operator.
-3. The administrator or authorized automation changes `NetEye.spec.version`.
-4. The operator applies the component changes and explicit migrations for the
-   approved transition.
-
-The safe intermediate state is a newer operator continuing to manage the
-current NetEye release. The two resource changes must not depend on being
-applied atomically.
-
-The validating webhook rejects a `spec.version` change when:
-
-- the installed operator does not support the requested target;
-- the transition is not present in the explicit forward-upgrade graph;
-- the change is a downgrade.
-
-The controller repeats these checks because admission webhooks can be bypassed
-or temporarily unavailable. If an invalid version reaches storage, the
-controller does not change workloads. It reports `Ready=False` with reason
-`UnsupportedVersion`.
-
-Downgrades are not supported.
-
-### Release manifests
-
-The operator image contains declarative, version-controlled release manifests.
-For example:
-
-```text
-releases/
-├── 4.50.yaml
-└── 4.51.yaml
-```
-
-The files are embedded in the operator binary or image. They are not runtime
-configuration and are not delivered through a mutable ConfigMap.
-
-A release manifest contains the information required to resolve a NetEye
-release, including:
-
-- the exact, digest-pinned image for every component;
-- the migrations required by each supported forward transition;
-- any compatibility data required by the reconcilers.
-
-A component-only patch is released as an operator patch even when the Go code
-does not change. The release manifest is updated, then a new operator image and
-matching OLM bundle are built and published in the same versioned channel.
-Rebuilding the operator image for this purpose is acceptable.
-
-CI validates at least that:
-
-- release manifests conform to their schema;
-- all component images are pinned by digest;
-- every supported NetEye release has a manifest;
-- upgrade edges move forward and reference existing releases;
-- every referenced migration exists.
-
-The operator must not become ready with invalid embedded release data.
-
-Testing an unreleased component set uses an experimental or purpose-built
-operator bundle. Production custom resources do not expose component image
-overrides.
-
-### Reported versions
-
-`status.currentVersion` reports the NetEye product release that the operator
-has successfully applied. During an upgrade it can differ from
-`spec.version`.
-
-The standard conditions report whether an upgrade is progressing, complete,
-or degraded. `status.currentVersion` changes only after the requirements for
-the new release and its migrations have completed successfully.
-
-As defined in ADR-0002, each component status also reports its complete
-`resolvedImages` set. Every entry has a stable logical name and an exact,
-digest-pinned OCI image reference. This makes the component artifacts selected
-for a running installation visible without inspecting its workloads or release
-manifests.
-
-The operator image digest, its embedded release manifests, the NetEye status,
-and the component `resolvedImages` together provide an auditable description
-of the deployed software set.
+- The catalog has one stable channel and one nightly channel for each NetEye
+  release line: `<line>-stable` and `<line>-nightly`, for example
+  `4.51-stable`.
+- A channel always stays on its NetEye release line.
+- The default channel is the newest stable channel.
+- A new stable entry must have a higher version than the channel head. A
+  bundle in the catalog does not change.
+- The nightly build runs each day at 02:00 UTC if `main` has new commits. It
+  publishes the version `<version>-nightly-<commit>` to the nightly channel. A
+  new nightly entry replaces the old head and skips all older entries.
+- Channels move forward only. A new release fixes a defective release.
+- The OLM `ClusterExtension` of the NetEye Operator is managed outside the
+  operator. The operator does not change it.
 
 ## Alternatives considered
 
-### Let an operator update authorize a NetEye upgrade
+### Let an operator update start a NetEye upgrade
 
-This was not chosen because automatic OLM updates would then be able to start
-product migrations. Operator delivery and product-upgrade approval need
-separate controls.
+We did not select this option. Automatic OLM updates could then start product
+upgrades. Operator delivery and upgrade approval need different controls.
 
-### Include every service release in `spec.version`
+### Put each service release in `spec.version`
 
-Values such as `4.51-SR1` would require a desired-state change for compatible
-patches. This was not chosen because patches are delivered through the selected
-OLM channel within a NetEye release line.
+We did not select this option. A value such as `4.51-SR1` makes a change to
+the desired state necessary for each patch. Patches come through the channel
+of the release line.
 
-### Use generic `stable` and `experimental` channels
+### Use the generic channels `stable` and `alpha`
 
-A generic channel would eventually move to a different NetEye release and
-could install an operator that no longer manages the current installation.
-Versioned channels keep automatic updates inside an explicit compatibility
-boundary.
-
-### Use one operator update stream for several NetEye releases
-
-This would expose stable installations to development for the next release and
-would make the runtime operator retain growing historical behavior. Separate
-minor lines keep development isolated and the supported version window
-bounded.
+We did not select this option. A generic channel can move to a different
+NetEye release line. Then OLM can install an operator that does not support
+the current installation.
 
 ### Give the operator the same version as NetEye
 
-This would mix the product lifecycle with the operator implementation
-lifecycle. Independent versions allow operator-only fixes while the explicit
-mapping preserves compatibility.
+We did not select this option. It mixes the product lifecycle with the
+operator lifecycle. Independent versions allow operator-only fixes.
 
-### Load release data from a ConfigMap or separate runtime artifact
+### Allow component images in the `NetEye` resource
 
-This could release component patches without rebuilding the operator image.
-It was not chosen because it adds another mutable input and another
-compatibility boundary. Embedding the manifests makes one operator image digest
-identify both the reconciler and its certified component set.
-
-### Allow component image overrides in the NetEye resource
-
-This would make development testing convenient, but it would also create
-untested combinations that the operator could not support reliably. Dedicated
-bundles and experimental channels provide the required testing path.
+We did not select this option. It makes combinations that nobody tested.
+Nightly bundles give a path to test new images.
 
 ## Consequences
 
-A NetEye release upgrade is always visible as an intentional change to
-`spec.version`. Automatic OLM updates can safely deliver compatible fixes
-without granting permission for a cross-release upgrade.
-
-Installation automation must stage a compatible operator before changing the
-desired NetEye version. It must wait for each step instead of assuming that the
-OLM and NetEye resources change atomically.
-
-The catalog must publish separate, versioned stable and experimental channels
-and preserve their release boundaries.
-
-The project must maintain one stable branch and one development line, including
-the required forward-porting of fixes. In return, production patches are
-isolated from development of the next NetEye release.
-
-Each component change requires a new operator image and OLM bundle. This adds a
-build, but makes the resulting software set immutable and reproducible.
-
-The operator needs a validating webhook, matching controller-side validation,
-an explicit forward-upgrade graph, and explicit migrations. Downgrade logic is
-not implemented.
-
-Each new operator line carries only its target release and the immediately
-previous upgrade source. Support for older releases is removed as the release
-window advances, which prevents migration complexity from growing without a
-bound.
-
-Support teams and automation can identify both the achieved NetEye release and
-the exact component images through the status API.
+- A NetEye upgrade is always an intentional change to `spec.version`.
+- Automatic OLM updates can deliver fixes. They cannot start an upgrade.
+- Before a NetEye upgrade, the automation must install an operator that
+  supports the target line. Then it can change `spec.version`.
+- An operator line does not manage the previous release line. It only waits
+  for the upgrade.
+- There is no migration logic. An upgrade applies the image set of the new
+  release line.
+- Each component change needs a new operator image and bundle.
+- An operator that supports a new line cannot support release lines older
+  than the previous line.
 
 ## References
 
-- [ADR-0001: NetEye Resource Scope and Ownership](0001-neteye-resource-scope-and-ownership.md)
 - [ADR-0002: Reconciliation and Resource Application](0002-reconciliation-and-resource-application.md)
+- [ADR-0004: Automated Operator Release for New NetEye Lines](0004-automated-neteye-line-release.md)
