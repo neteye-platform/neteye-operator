@@ -186,6 +186,7 @@ func TestReconcileElasticStackEnabledCreatesCollector(t *testing.T) {
 	for _, resource := range telemetryResourceInventory() {
 		requireExists(ctx, t, c, resource.gvk, keycloak.WorkloadNamespace, resource.name)
 	}
+	assertReconcileKeepsNetworkPolicies(ctx, t, r, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)})
 	deployment := &appsv1.Deployment{}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: keycloak.WorkloadNamespace, Name: elasticstack.DeploymentName}, deployment); err != nil {
 		t.Fatal(err)
@@ -478,12 +479,12 @@ func TestReconcileIdentityTelemetryEnableAndDisable(t *testing.T) {
 		if err != nil || !found || optimized {
 			t.Errorf("startOptimized = %t, found=%t, err=%v", optimized, found, err)
 		}
-		gateway := requireExists(ctx, t, c, ciliumPolicyGVK, namespace, elasticstack.EDOTGatewayIngressPolicyName)
+		gateway := requireExists(ctx, t, c, networkPolicyGVK, namespace, elasticstack.EDOTGatewayIngressPolicyName)
 		gatewayRules, hasRules, err := unstructured.NestedSlice(gateway.Object, "spec", "ingress")
 		if err != nil || !hasRules {
 			t.Fatalf("read %s rules: found=%t err=%v", elasticstack.EDOTGatewayIngressPolicyName, hasRules, err)
 		}
-		wantRules := 2
+		wantRules := 1
 		if flags.LogsEnabled || flags.MetricsEnabled {
 			wantRules++
 		}
@@ -491,13 +492,10 @@ func TestReconcileIdentityTelemetryEnableAndDisable(t *testing.T) {
 			t.Errorf("%s rules = %#v, want %d", elasticstack.EDOTGatewayIngressPolicyName, gatewayRules, wantRules)
 		}
 		// Keycloak egress does not vary with telemetry.
-		keycloakEgress := requireExists(ctx, t, c, ciliumPolicyGVK, namespace, keycloak.EgressPolicyName)
+		keycloakEgress := requireExists(ctx, t, c, networkPolicyGVK, namespace, keycloak.EgressPolicyName)
 		egressRules, hasEgress, err := unstructured.NestedSlice(keycloakEgress.Object, "spec", "egress")
-		if err != nil || !hasEgress || !reflect.DeepEqual(egressRules, []any{map[string]any{"toEntities": []any{"all"}}}) {
+		if err != nil || !hasEgress || !reflect.DeepEqual(egressRules, []any{map[string]any{}}) {
 			t.Errorf("keycloak egress rules = %#v, found=%t err=%v", egressRules, hasEgress, err)
-		}
-		if _, hasDeny, _ := unstructured.NestedSlice(keycloakEgress.Object, "spec", "egressDeny"); hasDeny {
-			t.Error("keycloak egress must carry no deny exceptions")
 		}
 	}
 }
@@ -679,13 +677,21 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "platform"}}
 
-	legacyDefaultDeny := newUnstructured(networkPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
-	legacyDefaultDeny.Object["spec"] = map[string]any{
-		"podSelector": map[string]any{},
-		"policyTypes": []any{"Ingress"},
+	// Earlier releases created CiliumNetworkPolicies under the same names.
+	foreignOwner := ownerReferenceFor(ne)
+	foreignOwner.Name, foreignOwner.UID = "other", "other-uid"
+	legacyPolicies := map[string]metav1.OwnerReference{
+		resources.DefaultDenyPolicyName: ownerReferenceFor(ne),
+		keycloak.EgressPolicyName:       ownerReferenceFor(ne),
+		keycloak.HostPolicyName:         foreignOwner,
 	}
-	if err := c.Create(ctx, legacyDefaultDeny); err != nil {
-		t.Fatalf("create legacy native default deny: %v", err)
+	for name, owner := range legacyPolicies {
+		legacy := newUnstructured(ciliumPolicyGVK, keycloak.WorkloadNamespace, name)
+		legacy.SetOwnerReferences([]metav1.OwnerReference{owner})
+		legacy.Object["spec"] = map[string]any{"endpointSelector": map[string]any{}}
+		if err := c.Create(ctx, legacy); err != nil {
+			t.Fatalf("create legacy CiliumNetworkPolicy %s: %v", name, err)
+		}
 	}
 
 	res, err := r.Reconcile(ctx, req)
@@ -718,37 +724,29 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	}
 	requireExists(ctx, t, c, httpRouteGVK, ns, resources.HTTPToHTTPSRedirectRouteName)
 
-	legacyLookup := newUnstructured(networkPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
-	if err := c.Get(ctx, client.ObjectKeyFromObject(legacyLookup), legacyLookup); !apierrors.IsNotFound(err) {
-		t.Errorf("legacy native default deny still exists or lookup failed: %v", err)
+	for name, owner := range legacyPolicies {
+		legacy := newUnstructured(ciliumPolicyGVK, keycloak.WorkloadNamespace, name)
+		err := c.Get(ctx, client.ObjectKeyFromObject(legacy), legacy)
+		if owner.UID == ne.UID && !apierrors.IsNotFound(err) {
+			t.Errorf("owned legacy CiliumNetworkPolicy %s still exists or lookup failed: %v", name, err)
+		}
+		if owner.UID != ne.UID && err != nil {
+			t.Errorf("foreign legacy CiliumNetworkPolicy %s was not preserved: %v", name, err)
+		}
 	}
 
-	keycloakEgress := requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.EgressPolicyName)
+	keycloakEgress := requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, keycloak.EgressPolicyName)
 	assertNetEyeOwner(t, keycloakEgress)
 	keycloakEgressRules, found, err := unstructured.NestedSlice(keycloakEgress.Object, "spec", "egress")
-	if err != nil || !found || !reflect.DeepEqual(keycloakEgressRules, []any{map[string]any{"toEntities": []any{"all"}}}) {
+	if err != nil || !found || !reflect.DeepEqual(keycloakEgressRules, []any{map[string]any{}}) {
 		t.Errorf("keycloak egress = %#v, want every destination allowed", keycloakEgressRules)
 	}
-	if _, hasDeny, _ := unstructured.NestedSlice(keycloakEgress.Object, "spec", "egressDeny"); hasDeny {
-		t.Error("keycloak egress must carry no deny exceptions")
-	}
-	defaultDeny := requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
+	defaultDeny := requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, resources.DefaultDenyPolicyName)
 	assertNetEyeOwner(t, defaultDeny)
 	assertNetEyeOwner(t, requireExists(ctx, t, c, schema.GroupVersionKind{Group: "coordination.k8s.io", Version: "v1", Kind: "Lease"}, keycloak.WorkloadNamespace, clusterAuthorityLeaseName))
-	if endpointSelector, _, _ := unstructured.NestedMap(defaultDeny.Object, "spec", "endpointSelector"); len(endpointSelector) != 0 {
-		t.Errorf("default deny endpoint selector = %v, want empty", endpointSelector)
-	}
-	enableDefaultDeny, _, _ := unstructured.NestedMap(defaultDeny.Object, "spec", "enableDefaultDeny")
-	if enableDefaultDeny["ingress"] != true || enableDefaultDeny["egress"] != true {
-		t.Errorf("default deny settings = %#v, want ingress and egress enabled", enableDefaultDeny)
-	}
-	ingress, found, err := unstructured.NestedSlice(defaultDeny.Object, "spec", "ingress")
-	if err != nil || !found || !reflect.DeepEqual(ingress, []any{map[string]any{"fromEntities": []any{"none"}}}) {
-		t.Errorf("default deny ingress = %#v, want non-matching none entity", ingress)
-	}
-	egress, found, err := unstructured.NestedSlice(defaultDeny.Object, "spec", "egress")
-	if err != nil || !found || !reflect.DeepEqual(egress, []any{map[string]any{"toEntities": []any{"none"}}}) {
-		t.Errorf("default deny egress = %#v, want non-matching none entity", egress)
+	defaultDenySpec, _, _ := unstructured.NestedMap(defaultDeny.Object, "spec")
+	if want := map[string]any{"podSelector": map[string]any{}, "policyTypes": []any{"Ingress", "Egress"}}; !reflect.DeepEqual(defaultDenySpec, want) {
+		t.Errorf("default deny spec = %#v, want %#v", defaultDenySpec, want)
 	}
 
 	got := &neteye.NetEye{}
@@ -789,9 +787,10 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	route := requireExists(ctx, t, c, httpRouteGVK, keycloak.WorkloadNamespace, keycloak.HTTPRouteName)
 	assertNetEyeOwner(t, route)
 	assertNetEyeOwner(t, keycloakInstance)
-	assertNetEyeOwner(t, requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.EgressPolicyName))
-	assertNetEyeOwner(t, requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.IngressPolicyName))
-	assertNetEyeOwner(t, requireExists(ctx, t, c, ciliumPolicyGVK, keycloak.WorkloadNamespace, keycloak.HostPolicyName))
+	for _, name := range []string{keycloak.EgressPolicyName, keycloak.IngressPolicyName, keycloak.HostPolicyName} {
+		assertNetEyeOwner(t, requireExists(ctx, t, c, networkPolicyGVK, keycloak.WorkloadNamespace, name))
+	}
+	assertReconcileKeepsNetworkPolicies(ctx, t, r, req)
 	parentRefs, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs")
 	parentRef := parentRefs[0].(map[string]any)
 	if parentRef["namespace"] != keycloak.WorkloadNamespace {
@@ -821,13 +820,13 @@ func telemetryResourceInventory() []struct {
 		{httpRouteGVK, elasticstack.HTTPRouteName},
 		{certificateGVK, elasticstack.GRPCTLSCertName},
 		{certificateGVK, elasticstack.CrossTenantTLSCertName},
-		{ciliumPolicyGVK, elasticstack.IngressPolicyName},
-		{ciliumPolicyGVK, elasticstack.EgressPolicyName},
+		{networkPolicyGVK, elasticstack.IngressPolicyName},
+		{networkPolicyGVK, elasticstack.EgressPolicyName},
 		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, elasticstack.EDOTGatewayConfigMapName},
 		{schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, elasticstack.EDOTGatewayDeploymentName},
 		{schema.GroupVersionKind{Version: "v1", Kind: "Service"}, elasticstack.EDOTGatewayServiceName},
-		{ciliumPolicyGVK, elasticstack.EDOTGatewayIngressPolicyName},
-		{ciliumPolicyGVK, elasticstack.EDOTGatewayEgressPolicyName},
+		{networkPolicyGVK, elasticstack.EDOTGatewayIngressPolicyName},
+		{networkPolicyGVK, elasticstack.EDOTGatewayEgressPolicyName},
 	}
 }
 
@@ -878,6 +877,38 @@ func markRouteAccepted(ctx context.Context, t *testing.T, c client.Client, gvk s
 	}
 	if err := c.Status().Update(ctx, route); err != nil {
 		t.Fatalf("mark route %q accepted: %v", name, err)
+	}
+}
+
+// networkPolicyUpdates records the NetworkPolicy updates sent through it.
+type networkPolicyUpdates struct {
+	client.Client
+	names []string
+}
+
+func (c *networkPolicyUpdates) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if obj.GetObjectKind().GroupVersionKind() == networkPolicyGVK {
+		c.names = append(c.names, obj.GetName())
+	}
+	return c.Client.Update(ctx, obj, opts...)
+}
+
+// assertReconcileKeepsNetworkPolicies fails when an unchanged reconcile updates
+// a NetworkPolicy: the desired spec then differs from the one the API server
+// stores after defaulting, and every reconcile sends an update.
+func assertReconcileKeepsNetworkPolicies(ctx context.Context, t *testing.T, r *NetEyeReconciler, req ctrl.Request) {
+	t.Helper()
+	updates := &networkPolicyUpdates{Client: r.Client}
+	repeat := *r
+	repeat.Client = updates
+	repeat.KeycloakComponent = keycloak.NewComponent(updates, logr.Discard())
+	repeat.OTelCollectorComponent = elasticstack.NewOTelCollectorComponent(updates)
+	repeat.EDOTGatewayComponent = elasticstack.NewEDOTGatewayComponent(updates)
+	if _, err := repeat.Reconcile(ctx, req); err != nil {
+		t.Fatalf("repeat reconcile: %v", err)
+	}
+	if len(updates.names) != 0 {
+		t.Errorf("unchanged reconcile updated NetworkPolicies %v", updates.names)
 	}
 }
 

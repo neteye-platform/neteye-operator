@@ -75,7 +75,7 @@ type NetEyeReconciler struct {
 // +kubebuilder:rbac:groups=olm.operatorframework.io,resources=clusterextensions,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;delete
 
 // Reconcile reconciles a NetEye resource with the desired cluster state.
 func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, reconcileErr error) {

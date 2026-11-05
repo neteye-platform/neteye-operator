@@ -7,7 +7,6 @@ package keycloak
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 
@@ -195,13 +194,13 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, RouteHostname, []string{RouteHostname}, issuerRef, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
 	}
-	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, &owner); err != nil {
+	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak workload network policy: %w", err)
 	}
-	if err := c.EnsureIngressNetworkPolicy(ctx, namespace, &owner); err != nil {
+	if err := c.EnsureIngressNetworkPolicy(ctx, namespace, owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak ingress network policy: %w", err)
 	}
-	if err := c.EnsureHostManagementPolicy(ctx, namespace, &owner); err != nil {
+	if err := c.EnsureHostManagementPolicy(ctx, namespace, owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak host management policy: %w", err)
 	}
 	certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
@@ -430,85 +429,54 @@ const hostCABundleCommand = `bundle=/work/ca-bundle.pem
 sed -e '/^#/d' -e '/^[[:space:]]*$/d' -e 's/TRUSTED //g' /input/system/tls-ca-bundle.pem > "$bundle.tmp"
 mv "$bundle.tmp" "$bundle"`
 
-func (c *Component) EnsureIngressNetworkPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
-	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
-		GVK:  ciliumNetworkPolicyGVK(),
-		Name: IngressPolicyName, Namespace: namespace,
-		Spec:  keycloakIngressNetworkPolicySpec(),
-		Owner: owner,
-	})
-	return err
+func (c *Component) EnsureIngressNetworkPolicy(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
+	return resources.EnsureNetworkPolicy(ctx, c.client, namespace, IngressPolicyName, keycloakIngressNetworkPolicySpec(), owner)
 }
 
 func keycloakIngressNetworkPolicySpec() map[string]any {
 	return map[string]any{
-		"endpointSelector": map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()},
+		"podSelector": keycloakPodSelector(),
+		"policyTypes": []any{"Ingress"},
 		"ingress": []any{
 			// Infinispan cluster transport, scoped to Keycloak peers: a bare-metal
 			// instance kept alive during a migration must not share session state.
 			map[string]any{
-				"fromEndpoints": []any{map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()}},
-				"toPorts":       []any{ciliumTCPPorts("7800", "57800")},
+				"from":  []any{map[string]any{"podSelector": keycloakPodSelector()}},
+				"ports": resources.NetworkPolicyPorts("TCP", 7800, 57800),
 			},
 			// The operator calls the Keycloak Admin API to reconcile KeycloakClient
 			// resources, so it needs its own way in through the default deny.
 			map[string]any{
-				"fromEndpoints": []any{ciliumNamespaceSelector(OperatorSystemNamespace)},
-				"toPorts":       []any{ciliumTCPPorts(strconv.FormatInt(HTTPPort, 10))},
+				"from":  []any{namespacePeer(OperatorSystemNamespace)},
+				"ports": resources.NetworkPolicyPorts("TCP", HTTPPort),
 			},
 		},
 	}
 }
 
-// ciliumNamespaceSelector matches every endpoint in a namespace.
-func ciliumNamespaceSelector(namespace string) map[string]any {
-	return map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": namespace}}
+// namespacePeer matches every pod in a namespace.
+func namespacePeer(namespace string) map[string]any {
+	return map[string]any{"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": namespace}}}
 }
 
-// ciliumTCPPorts builds a toPorts entry. CiliumNetworkPolicy ports are strings,
-// unlike the integers a native NetworkPolicy takes.
-func ciliumTCPPorts(ports ...string) map[string]any {
-	entries := make([]any, 0, len(ports))
-	for _, port := range ports {
-		entries = append(entries, map[string]any{"port": port, "protocol": "TCP"})
-	}
-	return map[string]any{"ports": entries}
+func (c *Component) EnsureHostManagementPolicy(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
+	return resources.EnsureNetworkPolicy(ctx, c.client, namespace, HostPolicyName, keycloakHostManagementPolicySpec(), owner)
 }
 
-func (c *Component) EnsureHostManagementPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
-	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
-		GVK:  ciliumNetworkPolicyGVK(),
-		Name: HostPolicyName, Namespace: namespace,
-		Spec:  keycloakHostManagementPolicySpec(),
-		Owner: owner,
-	})
-	return err
-}
-
+// keycloakHostManagementPolicySpec admits the Gateway on the HTTP port. A
+// NetworkPolicy can't select the Gateway's proxy, so the port is open to every
+// source. Kubelet probes on the management port need no rule.
 func keycloakHostManagementPolicySpec() map[string]any {
 	return map[string]any{
-		"endpointSelector": map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()},
-		"ingress": []any{
-			map[string]any{
-				"fromEntities": []any{"ingress"},
-				"toPorts":      []any{ciliumTCPPorts(strconv.FormatInt(HTTPPort, 10))},
-			},
-			map[string]any{
-				"fromEntities": []any{"host", "remote-node"},
-				"toPorts":      []any{ciliumTCPPorts("9000")},
-			},
-		},
+		"podSelector": keycloakPodSelector(),
+		"policyTypes": []any{"Ingress"},
+		"ingress":     []any{map[string]any{"ports": resources.NetworkPolicyPorts("TCP", HTTPPort)}},
 	}
 }
 
 // EnsureWorkloadNetworkPolicy reconciles the Keycloak egress policy.
-func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, owner *metav1.OwnerReference) error {
-	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{
-		GVK:  ciliumNetworkPolicyGVK(),
-		Name: EgressPolicyName, Namespace: namespace, Owner: owner,
-		Spec: keycloakEgressNetworkPolicySpec(),
-	})
-	return err
+func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
+	return resources.EnsureNetworkPolicy(ctx, c.client, namespace, EgressPolicyName, keycloakEgressNetworkPolicySpec(), owner)
 }
 
 // keycloakEgressNetworkPolicySpec allows every egress destination. Upstream
@@ -517,8 +485,9 @@ func (c *Component) EnsureWorkloadNetworkPolicy(ctx context.Context, namespace s
 // sit outside the cluster, on the node subnet, or in the cluster itself.
 func keycloakEgressNetworkPolicySpec() map[string]any {
 	return map[string]any{
-		"endpointSelector": map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()},
-		"egress":           []any{map[string]any{"toEntities": []any{"all"}}},
+		"podSelector": keycloakPodSelector(),
+		"policyTypes": []any{"Egress"},
+		"egress":      []any{map[string]any{}},
 	}
 }
 
@@ -573,12 +542,13 @@ func keycloakTelemetryResourceAttributes(attributes map[string]string) map[strin
 	return merged
 }
 
-func keycloakCiliumWorkloadLabels() map[string]any {
-	return map[string]any{
-		"k8s:app":                          "keycloak",
-		"k8s:app.kubernetes.io/instance":   InstanceName,
-		"k8s:app.kubernetes.io/managed-by": "keycloak-operator",
-	}
+// keycloakPodSelector matches the pods the Keycloak Operator runs for the instance.
+func keycloakPodSelector() map[string]any {
+	return map[string]any{"matchLabels": map[string]any{
+		"app":                          "keycloak",
+		"app.kubernetes.io/instance":   InstanceName,
+		"app.kubernetes.io/managed-by": "keycloak-operator",
+	}}
 }
 
 func identityReplicas(identity neteye.NetEyeIdentitySpec) int32 {
@@ -648,8 +618,4 @@ func clusterExtensionGVK() schema.GroupVersionKind {
 		Version: "v1",
 		Kind:    "ClusterExtension",
 	}
-}
-
-func ciliumNetworkPolicyGVK() schema.GroupVersionKind {
-	return schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}
 }
