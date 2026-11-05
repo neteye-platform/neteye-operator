@@ -90,7 +90,7 @@ func getNamespace(t *testing.T, c client.Client, name string) *corev1.Namespace 
 func defaultDenyPolicy(t *testing.T, c client.Client, namespace string) *unstructured.Unstructured {
 	t.Helper()
 	policy := &unstructured.Unstructured{}
-	policy.SetGroupVersionKind(resources.CiliumNetworkPolicyGVK())
+	policy.SetGroupVersionKind(resources.NetworkPolicyGVK())
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: resources.DefaultDenyPolicyName}, policy); err != nil {
 		t.Fatalf("default-deny policy of namespace %q: %v", namespace, err)
 	}
@@ -116,9 +116,9 @@ func TestNetEyeTenantPreparesItsNamespace(t *testing.T) {
 	}
 
 	policy := defaultDenyPolicy(t, c, testTenant)
-	deny, _, _ := unstructured.NestedMap(policy.Object, "spec", "enableDefaultDeny")
-	if !reflect.DeepEqual(deny, map[string]any{"ingress": true, "egress": true}) {
-		t.Errorf("enableDefaultDeny = %v, want ingress and egress", deny)
+	spec, _, _ := unstructured.NestedMap(policy.Object, "spec")
+	if want := map[string]any{"podSelector": map[string]any{}, "policyTypes": []any{"Ingress", "Egress"}}; !reflect.DeepEqual(spec, want) {
+		t.Errorf("default-deny spec = %v, want every Pod selected with ingress and egress denied", spec)
 	}
 	if owners := policy.GetOwnerReferences(); len(owners) != 1 || owners[0].Kind != "NetEyeTenant" || owners[0].UID != "tenant-uid" {
 		t.Errorf("default-deny policy owners = %#v, want the tenant", owners)
@@ -169,10 +169,10 @@ func TestNetEyeTenantDisplayNameChangeReachesTheNamespace(t *testing.T) {
 
 func TestNetEyeTenantRefusesToAdoptAForeignNetworkPolicy(t *testing.T) {
 	foreign := &unstructured.Unstructured{}
-	foreign.SetGroupVersionKind(resources.CiliumNetworkPolicyGVK())
+	foreign.SetGroupVersionKind(resources.NetworkPolicyGVK())
 	foreign.SetNamespace(testTenant)
 	foreign.SetName(resources.DefaultDenyPolicyName)
-	foreign.Object["spec"] = map[string]any{"endpointSelector": map[string]any{}}
+	foreign.Object["spec"] = map[string]any{"podSelector": map[string]any{}}
 	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenantResource(), foreign)
 	reconcileTenant(t, r)
 
@@ -188,23 +188,6 @@ func TestNetEyeTenantRefusesToAdoptAForeignNetworkPolicy(t *testing.T) {
 	}
 	if spec, _, _ := unstructured.NestedMap(defaultDenyPolicy(t, c, testTenant).Object, "spec"); !reflect.DeepEqual(spec, foreign.Object["spec"]) {
 		t.Errorf("a network policy the tenant does not own was changed: %v", spec)
-	}
-}
-
-func TestNetEyeTenantLeavesAForeignNativeNetworkPolicyAlone(t *testing.T) {
-	// The shared namespace cleans up a legacy native policy with the same name;
-	// a tenant namespace never had one, so such an object belongs to someone
-	// else and must stay.
-	native := &unstructured.Unstructured{}
-	native.SetGroupVersionKind(networkPolicyGVK)
-	native.SetNamespace(testTenant)
-	native.SetName(resources.DefaultDenyPolicyName)
-	native.Object["spec"] = map[string]any{"podSelector": map[string]any{}}
-	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenantResource(), native)
-	reconcileTenant(t, r)
-
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: resources.DefaultDenyPolicyName}, native); err != nil {
-		t.Errorf("native network policy was removed: %v", err)
 	}
 }
 

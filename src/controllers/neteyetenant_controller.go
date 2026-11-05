@@ -58,7 +58,7 @@ type NetEyeTenantReconciler struct {
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyetenants/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyetenants/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get;list;watch;create;update
 
@@ -138,7 +138,7 @@ func (r *NetEyeTenantReconciler) reconcileNamespace(ctx context.Context, tenant 
 		return degradedResult(tenantNamespaceComponentID, "NamespaceMetadataFailed", err.Error(), r.failureRequeue(), err)
 	}
 	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
-	if err := resources.ApplyDefaultDenyNetworkPolicy(ctx, r.Client, tenant.Namespace, owner); err != nil {
+	if err := resources.ApplyTenantDefaultDenyNetworkPolicy(ctx, r.Client, tenant.Namespace, owner); err != nil {
 		return degradedResult(tenantNamespaceComponentID, "NetworkPolicyFailed", fmt.Sprintf("failed to apply the default-deny network policy: %v", err), r.failureRequeue(), err)
 	}
 	return readyResult(tenantNamespaceComponentID, "Available", "Tenant namespace is ready")
@@ -306,7 +306,7 @@ func (r *NetEyeTenantReconciler) reconciliationRequeue() time.Duration {
 // either is corrected at once instead of at the next periodic reconciliation.
 func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	networkPolicy := &unstructured.Unstructured{}
-	networkPolicy.SetGroupVersionKind(resources.CiliumNetworkPolicyGVK())
+	networkPolicy.SetGroupVersionKind(resources.NetworkPolicyGVK())
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&neteye.NetEyeTenant{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Owns(networkPolicy).
