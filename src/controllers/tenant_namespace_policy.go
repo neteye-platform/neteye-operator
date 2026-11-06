@@ -6,7 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"slices"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -136,16 +136,18 @@ func (p *TenantNamespacePolicy) Ensure(ctx context.Context) error {
 
 // tenantNamespacePolicyState tells whether the API server enforces the
 // protection of the tenant metadata: the policy and its binding exist, the
-// NetEyeTenant CRD controls both, and the binding denies with this policy.
-// The policy is reconciled by TenantNamespacePolicy, outside the tenant
-// controller, so a tenant reads this state before it reports itself ready.
+// NetEyeTenant CRD controls both, and their specs are the ones that
+// TenantNamespacePolicy writes. The policy is reconciled by
+// TenantNamespacePolicy, outside the tenant controller, so a tenant reads this
+// state before it reports itself ready.
 type tenantNamespacePolicyState int
 
 const (
 	// tenantNamespacePolicyEnforced means that the policy is in place.
 	tenantNamespacePolicyEnforced tenantNamespacePolicyState = iota
 	// tenantNamespacePolicyMissing means that the policy or the binding does
-	// not exist yet. TenantNamespacePolicy creates them.
+	// not exist yet, or that its spec is not the one of the operator.
+	// TenantNamespacePolicy creates them and corrects the spec.
 	tenantNamespacePolicyMissing
 	// tenantNamespacePolicyConflict means that an object with the reserved
 	// name exists but is not the one of the operator. The operator does not
@@ -154,27 +156,31 @@ const (
 )
 
 // checkTenantNamespacePolicy reads the policy and its binding and returns their
-// state, with a message for the status of the tenant.
-func checkTenantNamespacePolicy(ctx context.Context, c client.Client) (tenantNamespacePolicyState, string, error) {
-	var binding *unstructured.Unstructured
-	for _, gvk := range []schema.GroupVersionKind{validatingAdmissionPolicyGVK, validatingAdmissionPolicyBindingGVK} {
-		object := &unstructured.Unstructured{}
-		object.SetGroupVersionKind(gvk)
-		if err := c.Get(ctx, types.NamespacedName{Name: TenantNamespacePolicyName}, object); err != nil {
-			if apierrors.IsNotFound(err) {
-				return tenantNamespacePolicyMissing, fmt.Sprintf("waiting for the %s %q that protects the tenant metadata of the namespace", gvk.Kind, TenantNamespacePolicyName), nil
-			}
-			return tenantNamespacePolicyMissing, "", fmt.Errorf("get %s %q: %w", gvk.Kind, TenantNamespacePolicyName, err)
-		}
-		if !controlledByTenantCRD(object) {
-			return tenantNamespacePolicyConflict, fmt.Sprintf("the %s %q is not controlled by the CustomResourceDefinition %q, so the tenant metadata of the namespace is not protected; remove it and the operator creates its own", gvk.Kind, TenantNamespacePolicyName, netEyeTenantCRDName), nil
-		}
-		binding = object
+// state, with a message for the status of the tenant. The specs are compared
+// with the specs that TenantNamespacePolicy writes for operatorUsername, so a
+// changed rule, exemption or validation action counts as not enforced.
+func checkTenantNamespacePolicy(ctx context.Context, c client.Client, operatorUsername string) (tenantNamespacePolicyState, string, error) {
+	if operatorUsername == "" {
+		return tenantNamespacePolicyMissing, "the operator username is unknown, so the operator cannot protect the tenant metadata of the namespace", nil
 	}
-	policyName, _, _ := unstructured.NestedString(binding.Object, "spec", "policyName")
-	actions, _, _ := unstructured.NestedStringSlice(binding.Object, "spec", "validationActions")
-	if policyName != TenantNamespacePolicyName || !slices.Contains(actions, "Deny") {
-		return tenantNamespacePolicyMissing, fmt.Sprintf("waiting for the %s %q to deny with the policy %q", validatingAdmissionPolicyBindingGVK.Kind, TenantNamespacePolicyName, TenantNamespacePolicyName), nil
+	for _, object := range []resources.ObjectDefinition{
+		{GVK: validatingAdmissionPolicyGVK, Spec: tenantNamespacePolicySpec(operatorUsername)},
+		{GVK: validatingAdmissionPolicyBindingGVK, Spec: tenantNamespacePolicyBindingSpec()},
+	} {
+		live := &unstructured.Unstructured{}
+		live.SetGroupVersionKind(object.GVK)
+		if err := c.Get(ctx, types.NamespacedName{Name: TenantNamespacePolicyName}, live); err != nil {
+			if apierrors.IsNotFound(err) {
+				return tenantNamespacePolicyMissing, fmt.Sprintf("waiting for the %s %q that protects the tenant metadata of the namespace", object.GVK.Kind, TenantNamespacePolicyName), nil
+			}
+			return tenantNamespacePolicyMissing, "", fmt.Errorf("get %s %q: %w", object.GVK.Kind, TenantNamespacePolicyName, err)
+		}
+		if !controlledByTenantCRD(live) {
+			return tenantNamespacePolicyConflict, fmt.Sprintf("the %s %q is not controlled by the CustomResourceDefinition %q, so the tenant metadata of the namespace is not protected; remove it and the operator creates its own", object.GVK.Kind, TenantNamespacePolicyName, netEyeTenantCRDName), nil
+		}
+		if spec, _, _ := unstructured.NestedMap(live.Object, "spec"); !reflect.DeepEqual(spec, object.Spec) {
+			return tenantNamespacePolicyMissing, fmt.Sprintf("waiting for the operator to restore the spec of the %s %q that protects the tenant metadata of the namespace", object.GVK.Kind, TenantNamespacePolicyName), nil
+		}
 	}
 	return tenantNamespacePolicyEnforced, "", nil
 }

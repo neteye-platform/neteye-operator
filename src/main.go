@@ -187,17 +187,19 @@ func main() {
 		setupLog.Error(err, "unable to create KeycloakRealm controller")
 		os.Exit(1)
 	}
+	operatorUsername := operatorUsernameFromEnv()
 	if err := (&controllers.NetEyeTenantReconciler{
 		Client:                     mgr.GetClient(),
 		Log:                        ctrl.Log.WithName("neteye-tenant-reconciler"),
 		Scheme:                     mgr.GetScheme(),
+		OperatorUsername:           operatorUsername,
 		FailureRequeueAfter:        failureRequeue,
 		ReconciliationRequeueAfter: reconciliationRequeue,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create NetEyeTenant controller")
 		os.Exit(1)
 	}
-	if operatorUsername := operatorUsernameFromEnv(); operatorUsername != "" {
+	if operatorUsername != "" {
 		if err := mgr.Add(&controllers.TenantNamespacePolicy{
 			Client:           mgr.GetClient(),
 			Log:              ctrl.Log.WithName("tenant-namespace-policy"),

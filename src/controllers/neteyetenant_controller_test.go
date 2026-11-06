@@ -61,7 +61,7 @@ func tenantNamespacePolicyObjects() []client.Object {
 	policy.SetGroupVersionKind(validatingAdmissionPolicyGVK)
 	policy.SetName(TenantNamespacePolicyName)
 	policy.SetOwnerReferences([]metav1.OwnerReference{owner})
-	policy.Object["spec"] = tenantNamespacePolicySpec("system:serviceaccount:neteye-system:neteye-operator")
+	policy.Object["spec"] = tenantNamespacePolicySpec(testOperatorUsername)
 	binding := &unstructured.Unstructured{}
 	binding.SetGroupVersionKind(validatingAdmissionPolicyBindingGVK)
 	binding.SetName(TenantNamespacePolicyName)
@@ -83,7 +83,7 @@ func newTenantReconcilerWithoutPolicy(t *testing.T, objects ...client.Object) (*
 	t.Helper()
 	scheme := tenantScheme(t)
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithStatusSubresource(&neteye.NetEyeTenant{}).Build()
-	return &NetEyeTenantReconciler{Client: c, Log: logr.Discard(), Scheme: scheme}, c
+	return &NetEyeTenantReconciler{Client: c, Log: logr.Discard(), Scheme: scheme, OperatorUsername: testOperatorUsername}, c
 }
 
 func reconcileTenantRequest(t *testing.T, r *NetEyeTenantReconciler, namespace, name string) {
@@ -224,10 +224,18 @@ func TestNetEyeTenantWaitsForTheNamespaceAdmissionPolicy(t *testing.T) {
 	policyOnly := tenantNamespacePolicyObjects()[:1]
 	denyless := tenantNamespacePolicyObjects()
 	denyless[1].(*unstructured.Unstructured).Object["spec"] = map[string]any{"policyName": TenantNamespacePolicyName, "validationActions": []any{"Audit"}}
+	permissive := tenantNamespacePolicyObjects()
+	permissiveSpec := tenantNamespacePolicySpec(testOperatorUsername)
+	permissiveSpec["validations"] = []any{map[string]any{"expression": "true"}}
+	permissive[0].(*unstructured.Unstructured).Object["spec"] = permissiveSpec
+	otherExemption := tenantNamespacePolicyObjects()
+	otherExemption[0].(*unstructured.Unstructured).Object["spec"] = tenantNamespacePolicySpec("system:serviceaccount:default:default")
 	for name, objects := range map[string][]client.Object{
-		"no policy":             nil,
-		"no binding":            policyOnly,
-		"binding does not deny": denyless,
+		"no policy":                 nil,
+		"no binding":                policyOnly,
+		"binding does not deny":     denyless,
+		"policy validates nothing":  permissive,
+		"policy exempts other user": otherExemption,
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), tenantResource())...)
@@ -241,6 +249,17 @@ func TestNetEyeTenantWaitsForTheNamespaceAdmissionPolicy(t *testing.T) {
 				t.Errorf("Ready = %#v, want false while the tenant metadata is not protected", ready)
 			}
 		})
+	}
+}
+
+func TestNetEyeTenantWithoutTheOperatorUsernameIsNotReady(t *testing.T) {
+	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenantResource())
+	r.OperatorUsername = ""
+	reconcileTenant(t, r)
+
+	tenant := getTenant(t, c, testTenant, testTenant)
+	if component := tenant.Status.Components[string(tenantNamespaceComponentID)]; component.Status != neteye.ComponentStateProgressing || component.Reason != "WaitingForNamespacePolicy" {
+		t.Errorf("namespace component = %#v", component)
 	}
 }
 

@@ -50,6 +50,11 @@ type NetEyeTenantReconciler struct {
 	Log    logr.Logger
 	Scheme *runtime.Scheme
 
+	// OperatorUsername is the Kubernetes username of the operator, the only
+	// user that the tenant namespace admission policy exempts. The tenant uses
+	// it to check that the policy in the cluster is the one of the operator.
+	OperatorUsername string
+
 	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
 	FailureRequeueAfter        time.Duration
 	ReconciliationRequeueAfter time.Duration
@@ -145,7 +150,7 @@ func (r *NetEyeTenantReconciler) reconcileNamespace(ctx context.Context, tenant 
 	// Without the admission policy, anyone who can edit namespaces can change
 	// the tenant metadata, so the namespace is not ready until the API server
 	// enforces it.
-	state, message, err := checkTenantNamespacePolicy(ctx, r.Client)
+	state, message, err := checkTenantNamespacePolicy(ctx, r.Client, r.OperatorUsername)
 	switch {
 	case err != nil:
 		return degradedResult(tenantNamespaceComponentID, "NamespacePolicyCheckFailed", fmt.Sprintf("failed to check the tenant namespace admission policy: %v", err), r.failureRequeue(), err)
