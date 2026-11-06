@@ -414,6 +414,18 @@ func TestComponentsForVersionEDOTGatewayImageOverride(t *testing.T) {
 	}
 }
 
+func TestComponentsForVersionPermissionSyncImageOverride(t *testing.T) {
+	t.Setenv(RelatedImagePermissionSyncEnv, "registry.example/permissionsync:dev")
+
+	components, ok := ComponentsForVersion(CurrentNetEyeVersion)
+	if !ok {
+		t.Fatalf("ComponentsForVersion(%q) not found", CurrentNetEyeVersion)
+	}
+	if got, want := components.PermissionSyncImage, "registry.example/permissionsync:dev"; got != want {
+		t.Errorf("PermissionSyncImage = %q, want %q", got, want)
+	}
+}
+
 func TestComponentsForVersionKeycloakImageOverride(t *testing.T) {
 	t.Setenv(RelatedImageKeycloakEnv, "registry.example/neteye-keycloak:dev")
 

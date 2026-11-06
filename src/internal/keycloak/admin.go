@@ -104,7 +104,7 @@ func (a *AdminAPI) authenticate(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("request keycloak admin token: unexpected status %s: %s", resp.Status, truncate(body))
+		return "", fmt.Errorf("request keycloak admin token: %w", &apiError{Method: http.MethodPost, Path: "/realms/master/protocol/openid-connect/token", StatusCode: resp.StatusCode, Status: resp.Status, Body: truncate(body)})
 	}
 
 	var payload struct {

@@ -83,7 +83,7 @@ func TestNetEyeTenantRecordsTheUpgradeOnceReady(t *testing.T) {
 	tenant := tenantResource()
 	tenant.Status.CurrentVersion = neteye.PreviousNetEyeVersion
 	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenant)
-	reconcileTenant(t, r)
+	reconcileTenantUntilReady(t, r, c)
 
 	stored := getTenant(t, c, testTenant, testTenant)
 	assertTenantPhase(t, stored, neteye.PhaseReady, "All components are ready")
@@ -112,7 +112,7 @@ func TestNetEyeTenantHonorsItsProcedureGates(t *testing.T) {
 		}
 
 		createProcedureGate(context.Background(), t, c, testTenant, "tenant-prepared")
-		reconcileTenant(t, r)
+		reconcileTenantUntilReady(t, r, c)
 		stored = getTenant(t, c, testTenant, testTenant)
 		assertTenantPhase(t, stored, neteye.PhaseReady, "All components are ready")
 		if stored.Status.CurrentVersion != neteye.CurrentNetEyeVersion {
@@ -132,7 +132,7 @@ func TestNetEyeTenantHonorsItsProcedureGates(t *testing.T) {
 		tenant.Spec.UseProcedureGates = ptr.To(false)
 		r, c := newTenantReconciler(t, plainNamespace(testTenant), tenant)
 		r.releasePlans = plans
-		reconcileTenant(t, r)
+		reconcileTenantUntilReady(t, r, c)
 
 		assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseReady, "All components are ready")
 		if err := c.Get(context.Background(), client.ObjectKey{Namespace: testTenant, Name: procedureGateName(neteye.CurrentNetEyeVersion, "tenant-namespace-ready")}, &neteye.NetEyeProcedureGate{}); !apierrors.IsNotFound(err) {
@@ -145,7 +145,7 @@ func TestNetEyeTenantHonorsItsProcedureGates(t *testing.T) {
 		tenant.Status.CurrentVersion = neteye.CurrentNetEyeVersion
 		r, c := newTenantReconciler(t, plainNamespace(testTenant), tenant)
 		r.releasePlans = plans
-		reconcileTenant(t, r)
+		reconcileTenantUntilReady(t, r, c)
 
 		assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseReady, "All components are ready")
 	})
@@ -168,7 +168,7 @@ func TestNetEyeTenantDisplayNameGoesToOneTenantOnly(t *testing.T) {
 	first := tenantResource()
 	second := tenantNamed(otherTenant, "other-uid", "DEFAULT")
 	r, c := newTenantReconciler(t, plainNamespace(testTenant), plainNamespace(otherTenant), first, second)
-	reconcileTenant(t, r)
+	reconcileTenantUntilReady(t, r, c)
 	reconcileTenantRequest(t, r, otherTenant, otherTenant)
 
 	assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseReady, "")
@@ -186,7 +186,7 @@ func TestNetEyeTenantDisplayNameGoesToOneTenantOnly(t *testing.T) {
 	if err := c.Update(context.Background(), stored); err != nil {
 		t.Fatal(err)
 	}
-	reconcileTenantRequest(t, r, otherTenant, otherTenant)
+	reconcileNamedTenantUntilReady(t, r, c, otherTenant)
 	assertTenantPhase(t, getTenant(t, c, otherTenant, otherTenant), neteye.PhaseReady, "")
 }
 
@@ -220,7 +220,7 @@ func TestNetEyeTenantTakesOverAStaleDisplayName(t *testing.T) {
 				objects = append(objects, holder)
 			}
 			r, c := newTenantReconciler(t, objects...)
-			reconcileTenant(t, r)
+			reconcileTenantUntilReady(t, r, c)
 
 			assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseReady, "")
 			if lease := displayNameLease(t, c, "Default"); *lease.Spec.HolderIdentity != "tenant-uid" || lease.Labels[neteye.TenantLabel] != testTenant {
