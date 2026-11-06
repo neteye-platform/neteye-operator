@@ -12,6 +12,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -20,6 +22,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/yaml"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
@@ -71,7 +74,7 @@ func TestOTelCollectorBuildsIsolatedIngressResources(t *testing.T) {
 	}
 	assertPolicySelector(t, c, namespace, IngressPolicyName, collectorAppLabel)
 	assertPolicySelector(t, c, namespace, EgressPolicyName, collectorAppLabel)
-	assertNamespaceScopedPeer(t, c, namespace, EgressPolicyName, "egress", "toEndpoints", edotGatewayAppLabel)
+	assertPodPeer(t, c, namespace, EgressPolicyName, "egress", "to", edotGatewayAppLabel)
 }
 
 func TestOTelCollectorPrerequisitesAndInvalidSpecDoNotCreateWorkloads(t *testing.T) {
@@ -144,7 +147,7 @@ func TestEDOTGatewayBuildsElasticsearchBoundary(t *testing.T) {
 	assertEDOTPipelineTopology(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"])
 	assertPolicySelector(t, c, namespace, EDOTGatewayIngressPolicyName, edotGatewayAppLabel)
 	assertPolicySelector(t, c, namespace, EDOTGatewayEgressPolicyName, edotGatewayAppLabel)
-	assertNamespaceScopedPeer(t, c, namespace, EDOTGatewayIngressPolicyName, "ingress", "fromEndpoints", collectorAppLabel)
+	assertPodPeer(t, c, namespace, EDOTGatewayIngressPolicyName, "ingress", "from", collectorAppLabel)
 }
 
 func TestEDOTGatewayIngressPolicyAddsOnlyEnabledIdentityTelemetry(t *testing.T) {
@@ -153,20 +156,19 @@ func TestEDOTGatewayIngressPolicyAddsOnlyEnabledIdentityTelemetry(t *testing.T) 
 		identityTelemetry bool
 		wantRules         int
 	}{
-		{name: "disabled", wantRules: 2},
-		{name: "enabled", identityTelemetry: true, wantRules: 3},
+		{name: "disabled", wantRules: 1},
+		{name: "enabled", identityTelemetry: true, wantRules: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			ingress := edotGatewayIngressPolicy("neteye-tenant-shared", test.identityTelemetry)["ingress"].([]any)
+			ingress := edotGatewayIngressPolicy(test.identityTelemetry)["ingress"].([]any)
 			if len(ingress) != test.wantRules {
 				t.Fatalf("ingress = %#v, want %d rules", ingress, test.wantRules)
 			}
-			if test.identityTelemetry && !reflect.DeepEqual(ingress[1], map[string]any{"fromEndpoints": []any{map[string]any{"matchLabels": map[string]any{
-				"k8s:app":                          "keycloak",
-				"k8s:app.kubernetes.io/instance":   keycloakconfig.InstanceName,
-				"k8s:app.kubernetes.io/managed-by": "keycloak-operator",
-				"k8s:io.kubernetes.pod.namespace":  "neteye-tenant-shared",
-			}}}, "toPorts": []any{tcpPorts("4317")}}) {
+			if test.identityTelemetry && !reflect.DeepEqual(ingress[1], map[string]any{"from": []any{map[string]any{"podSelector": map[string]any{"matchLabels": map[string]any{
+				"app":                          "keycloak",
+				"app.kubernetes.io/instance":   keycloakconfig.InstanceName,
+				"app.kubernetes.io/managed-by": "keycloak-operator",
+			}}}}, "ports": tcpPolicyPorts(4317)}) {
 				t.Errorf("identity ingress = %#v", ingress[1])
 			}
 		})
@@ -182,12 +184,12 @@ func TestEDOTGatewayRemovesIdentityIngressWithoutCredentials(t *testing.T) {
 		t.Fatalf("enable identity ingress outcome = %+v", outcome)
 	}
 	policy := &unstructured.Unstructured{}
-	policy.SetGroupVersionKind(ciliumPolicyGVK)
+	policy.SetGroupVersionKind(resources.NetworkPolicyGVK())
 	key := types.NamespacedName{Namespace: namespace, Name: EDOTGatewayIngressPolicyName}
 	if err := c.Get(context.Background(), key, policy); err != nil {
 		t.Fatal(err)
 	}
-	if rules, _, _ := unstructured.NestedSlice(policy.Object, "spec", "ingress"); len(rules) != 3 {
+	if rules, _, _ := unstructured.NestedSlice(policy.Object, "spec", "ingress"); len(rules) != 2 {
 		t.Fatalf("enabled ingress rules = %#v", rules)
 	}
 	apiKey := &corev1.Secret{}
@@ -203,7 +205,7 @@ func TestEDOTGatewayRemovesIdentityIngressWithoutCredentials(t *testing.T) {
 	if err := c.Get(context.Background(), key, policy); err != nil {
 		t.Fatal(err)
 	}
-	if rules, _, _ := unstructured.NestedSlice(policy.Object, "spec", "ingress"); len(rules) != 2 {
+	if rules, _, _ := unstructured.NestedSlice(policy.Object, "spec", "ingress"); len(rules) != 1 {
 		t.Errorf("identity ingress survived disable: %#v", rules)
 	}
 }
@@ -355,6 +357,56 @@ func TestDeleteRemovesLegacyVariablesConfigMapsWhenOwned(t *testing.T) {
 	assertPresent(t, c, namespace, EDOTGatewayVariablesConfigMapName, &corev1.ConfigMap{})
 }
 
+func TestDeleteRemovesOwnedLegacyCiliumPolicies(t *testing.T) {
+	namespace := "telemetry"
+	controller := true
+	foreign := metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "other", UID: "other", Controller: &controller}
+	legacy := func(name string, owner metav1.OwnerReference) *unstructured.Unstructured {
+		policy := &unstructured.Unstructured{}
+		policy.SetGroupVersionKind(resources.LegacyCiliumNetworkPolicyGVK())
+		policy.SetNamespace(namespace)
+		policy.SetName(name)
+		policy.SetOwnerReferences([]metav1.OwnerReference{owner})
+		return policy
+	}
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(
+		legacy(IngressPolicyName, owner()), legacy(EgressPolicyName, owner()),
+		legacy(EDOTGatewayIngressPolicyName, owner()), legacy(EDOTGatewayEgressPolicyName, foreign),
+	).Build()
+	if err := NewOTelCollectorComponent(c).Delete(context.Background(), namespace, owner()); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewEDOTGatewayComponent(c).Delete(context.Background(), namespace, owner()); err != nil {
+		t.Fatal(err)
+	}
+	for name, wantPresent := range map[string]bool{IngressPolicyName: false, EgressPolicyName: false, EDOTGatewayIngressPolicyName: false, EDOTGatewayEgressPolicyName: true} {
+		policy := &unstructured.Unstructured{}
+		policy.SetGroupVersionKind(resources.LegacyCiliumNetworkPolicyGVK())
+		err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: name}, policy)
+		if wantPresent && err != nil {
+			t.Errorf("foreign legacy policy %s was deleted: %v", name, err)
+		}
+		if !wantPresent && !apierrors.IsNotFound(err) {
+			t.Errorf("legacy policy %s lookup = %v, want not found", name, err)
+		}
+	}
+}
+
+func TestDeleteToleratesMissingCiliumCRD(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		if gvk := obj.GetObjectKind().GroupVersionKind(); gvk == resources.LegacyCiliumNetworkPolicyGVK() {
+			return &meta.NoKindMatchError{GroupKind: gvk.GroupKind(), SearchedVersions: []string{gvk.Version}}
+		}
+		return c.Get(ctx, key, obj, opts...)
+	}}).Build()
+	if err := NewOTelCollectorComponent(c).Delete(context.Background(), "telemetry", owner()); err != nil {
+		t.Errorf("collector delete = %v", err)
+	}
+	if err := NewEDOTGatewayComponent(c).Delete(context.Background(), "telemetry", owner()); err != nil {
+		t.Errorf("edot delete = %v", err)
+	}
+}
+
 func deploymentEnvValue(t *testing.T, c client.Client, namespace, name, env string) string {
 	t.Helper()
 	deployment := &appsv1.Deployment{}
@@ -435,108 +487,55 @@ func TestTelemetryDeploymentsUseResolvedCABundleImage(t *testing.T) {
 	}
 }
 
-func TestCollectorEgressPermitsDNSAndRestrictsNonDNS(t *testing.T) {
+func TestCollectorEgressAllowsDNSEDOTAndElasticsearch(t *testing.T) {
 	if !strings.Contains(collectorConfig, "endpoint: otel-edot-gateway:4317") {
 		t.Fatal("collector must export to the short EDOT service endpoint otel-edot-gateway:4317")
 	}
 	if strings.Contains(collectorConfig, ".svc") || strings.Contains(collectorConfig, "cluster.local") {
 		t.Fatal("collector must not hardcode a cluster domain")
 	}
-	egress, _, err := unstructured.NestedSlice(map[string]any{"spec": collectorEgressPolicy("telemetry", "identity.example.com", []egressTarget{{"192.0.2.10", "9200"}, {"elastic.example.com", "9200"}})}, "spec", "egress")
-	if err != nil {
-		t.Fatal(err)
+	egress := collectorEgressPolicy([]egressTarget{{"192.0.2.10", 9200}, {"elastic.example.com", 9200}, {"logs.example.com", 9243}})["egress"]
+	want := []any{
+		dnsEgress(),
+		map[string]any{"to": []any{map[string]any{"podSelector": map[string]any{"matchLabels": map[string]any{"app": edotGatewayAppLabel}}}}, "ports": tcpPolicyPorts(4317)},
+		map[string]any{"to": []any{map[string]any{"ipBlock": map[string]any{"cidr": "192.0.2.10/32"}}}, "ports": tcpPolicyPorts(9200)},
+		// OIDC discovery, Elasticsearch on the nodes, and the endpoints given by hostname.
+		map[string]any{"ports": tcpPolicyPorts(443, 9200, 9243)},
 	}
-	var dnsOK, edotOK, oidcOK, elasticsearchIPOK, elasticsearchFQDNOK, elasticsearchEntitiesOK bool
-	for _, raw := range egress {
-		rule := raw.(map[string]any)
-		if entities, ok := rule["toEntities"].([]any); ok {
-			for _, entity := range entities {
-				if entity != "host" && entity != "remote-node" {
-					t.Fatalf("collector egress grants arbitrary entity egress: %v", rule)
-				}
-			}
-			if egressHasTCPPort(rule, "443") {
-				if egressHasTCPPort(rule, "9200") {
-					t.Fatalf("collector node egress combines OIDC and Elasticsearch ports: %v", rule)
-				}
-			} else if egressHasTCPPort(rule, "9200") {
-				elasticsearchEntitiesOK = true
-			} else {
-				t.Fatalf("collector node egress is not restricted to TCP/443 or TCP/9200: %v", rule)
-			}
-		}
-		if _, ok := rule["toCIDR"]; ok {
-			if rule["toCIDR"].([]any)[0] == "192.0.2.10/32" && egressHasTCPPort(rule, "9200") {
-				elasticsearchIPOK = true
-			} else {
-				t.Fatalf("collector egress grants unexpected CIDR egress: %v", rule)
-			}
-		}
-		if _, ok := rule["toCIDRSet"]; ok {
-			t.Fatalf("collector egress grants CIDR-set egress: %v", rule)
-		}
-		if toPorts, ok := rule["toPorts"].([]any); ok {
-			for _, tp := range toPorts {
-				dnsRules, _, _ := unstructured.NestedSlice(tp.(map[string]any), "rules", "dns")
-				for _, d := range dnsRules {
-					if d.(map[string]any)["matchPattern"] == "*" {
-						dnsOK = true
-					}
-				}
-			}
-		}
-		if endpoints, ok := rule["toEndpoints"].([]any); ok {
-			for _, ep := range endpoints {
-				labels, _, _ := unstructured.NestedStringMap(ep.(map[string]any), "matchLabels")
-				if labels["k8s:app"] == edotGatewayAppLabel && labels["k8s:io.kubernetes.pod.namespace"] == "telemetry" && egressHasTCPPort(rule, "4317") {
-					edotOK = true
-				}
-			}
-		}
-		if fqdns, ok := rule["toFQDNs"].([]any); ok {
-			for _, f := range fqdns {
-				name := f.(map[string]any)["matchName"]
-				if name == "identity.example.com" && egressHasTCPPort(rule, "443") {
-					oidcOK = true
-				}
-				if name == "elastic.example.com" && egressHasTCPPort(rule, "9200") {
-					elasticsearchFQDNOK = true
-				}
-			}
-		}
-	}
-	if !dnsOK {
-		t.Fatal("collector egress does not permit portable DNS resolution (matchPattern \"*\")")
-	}
-	if !edotOK {
-		t.Fatal("collector egress does not permit EDOT pods on 4317")
-	}
-	if !oidcOK {
-		t.Fatal("collector egress does not permit the OIDC issuer FQDN on 443")
-	}
-	if !elasticsearchIPOK || !elasticsearchFQDNOK || !elasticsearchEntitiesOK {
-		t.Fatalf("collector egress does not permit Elasticsearch IP, FQDN, and node entities on TCP/9200: ip=%t fqdn=%t entities=%t", elasticsearchIPOK, elasticsearchFQDNOK, elasticsearchEntitiesOK)
+	if !reflect.DeepEqual(egress, want) {
+		t.Errorf("collector egress = %#v, want %#v", egress, want)
 	}
 }
 
-func egressHasTCPPort(rule map[string]any, port string) bool {
-	toPorts, ok := rule["toPorts"].([]any)
-	if !ok {
-		return false
+func TestDNSEgressReachesAnyResolver(t *testing.T) {
+	want := map[string]any{"ports": []any{
+		map[string]any{"protocol": "UDP", "port": int64(53)},
+		map[string]any{"protocol": "UDP", "port": int64(5353)},
+		map[string]any{"protocol": "TCP", "port": int64(53)},
+		map[string]any{"protocol": "TCP", "port": int64(5353)},
+	}}
+	if got := dnsEgress(); !reflect.DeepEqual(got, want) {
+		t.Errorf("dns egress = %#v, want %#v", got, want)
 	}
-	for _, tp := range toPorts {
-		ports, ok := tp.(map[string]any)["ports"].([]any)
-		if !ok {
-			continue
-		}
-		for _, p := range ports {
-			portMap := p.(map[string]any)
-			if portMap["port"] == port && portMap["protocol"] == "TCP" {
-				return true
-			}
-		}
+}
+
+func TestCollectorIngressOpensOnlyOTLPPorts(t *testing.T) {
+	want := map[string]any{
+		"podSelector": map[string]any{"matchLabels": map[string]any{"app": collectorAppLabel}},
+		"policyTypes": []any{"Ingress"},
+		"ingress":     []any{map[string]any{"ports": tcpPolicyPorts(4317, 4318)}},
 	}
-	return false
+	if got := collectorIngressPolicy(); !reflect.DeepEqual(got, want) {
+		t.Errorf("collector ingress = %#v, want %#v", got, want)
+	}
+}
+
+func tcpPolicyPorts(ports ...int64) []any {
+	entries := make([]any, 0, len(ports))
+	for _, port := range ports {
+		entries = append(entries, map[string]any{"protocol": "TCP", "port": port})
+	}
+	return entries
 }
 
 func TestCollectorWaitsForRouteReadiness(t *testing.T) {
@@ -592,78 +591,37 @@ func TestEDOTGatewayRejectsInvalidPrerequisitesAndEndpoints(t *testing.T) {
 }
 
 func TestEDOTGatewayEgressRestrictsToEndpoints(t *testing.T) {
-	targets := []egressTarget{{"192.0.2.10", "9200"}, {"2001:db8::1", "9243"}, {"elastic.example.com", "9200"}}
-	egress, _, err := unstructured.NestedSlice(map[string]any{"spec": edotGatewayEgressPolicy(targets)}, "spec", "egress")
-	if err != nil {
-		t.Fatal(err)
+	targets := []egressTarget{{"192.0.2.10", 9200}, {"2001:db8::1", 9243}, {"elastic.example.com", 9200}}
+	want := map[string]any{
+		"podSelector": map[string]any{"matchLabels": map[string]any{"app": edotGatewayAppLabel}},
+		"policyTypes": []any{"Egress"},
+		"egress": []any{
+			dnsEgress(),
+			map[string]any{"to": []any{map[string]any{"ipBlock": map[string]any{"cidr": "192.0.2.10/32"}}}, "ports": tcpPolicyPorts(9200)},
+			map[string]any{"to": []any{map[string]any{"ipBlock": map[string]any{"cidr": "2001:db8::1/128"}}}, "ports": tcpPolicyPorts(9243)},
+			map[string]any{"ports": tcpPolicyPorts(9200)},
+		},
 	}
-	wantCIDR := map[string]string{"192.0.2.10/32": "9200", "2001:db8::1/128": "9243"}
-	wantFQDN := map[string]string{"elastic.example.com": "9200"}
-	entityRuleFound, dnsRuleFound := false, false
-	for _, raw := range egress {
-		rule := raw.(map[string]any)
-		if entities, ok := rule["toEntities"].([]any); ok {
-			if len(entities) != 2 || entities[0] != "host" || entities[1] != "remote-node" || !egressHasTCPPort(rule, "9200") {
-				t.Fatalf("unexpected EDOT node entity egress rule: %v", rule)
-			}
-			entityRuleFound = true
-			continue
-		}
-		if fqdns, ok := rule["toFQDNs"].([]any); ok {
-			if len(fqdns) != 1 {
-				t.Fatalf("edot FQDN egress rule must target exactly one name: %v", rule)
-			}
-			name := fqdns[0].(map[string]any)["matchName"].(string)
-			port, known := wantFQDN[name]
-			if !known || !egressHasTCPPort(rule, port) {
-				t.Fatalf("unexpected edot FQDN egress rule: %v", rule)
-			}
-			delete(wantFQDN, name)
-			continue
-		}
-		if endpoints, ok := rule["toEndpoints"].([]any); ok {
-			for _, ep := range endpoints {
-				labels, _, _ := unstructured.NestedStringMap(ep.(map[string]any), "matchLabels")
-				if labels["k8s:k8s-app"] == "kube-dns" {
-					dnsRuleFound = true
-				}
-			}
-			continue
-		}
-		cidrs, ok := rule["toCIDR"].([]any)
-		if !ok || len(cidrs) != 1 {
-			t.Fatalf("edot egress rule must target exactly one CIDR: %v", rule)
-		}
-		cidr := cidrs[0].(string)
-		port, known := wantCIDR[cidr]
-		if !known || !egressHasTCPPort(rule, port) {
-			t.Fatalf("unexpected edot egress rule: %v", rule)
-		}
-		delete(wantCIDR, cidr)
-	}
-	if len(wantCIDR) != 0 || len(wantFQDN) != 0 {
-		t.Fatalf("missing egress rules for endpoints: cidr=%v fqdn=%v", wantCIDR, wantFQDN)
-	}
-	if !entityRuleFound {
-		t.Fatal("missing EDOT host/remote-node egress rule on TCP/9200")
-	}
-	if !dnsRuleFound {
-		t.Fatal("missing EDOT DNS resolution egress required for FQDN endpoints")
+	if got := edotGatewayEgressPolicy(targets); !reflect.DeepEqual(got, want) {
+		t.Errorf("edot egress = %#v, want %#v", got, want)
 	}
 }
 
 func TestEDOTGatewayEgressOmitsDNSForIPOnlyEndpoints(t *testing.T) {
-	egress, _, err := unstructured.NestedSlice(map[string]any{"spec": edotGatewayEgressPolicy([]egressTarget{{"192.0.2.10", "9200"}})}, "spec", "egress")
-	if err != nil {
-		t.Fatal(err)
+	egress := edotGatewayEgressPolicy([]egressTarget{{"192.0.2.10", 9243}})["egress"]
+	want := []any{
+		map[string]any{"to": []any{map[string]any{"ipBlock": map[string]any{"cidr": "192.0.2.10/32"}}}, "ports": tcpPolicyPorts(9243)},
+		map[string]any{"ports": tcpPolicyPorts(9200)},
 	}
-	for _, raw := range egress {
-		rule := raw.(map[string]any)
-		if _, ok := rule["toEndpoints"]; ok {
-			t.Fatalf("edot egress must not permit DNS resolution for IP-only endpoints: %v", rule)
-		}
-		if _, ok := rule["toFQDNs"]; ok {
-			t.Fatalf("edot egress must not use toFQDNs for IP-only endpoints: %v", rule)
+	if !reflect.DeepEqual(egress, want) {
+		t.Errorf("edot egress = %#v, want %#v", egress, want)
+	}
+}
+
+func TestHostCIDRIsCanonical(t *testing.T) {
+	for ip, want := range map[string]string{"192.0.2.10": "192.0.2.10/32", "::ffff:192.0.2.10": "192.0.2.10/32", "2001:0db8::0001": "2001:db8::1/128"} {
+		if got := hostCIDR(ip); got != want {
+			t.Errorf("hostCIDR(%q) = %q, want %q", ip, got, want)
 		}
 	}
 }
@@ -884,20 +842,22 @@ func deploymentAnnotations(t *testing.T, c client.Client, namespace, name string
 func assertPolicySelector(t *testing.T, c client.Client, namespace, name, app string) {
 	t.Helper()
 	object := &unstructured.Unstructured{}
-	object.SetGroupVersionKind(ciliumPolicyGVK)
+	object.SetGroupVersionKind(resources.NetworkPolicyGVK())
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: name}, object); err != nil {
 		t.Fatal(err)
 	}
-	selector, _, _ := unstructured.NestedString(object.Object, "spec", "endpointSelector", "matchLabels", "k8s:app")
+	selector, _, _ := unstructured.NestedString(object.Object, "spec", "podSelector", "matchLabels", "app")
 	if selector != app {
 		t.Fatalf("policy %s selects %q", name, selector)
 	}
 }
 
-func assertNamespaceScopedPeer(t *testing.T, c client.Client, namespace, policyName, direction, peerField, app string) {
+// assertPodPeer checks that the policy names app as a peer by pod labels alone,
+// which scopes the peer to the policy's own namespace.
+func assertPodPeer(t *testing.T, c client.Client, namespace, policyName, direction, peerField, app string) {
 	t.Helper()
 	object := &unstructured.Unstructured{}
-	object.SetGroupVersionKind(ciliumPolicyGVK)
+	object.SetGroupVersionKind(resources.NetworkPolicyGVK())
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: policyName}, object); err != nil {
 		t.Fatal(err)
 	}
@@ -905,10 +865,10 @@ func assertNamespaceScopedPeer(t *testing.T, c client.Client, namespace, policyN
 	for _, rule := range rules {
 		peers, _, _ := unstructured.NestedSlice(rule.(map[string]any), peerField)
 		for _, peer := range peers {
-			labels, _, _ := unstructured.NestedStringMap(peer.(map[string]any), "matchLabels")
-			if labels["k8s:app"] == app {
-				if labels["k8s:io.kubernetes.pod.namespace"] != namespace {
-					t.Fatalf("policy %s peer labels=%v", policyName, labels)
+			labels, _, _ := unstructured.NestedStringMap(peer.(map[string]any), "podSelector", "matchLabels")
+			if labels["app"] == app {
+				if _, hasNamespaceSelector := peer.(map[string]any)["namespaceSelector"]; hasNamespaceSelector {
+					t.Fatalf("policy %s peer %v reaches beyond namespace %s", policyName, peer, namespace)
 				}
 				return
 			}

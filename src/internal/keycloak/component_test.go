@@ -439,63 +439,61 @@ func TestKeycloakHostCATrust(t *testing.T) {
 func TestKeycloakNetworkPolicies(t *testing.T) {
 	instance := keycloakInstanceSpec("img", "ca-img", neteye.NetEyeIdentitySpec{Hostname: "h"})
 	if !reflect.DeepEqual(instance["networkPolicy"], map[string]any{"enabled": false}) {
-		t.Errorf("native network policy = %#v, want disabled", instance["networkPolicy"])
+		t.Errorf("Keycloak Operator network policy = %#v, want disabled", instance["networkPolicy"])
 	}
-	ingress := keycloakIngressNetworkPolicySpec()
-	if !reflect.DeepEqual(ingress["endpointSelector"], map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()}) {
-		t.Errorf("ingress selector = %#v", ingress["endpointSelector"])
+	keycloakPods := map[string]any{"matchLabels": map[string]any{
+		"app":                          "keycloak",
+		"app.kubernetes.io/instance":   InstanceName,
+		"app.kubernetes.io/managed-by": "keycloak-operator",
+	}}
+	tcp := func(ports ...int64) []any {
+		entries := make([]any, 0, len(ports))
+		for _, port := range ports {
+			entries = append(entries, map[string]any{"protocol": "TCP", "port": port})
+		}
+		return entries
 	}
-	if _, found := ingress["policyTypes"]; found {
-		t.Error("CiliumNetworkPolicy must not carry native NetworkPolicy policyTypes")
-	}
-	ingressRules := ingress["ingress"].([]any)
-	if len(ingressRules) != 2 {
-		t.Fatalf("ingress rule count = %d, want 2", len(ingressRules))
-	}
-	clusterRule := ingressRules[0].(map[string]any)
-	wantClusterPorts := []any{map[string]any{"ports": []any{map[string]any{"port": "7800", "protocol": "TCP"}, map[string]any{"port": "57800", "protocol": "TCP"}}}}
-	if !reflect.DeepEqual(clusterRule["toPorts"], wantClusterPorts) {
-		t.Errorf("cluster ingress ports = %#v", clusterRule["toPorts"])
-	}
-	// An external Keycloak must not reach the Infinispan cluster transport.
-	if !reflect.DeepEqual(clusterRule["fromEndpoints"], []any{map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()}}) {
-		t.Errorf("cluster ingress source = %#v, want Keycloak peers only", clusterRule["fromEndpoints"])
-	}
-	operatorRule := ingressRules[1].(map[string]any)
-	wantSource := []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": OperatorSystemNamespace}}}
-	if !reflect.DeepEqual(operatorRule["fromEndpoints"], wantSource) {
-		t.Errorf("operator ingress source = %#v", operatorRule["fromEndpoints"])
-	}
-	wantAdminPorts := []any{map[string]any{"ports": []any{map[string]any{"port": "8080", "protocol": "TCP"}}}}
-	if !reflect.DeepEqual(operatorRule["toPorts"], wantAdminPorts) {
-		t.Errorf("operator ingress ports = %#v", operatorRule["toPorts"])
-	}
-	host := keycloakHostManagementPolicySpec()
-	if !reflect.DeepEqual(host["endpointSelector"], map[string]any{"matchLabels": map[string]any{
-		"k8s:app":                          "keycloak",
-		"k8s:app.kubernetes.io/instance":   InstanceName,
-		"k8s:app.kubernetes.io/managed-by": "keycloak-operator",
-	}}) {
-		t.Errorf("host endpoint selector = %#v", host["endpointSelector"])
-	}
-	hostRules := host["ingress"].([]any)
-	if !reflect.DeepEqual(hostRules[0].(map[string]any)["fromEntities"], []any{"ingress"}) {
-		t.Errorf("gateway entities = %#v", hostRules[0].(map[string]any)["fromEntities"])
-	}
-	if !reflect.DeepEqual(hostRules[1].(map[string]any)["fromEntities"], []any{"host", "remote-node"}) {
-		t.Errorf("host entities = %#v", hostRules[1].(map[string]any)["fromEntities"])
-	}
-	egress := keycloakEgressNetworkPolicySpec()
-	if !reflect.DeepEqual(egress["endpointSelector"], map[string]any{"matchLabels": keycloakCiliumWorkloadLabels()}) {
-		t.Errorf("egress endpoint selector = %#v", egress["endpointSelector"])
-	}
-	if !reflect.DeepEqual(egress["egress"], []any{map[string]any{"toEntities": []any{"all"}}}) {
-		t.Errorf("egress must reach every destination, got %#v", egress["egress"])
-	}
-	if _, found := egress["egressDeny"]; found {
-		t.Errorf("egress must carry no deny exceptions, got %#v", egress["egressDeny"])
-	}
-	if _, found := egress["policyTypes"]; found {
-		t.Error("CiliumNetworkPolicy must not carry native NetworkPolicy policyTypes")
+	for _, test := range []struct {
+		name string
+		got  map[string]any
+		want map[string]any
+	}{
+		{
+			// An external Keycloak must not reach the Infinispan cluster transport.
+			name: "ingress",
+			got:  keycloakIngressNetworkPolicySpec(),
+			want: map[string]any{
+				"podSelector": keycloakPods,
+				"policyTypes": []any{"Ingress"},
+				"ingress": []any{
+					map[string]any{"from": []any{map[string]any{"podSelector": keycloakPods}}, "ports": tcp(7800, 57800)},
+					map[string]any{"from": []any{map[string]any{"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": OperatorSystemNamespace}}}}, "ports": tcp(8080)},
+				},
+			},
+		},
+		{
+			// No rule for the management port: kubelet probes from the pod's node
+			// are always allowed.
+			name: "gateway",
+			got:  keycloakHostManagementPolicySpec(),
+			want: map[string]any{
+				"podSelector": keycloakPods,
+				"policyTypes": []any{"Ingress"},
+				"ingress":     []any{map[string]any{"ports": tcp(8080)}},
+			},
+		},
+		{
+			name: "egress",
+			got:  keycloakEgressNetworkPolicySpec(),
+			want: map[string]any{
+				"podSelector": keycloakPods,
+				"policyTypes": []any{"Egress"},
+				"egress":      []any{map[string]any{}},
+			},
+		},
+	} {
+		if !reflect.DeepEqual(test.got, test.want) {
+			t.Errorf("%s policy = %#v, want %#v", test.name, test.got, test.want)
+		}
 	}
 }

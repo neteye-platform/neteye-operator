@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,17 +105,16 @@ func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spe
 // Delete removes only EDOT gateway-owned objects. It never deletes collector
 // objects or externally managed Elasticsearch credentials and CA Secrets.
 func (c *EDOTGatewayComponent) Delete(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
-	return deleteOwnedResources(ctx, c.client, namespace, owner, append(edotGatewayResourceInventory(), edotGatewayLegacyInventory()...))
+	inventory := append(edotGatewayResourceInventory(), edotGatewayLegacyInventory()...)
+	return deleteOwnedResources(ctx, c.client, namespace, owner, append(inventory, legacyPolicyInventory(EDOTGatewayIngressPolicyName, EDOTGatewayEgressPolicyName)...))
 }
 
 func (c *EDOTGatewayComponent) ensureIngressPolicy(ctx context.Context, namespace string, identityTelemetryEnabled bool, owner metav1.OwnerReference) error {
-	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: EDOTGatewayIngressPolicyName, Owner: &owner, Spec: edotGatewayIngressPolicy(namespace, identityTelemetryEnabled)})
-	return err
+	return resources.EnsureNetworkPolicy(ctx, c.client, namespace, EDOTGatewayIngressPolicyName, edotGatewayIngressPolicy(identityTelemetryEnabled), owner)
 }
 
 func (c *EDOTGatewayComponent) ensureEgressPolicy(ctx context.Context, namespace string, targets []egressTarget, owner metav1.OwnerReference) error {
-	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: EDOTGatewayEgressPolicyName, Owner: &owner, Spec: edotGatewayEgressPolicy(targets)})
-	return err
+	return resources.EnsureNetworkPolicy(ctx, c.client, namespace, EDOTGatewayEgressPolicyName, edotGatewayEgressPolicy(targets), owner)
 }
 
 func edotGatewayDeployment(namespace string, spec *neteye.NetEyeEDOTGatewaySpec, image, caBundleImage, elasticsearchEndpoints string, annotations map[string]string) *appsv1.Deployment {
@@ -138,36 +138,43 @@ func edotGatewayDeployment(namespace string, spec *neteye.NetEyeEDOTGatewaySpec,
 	}
 }
 
-type egressTarget struct{ host, port string }
+type egressTarget struct {
+	host string
+	port int64
+}
 
 func validatedEndpoints(values []string) ([]string, []egressTarget, error) {
 	if len(values) == 0 {
 		return nil, nil, fmt.Errorf("at least one Elasticsearch endpoint is required")
 	}
-	unique := map[string]egressTarget{}
+	unique := map[egressTarget]struct{}{}
 	normalized := make([]string, 0, len(values))
 	for _, value := range values {
 		u, err := url.Parse(value)
 		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !isSupportedEndpointHost(u.Hostname()) {
 			return nil, nil, fmt.Errorf("invalid unsupported Elasticsearch endpoint %q", value)
 		}
-		port := u.Port()
-		if port == "" {
-			port = "443"
-		} else {
-			portNumber, err := strconv.Atoi(port)
-			if err != nil || portNumber < 1 || portNumber > 65535 {
+		port := int64(443)
+		if u.Port() != "" {
+			port, err = strconv.ParseInt(u.Port(), 10, 64)
+			if err != nil || port < 1 || port > 65535 {
 				return nil, nil, fmt.Errorf("invalid unsupported Elasticsearch endpoint %q", value)
 			}
 		}
-		unique[u.Hostname()+":"+port] = egressTarget{u.Hostname(), port}
+		target := egressTarget{u.Hostname(), port}
+		unique[target] = struct{}{}
 		normalized = append(normalized, value)
 	}
 	targets := make([]egressTarget, 0, len(unique))
-	for _, target := range unique {
+	for target := range unique {
 		targets = append(targets, target)
 	}
-	sort.Slice(targets, func(i, j int) bool { return targets[i].host+targets[i].port < targets[j].host+targets[j].port })
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].host != targets[j].host {
+			return targets[i].host < targets[j].host
+		}
+		return targets[i].port < targets[j].port
+	})
 	return normalized, targets, nil
 }
 
@@ -192,52 +199,56 @@ func validateDNSName(value, field string) error {
 	return nil
 }
 
-func edotGatewayIngressPolicy(namespace string, identityTelemetryEnabled bool) map[string]any {
-	ingress := []any{map[string]any{"fromEndpoints": []any{namespaceScopedEndpoint(collectorAppLabel, namespace)}, "toPorts": []any{tcpPorts("4317", "4318")}}}
+func edotGatewayIngressPolicy(identityTelemetryEnabled bool) map[string]any {
+	ingress := []any{map[string]any{"from": []any{map[string]any{"podSelector": appSelector(collectorAppLabel)}}, "ports": resources.NetworkPolicyPorts("TCP", 4317, 4318)}}
 	if identityTelemetryEnabled {
-		ingress = append(ingress, map[string]any{"fromEndpoints": []any{map[string]any{"matchLabels": map[string]any{
-			"k8s:app":                          "keycloak",
-			"k8s:app.kubernetes.io/instance":   keycloakconfig.InstanceName,
-			"k8s:app.kubernetes.io/managed-by": "keycloak-operator",
-			"k8s:io.kubernetes.pod.namespace":  namespace,
-		}}}, "toPorts": []any{tcpPorts("4317")}})
+		ingress = append(ingress, map[string]any{"from": []any{map[string]any{"podSelector": map[string]any{"matchLabels": map[string]any{
+			"app":                          "keycloak",
+			"app.kubernetes.io/instance":   keycloakconfig.InstanceName,
+			"app.kubernetes.io/managed-by": "keycloak-operator",
+		}}}}, "ports": resources.NetworkPolicyPorts("TCP", 4317)})
 	}
-	ingress = append(ingress, map[string]any{"fromEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("13133")}})
-	return map[string]any{"endpointSelector": labelsFor(edotGatewayAppLabel), "ingress": ingress}
+	return map[string]any{"podSelector": appSelector(edotGatewayAppLabel), "policyTypes": []any{"Ingress"}, "ingress": ingress}
 }
 
 func edotGatewayEgressPolicy(targets []egressTarget) map[string]any {
 	rules := make([]any, 0, len(targets)+2)
-	needsDNS := false
-	for _, target := range targets {
-		rules = append(rules, targetEgress(target))
-		if net.ParseIP(target.host) == nil {
-			needsDNS = true
-		}
-	}
-	if needsDNS {
+	if slices.ContainsFunc(targets, func(target egressTarget) bool { return net.ParseIP(target.host) == nil }) {
 		rules = append(rules, dnsEgress())
 	}
-	rules = append(rules, map[string]any{"toEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("9200")}})
-	return map[string]any{"endpointSelector": labelsFor(edotGatewayAppLabel), "egress": rules}
+	rules = append(rules, elasticsearchEgress(targets)...)
+	return map[string]any{"podSelector": appSelector(edotGatewayAppLabel), "policyTypes": []any{"Egress"}, "egress": rules}
 }
 
-func targetEgress(target egressTarget) map[string]any {
-	if net.ParseIP(target.host) != nil {
-		return cidrEgress(target.host, target.port)
+// elasticsearchEgress allows the Elasticsearch endpoints and Elasticsearch on
+// the cluster nodes (TCP 9200). An endpoint given by IP gets an ipBlock. A
+// NetworkPolicy can select neither a DNS name nor the nodes, so the other
+// ports, and openPorts, are open to any destination.
+func elasticsearchEgress(targets []egressTarget, openPorts ...int64) []any {
+	open := append([]int64{9200}, openPorts...)
+	rules := make([]any, 0, len(targets)+1)
+	for _, target := range targets {
+		if net.ParseIP(target.host) == nil {
+			open = append(open, target.port)
+			continue
+		}
+		rules = append(rules, map[string]any{
+			"to":    []any{map[string]any{"ipBlock": map[string]any{"cidr": hostCIDR(target.host)}}},
+			"ports": resources.NetworkPolicyPorts("TCP", target.port),
+		})
 	}
-	return fqdnEgress(target.host, target.port)
+	slices.Sort(open)
+	return append(rules, map[string]any{"ports": resources.NetworkPolicyPorts("TCP", slices.Compact(open)...)})
 }
 
-func cidrEgress(ip, port string) map[string]any {
-	return map[string]any{"toCIDR": []any{hostCIDR(ip)}, "toPorts": []any{tcpPorts(port)}}
-}
-
+// hostCIDR returns the single-address CIDR of ip in canonical form, which the
+// API server's CIDR validation expects.
 func hostCIDR(ip string) string {
-	if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil {
-		return ip + "/32"
+	parsed := net.ParseIP(ip)
+	if parsed.To4() != nil {
+		return parsed.String() + "/32"
 	}
-	return ip + "/128"
+	return parsed.String() + "/128"
 }
 
 func edotGatewayInputVersions(ctx context.Context, c client.Client, namespace, apiKeyVersion, rootCAVersion string) (map[string]string, error) {
