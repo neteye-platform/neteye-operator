@@ -192,6 +192,7 @@ func main() {
 		Client:                     mgr.GetClient(),
 		Log:                        ctrl.Log.WithName("neteye-tenant-reconciler"),
 		Scheme:                     mgr.GetScheme(),
+		APIReader:                  mgr.GetAPIReader(),
 		OperatorUsername:           operatorUsername,
 		FailureRequeueAfter:        failureRequeue,
 		ReconciliationRequeueAfter: reconciliationRequeue,
@@ -200,12 +201,12 @@ func main() {
 		os.Exit(1)
 	}
 	if operatorUsername != "" {
-		if err := mgr.Add(&controllers.TenantNamespacePolicy{
+		if err := (&controllers.TenantNamespacePolicy{
 			Client:           mgr.GetClient(),
 			Log:              ctrl.Log.WithName("tenant-namespace-policy"),
 			OperatorUsername: operatorUsername,
 			Interval:         reconciliationRequeue,
-		}); err != nil {
+		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to add the tenant namespace admission policy")
 			os.Exit(1)
 		}

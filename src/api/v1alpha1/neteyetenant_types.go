@@ -15,8 +15,12 @@ const (
 	// lowercase letters and digits, without the characters that look alike
 	// (0, o, 1, l, i). A fixed length keeps derived names short enough for the
 	// 63 character limit of a DNS label, and it excludes the shared namespace,
-	// which has the same prefix. Accepting more names later is an additive
-	// change; accepting fewer is not.
+	// which has the same prefix. The CRD upgrade check of OLM
+	// (crdUpgradeSafety Strict) refuses any change of a CEL rule, so this
+	// rule, like the rules of spec.displayName, cannot change in a later
+	// release of this API version. The installer generates the id:
+	// metadata.generateName cannot produce it, because the API server adds 5
+	// characters.
 	TenantNamePattern = `^neteye-tenant-[a-hjkmnp-z2-9]{8}$`
 
 	// TenantLabel marks the namespace of a tenant. Its value is the name of the
@@ -36,12 +40,15 @@ const (
 type NetEyeTenantSpec struct {
 	// DisplayName is the name of the tenant that people see and use. It can
 	// change at any time; resources derived from the tenant use metadata.name,
-	// which never changes.
+	// which never changes. It has at least one letter or digit, so a name made
+	// only of blank characters is refused. The length counts characters, not
+	// bytes.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:XValidation:rule="self == self.trim()",message="must not contain surrounding whitespace"
-	// +kubebuilder:validation:XValidation:rule="!self.matches('[\\\\p{Cc}\\\\p{Cf}]')",message="must not contain control or format characters"
+	// +kubebuilder:validation:XValidation:rule="!self.matches('[\\\\p{Cc}\\\\p{Cf}\\\\p{Zl}\\\\p{Zp}]')",message="must not contain control or format characters, or line or paragraph separators"
+	// +kubebuilder:validation:XValidation:rule="self.matches('[\\\\p{L}\\\\p{N}]')",message="must contain at least one letter or digit"
 	DisplayName string `json:"displayName"`
 }
 
@@ -70,7 +77,7 @@ type NetEyeTenantStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=neteyetenants,shortName=netenant
-// +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^neteye-tenant-[a-hjkmnp-z2-9]{8}$')",message="metadata.name must be neteye-tenant- followed by an id of 8 characters from abcdefghjkmnpqrstuvwxyz23456789"
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^neteye-tenant-[a-hjkmnp-z2-9]{8}$')",message="metadata.name must be neteye-tenant- followed by an id of 8 characters from abcdefghjkmnpqrstuvwxyz23456789",reason=FieldValueInvalid
 // +kubebuilder:printcolumn:name="Display Name",type=string,JSONPath=`.spec.displayName`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

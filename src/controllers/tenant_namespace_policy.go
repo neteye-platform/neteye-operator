@@ -17,7 +17,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
@@ -48,6 +55,10 @@ var (
 // for each tenant. The API server evaluates it, so it keeps working while the
 // operator is down.
 //
+// It is a controller that watches the policy and its binding: a deleted or
+// changed object is restored at once. It also runs once at startup, so that a
+// missing policy is created, and again after every interval as a backstop.
+//
 // To change the protected metadata by hand, stop the operator first, then
 // delete the binding: while the operator runs, it puts the binding back.
 type TenantNamespacePolicy struct {
@@ -59,48 +70,49 @@ type TenantNamespacePolicy struct {
 	// set the tenant metadata of a namespace.
 	OperatorUsername string
 
-	// Interval is how often the policy is checked for drift. When zero,
-	// DefaultReconciliationRequeueAfter is used.
+	// Interval is how often the policy is checked for drift without an event.
+	// When zero, DefaultReconciliationRequeueAfter is used.
 	Interval time.Duration
 }
 
-// NeedLeaderElection makes only the leading operator replica write the policy.
-func (p *TenantNamespacePolicy) NeedLeaderElection() bool {
-	return true
+// SetupWithManager registers the policy controller. Like every controller of
+// the manager, it runs only on the leading operator replica.
+func (p *TenantNamespacePolicy) SetupWithManager(mgr ctrl.Manager) error {
+	toPolicy := handler.EnqueueRequestsFromMapFunc(func(context.Context, client.Object) []reconcile.Request {
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: TenantNamespacePolicyName}}}
+	})
+	onlyThePolicy := builder.WithPredicates(predicate.NewPredicateFuncs(func(object client.Object) bool {
+		return object.GetName() == TenantNamespacePolicyName
+	}))
+	policy := &unstructured.Unstructured{}
+	policy.SetGroupVersionKind(validatingAdmissionPolicyGVK)
+	binding := &unstructured.Unstructured{}
+	binding.SetGroupVersionKind(validatingAdmissionPolicyBindingGVK)
+	// No event exists for an object that does not exist yet, so one start
+	// event makes the controller create the policy on a new installation.
+	start := make(chan event.GenericEvent, 1)
+	start <- event.GenericEvent{Object: policy}
+	return ctrl.NewControllerManagedBy(mgr).
+		Named("tenant-namespace-policy").
+		WatchesRawSource(source.Channel(start, toPolicy)).
+		Watches(policy, toPolicy, onlyThePolicy).
+		Watches(binding, toPolicy, onlyThePolicy).
+		Complete(p)
 }
 
-// Start reconciles the policy until it succeeds, then again on every interval.
-func (p *TenantNamespacePolicy) Start(ctx context.Context) error {
-	for attempt := 1; ; attempt++ {
-		err := p.Ensure(ctx)
-		if err == nil {
-			p.Log.Info("tenant namespace admission policy is in place", "policy", TenantNamespacePolicyName)
-			break
-		}
-		p.Log.Error(err, "tenant namespace admission policy reconciliation failed; retrying", "attempt", attempt, "retryAfter", tenantNamespacePolicyRetryInterval)
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(tenantNamespacePolicyRetryInterval):
-		}
+// Reconcile applies the policy and its binding. A failure is retried after
+// tenantNamespacePolicyRetryInterval; a success is checked again after the
+// interval.
+func (p *TenantNamespacePolicy) Reconcile(ctx context.Context, _ reconcile.Request) (ctrl.Result, error) {
+	if err := p.Ensure(ctx); err != nil {
+		p.Log.Error(err, "tenant namespace admission policy reconciliation failed; retrying", "retryAfter", tenantNamespacePolicyRetryInterval)
+		return ctrl.Result{RequeueAfter: tenantNamespacePolicyRetryInterval}, nil
 	}
-
 	interval := p.Interval
 	if interval <= 0 {
 		interval = DefaultReconciliationRequeueAfter
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if err := p.Ensure(ctx); err != nil {
-				p.Log.Error(err, "tenant namespace admission policy reconciliation failed")
-			}
-		}
-	}
+	return ctrl.Result{RequeueAfter: interval}, nil
 }
 
 // Ensure applies the policy and its binding, both owned by the NetEyeTenant
@@ -110,21 +122,11 @@ func (p *TenantNamespacePolicy) Ensure(ctx context.Context) error {
 	if p.OperatorUsername == "" {
 		return fmt.Errorf("the operator username is unknown, so the policy cannot exempt the operator")
 	}
-	crd := &unstructured.Unstructured{}
-	crd.SetGroupVersionKind(customResourceDefinitionGVK)
-	if err := p.Client.Get(ctx, types.NamespacedName{Name: netEyeTenantCRDName}, crd); err != nil {
-		return fmt.Errorf("get CustomResourceDefinition %q: %w", netEyeTenantCRDName, err)
+	crd, err := getTenantCRD(ctx, p.Client)
+	if err != nil {
+		return err
 	}
-	// The operator may not block the deletion of a CRD, so the reference only
-	// records ownership for garbage collection.
-	owner := metav1.OwnerReference{
-		APIVersion:         customResourceDefinitionGVK.GroupVersion().String(),
-		Kind:               customResourceDefinitionGVK.Kind,
-		Name:               crd.GetName(),
-		UID:                crd.GetUID(),
-		Controller:         ptr.To(true),
-		BlockOwnerDeletion: ptr.To(false),
-	}
+	owner := tenantCRDOwnerReference(crd)
 	if _, err := resources.Apply(ctx, p.Client, resources.ObjectDefinition{GVK: validatingAdmissionPolicyGVK, Name: TenantNamespacePolicyName, Spec: tenantNamespacePolicySpec(p.OperatorUsername), Owner: &owner}); err != nil {
 		return fmt.Errorf("apply ValidatingAdmissionPolicy %q: %w", TenantNamespacePolicyName, err)
 	}
@@ -156,13 +158,19 @@ const (
 )
 
 // checkTenantNamespacePolicy reads the policy and its binding and returns their
-// state, with a message for the status of the tenant. The specs are compared
-// with the specs that TenantNamespacePolicy writes for operatorUsername, so a
-// changed rule, exemption or validation action counts as not enforced.
+// state, with a message for the status of the tenant. The live specs must
+// contain the specs that TenantNamespacePolicy writes for operatorUsername, so
+// a changed rule, exemption or validation action counts as not enforced. A
+// field that the API server adds by default does not.
 func checkTenantNamespacePolicy(ctx context.Context, c client.Client, operatorUsername string) (tenantNamespacePolicyState, string, error) {
 	if operatorUsername == "" {
 		return tenantNamespacePolicyMissing, "the operator username is unknown, so the operator cannot protect the tenant metadata of the namespace", nil
 	}
+	crd, err := getTenantCRD(ctx, c)
+	if err != nil {
+		return tenantNamespacePolicyMissing, "", err
+	}
+	owner := tenantCRDOwnerReference(crd)
 	for _, object := range []resources.ObjectDefinition{
 		{GVK: validatingAdmissionPolicyGVK, Spec: tenantNamespacePolicySpec(operatorUsername)},
 		{GVK: validatingAdmissionPolicyBindingGVK, Spec: tenantNamespacePolicyBindingSpec()},
@@ -175,19 +183,76 @@ func checkTenantNamespacePolicy(ctx context.Context, c client.Client, operatorUs
 			}
 			return tenantNamespacePolicyMissing, "", fmt.Errorf("get %s %q: %w", object.GVK.Kind, TenantNamespacePolicyName, err)
 		}
-		if !controlledByTenantCRD(live) {
+		if !controlledByOwner(live, owner) {
 			return tenantNamespacePolicyConflict, fmt.Sprintf("the %s %q is not controlled by the CustomResourceDefinition %q, so the tenant metadata of the namespace is not protected; remove it and the operator creates its own", object.GVK.Kind, TenantNamespacePolicyName, netEyeTenantCRDName), nil
 		}
-		if spec, _, _ := unstructured.NestedMap(live.Object, "spec"); !reflect.DeepEqual(spec, object.Spec) {
+		if spec, _, _ := unstructured.NestedMap(live.Object, "spec"); !containsSpec(spec, object.Spec) {
 			return tenantNamespacePolicyMissing, fmt.Sprintf("waiting for the operator to restore the spec of the %s %q that protects the tenant metadata of the namespace", object.GVK.Kind, TenantNamespacePolicyName), nil
 		}
 	}
 	return tenantNamespacePolicyEnforced, "", nil
 }
 
-func controlledByTenantCRD(object *unstructured.Unstructured) bool {
-	controller := metav1.GetControllerOf(object)
-	return controller != nil && controller.Kind == customResourceDefinitionGVK.Kind && controller.Name == netEyeTenantCRDName
+// containsSpec reports whether live has every value of desired. A map may have
+// more keys than desired, for example a default that a newer API server adds;
+// a list must have the same length, and each element must contain the desired
+// element at the same position.
+func containsSpec(live, desired any) bool {
+	switch want := desired.(type) {
+	case map[string]any:
+		got, ok := live.(map[string]any)
+		if !ok {
+			return false
+		}
+		for key, value := range want {
+			if !containsSpec(got[key], value) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		got, ok := live.([]any)
+		if !ok || len(got) != len(want) {
+			return false
+		}
+		for i := range want {
+			if !containsSpec(got[i], want[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(live, desired)
+	}
+}
+
+// controlledByOwner reports whether owner, with the same UID, is the controller
+// of object. Ensure adopts only such objects, so the check agrees with it.
+func controlledByOwner(object *unstructured.Unstructured, owner metav1.OwnerReference) bool {
+	return resources.RequireManagedOwner(object, owner) == nil
+}
+
+func getTenantCRD(ctx context.Context, c client.Client) (*unstructured.Unstructured, error) {
+	crd := &unstructured.Unstructured{}
+	crd.SetGroupVersionKind(customResourceDefinitionGVK)
+	if err := c.Get(ctx, types.NamespacedName{Name: netEyeTenantCRDName}, crd); err != nil {
+		return nil, fmt.Errorf("get CustomResourceDefinition %q: %w", netEyeTenantCRDName, err)
+	}
+	return crd, nil
+}
+
+// tenantCRDOwnerReference makes the NetEyeTenant CRD the controller of the
+// policy objects. The operator may not block the deletion of a CRD, so the
+// reference only records ownership for garbage collection.
+func tenantCRDOwnerReference(crd *unstructured.Unstructured) metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion:         customResourceDefinitionGVK.GroupVersion().String(),
+		Kind:               customResourceDefinitionGVK.Kind,
+		Name:               crd.GetName(),
+		UID:                crd.GetUID(),
+		Controller:         ptr.To(true),
+		BlockOwnerDeletion: ptr.To(false),
+	}
 }
 
 // tenantNamespacePolicySpec refuses, for everyone except the operator, a
@@ -218,8 +283,10 @@ func tenantNamespacePolicySpec(operatorUsername string) map[string]any {
 				"apiGroups":   []any{""},
 				"apiVersions": []any{"v1"},
 				"operations":  []any{"CREATE", "UPDATE"},
-				"resources":   []any{"namespaces"},
-				"scope":       "*",
+				// The API server also applies metadata changes sent to these
+				// subresources, so they are protected like the namespace.
+				"resources": []any{"namespaces", "namespaces/status", "namespaces/finalize"},
+				"scope":     "*",
 			}},
 		},
 		"matchConditions": []any{

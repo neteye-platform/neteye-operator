@@ -58,15 +58,20 @@ spec:
                 description: |-
                   DisplayName is the name of the tenant that people see and use. It can
                   change at any time; resources derived from the tenant use metadata.name,
-                  which never changes.
+                  which never changes. It has at least one letter or digit, so a name made
+                  only of blank characters is refused. The length counts characters, not
+                  bytes.
                 maxLength: 63
                 minLength: 1
                 type: string
                 x-kubernetes-validations:
                 - message: must not contain surrounding whitespace
                   rule: self == self.trim()
-                - message: must not contain control or format characters
-                  rule: '!self.matches(''[\\p{Cc}\\p{Cf}]'')'
+                - message: must not contain control or format characters, or line
+                    or paragraph separators
+                  rule: '!self.matches(''[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]'')'
+                - message: must contain at least one letter or digit
+                  rule: self.matches('[\\p{L}\\p{N}]')
             required:
             - displayName
             type: object
@@ -107,9 +112,9 @@ spec:
                       description: |-
                         ResolvedImages is the complete set of container images the operator
                         selected for this component. A component with no container images
-                        reports an empty list, so the field is always present. While the
-                        component is progressing this is the target set; once it is ready, the
-                        operator has confirmed its required workloads use that set.
+                        reports an empty list. While the component is progressing this is the
+                        target set; once it is ready, the operator has confirmed its required
+                        workloads use that set.
                       items:
                         description: |-
                           NetEyeResolvedImage is one container image selected by the operator for a
@@ -133,15 +138,7 @@ spec:
                       x-kubernetes-list-type: map
                     status:
                       description: Status is the component's readiness state.
-                      enum:
-                      - Ready
-                      - Progressing
-                      - Degraded
-                      - Blocked
-                      - Disabled
                       type: string
-                  required:
-                  - resolvedImages
                   type: object
                 description: |-
                   Components reports observed state keyed by stable logical component
@@ -224,6 +221,7 @@ spec:
         x-kubernetes-validations:
         - message: metadata.name must be neteye-tenant- followed by an id of 8 characters
             from abcdefghjkmnpqrstuvwxyz23456789
+          reason: FieldValueInvalid
           rule: self.metadata.name.matches('^neteye-tenant-[a-hjkmnp-z2-9]{8}$')
     served: true
     storage: true

@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 )
@@ -135,6 +136,18 @@ func TestTenantNamespacePolicyAgainstAPIServer(t *testing.T) {
 			t.Errorf("a user could %s of a tenant namespace", name)
 		}
 	}
+	// The API server applies metadata changes sent to the status and finalize
+	// subresources too, so they must be refused in the same way.
+	for name, subresource := range map[string]string{"status": "status", "finalize": "finalize"} {
+		ns := &corev1.Namespace{}
+		if err := admin.Get(ctx, types.NamespacedName{Name: testTenant}, ns); err != nil {
+			t.Fatal(err)
+		}
+		ns.Labels[neteye.TenantLabel] = "neteye-tenant-hijacked"
+		if err := admin.SubResource(subresource).Update(ctx, ns); err == nil {
+			t.Errorf("a user changed the tenant label through the %s subresource", name)
+		}
+	}
 	if err := patchNamespace(admin, "unrelated", func(ns *corev1.Namespace) { ns.Labels[neteye.TenantLabel] = "unrelated" }); err == nil {
 		t.Error("a user turned an existing namespace into a tenant namespace")
 	}
@@ -159,6 +172,46 @@ func TestTenantNamespacePolicyAgainstAPIServer(t *testing.T) {
 		delete(ns.Annotations, neteye.TenantDisplayNameAnnotation)
 	}); err != nil {
 		t.Errorf("the operator could not remove the tenant metadata: %v", err)
+	}
+}
+
+func TestTenantNamespacePolicyReconcileRetriesAFailureSooner(t *testing.T) {
+	failing := &TenantNamespacePolicy{Log: logr.Discard()}
+	result, err := failing.Reconcile(context.Background(), reconcile.Request{})
+	if err != nil || result.RequeueAfter != tenantNamespacePolicyRetryInterval {
+		t.Errorf("failed reconciliation = %v, %v; want a retry after %s", result, err, tenantNamespacePolicyRetryInterval)
+	}
+}
+
+func TestTenantNamespacePolicyRestoresAChangedBinding(t *testing.T) {
+	admin, _, _ := startEnvtestWithConfig(t)
+	ctx := context.Background()
+	p := &TenantNamespacePolicy{Client: admin, Log: logr.Discard(), OperatorUsername: testOperatorUsername, Interval: time.Hour}
+	if result, err := p.Reconcile(ctx, reconcile.Request{}); err != nil || result.RequeueAfter != time.Hour {
+		t.Fatalf("reconcile = %v, %v", result, err)
+	}
+	if state, message, err := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); err != nil || state != tenantNamespacePolicyEnforced {
+		t.Fatalf("policy state on a real API server = %v %q %v, want enforced", state, message, err)
+	}
+	binding := &unstructured.Unstructured{}
+	binding.SetGroupVersionKind(validatingAdmissionPolicyBindingGVK)
+	if err := admin.Get(ctx, types.NamespacedName{Name: TenantNamespacePolicyName}, binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedStringSlice(binding.Object, []string{"Warn"}, "spec", "validationActions"); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Update(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	if state, _, _ := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); state != tenantNamespacePolicyMissing {
+		t.Errorf("a binding that only warns counts as enforced")
+	}
+	if _, err := p.Reconcile(ctx, reconcile.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	if state, message, _ := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); state != tenantNamespacePolicyEnforced {
+		t.Errorf("binding not restored: %q", message)
 	}
 }
 

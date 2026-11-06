@@ -926,6 +926,10 @@ func TestAPIServerValidatesNetEyeTenantSchema(t *testing.T) {
 		"surrounding spaces":   {testTenant, " Default", "surrounding whitespace"},
 		"control character":    {testTenant, "De\nfault", "control or format characters"},
 		"format character":     {testTenant, "De\u200bfault", "control or format characters"},
+		"line separator":       {testTenant, "Acme\u2028Corp", "line or paragraph separators"},
+		"only a blank symbol":  {testTenant, "\u2800", "at least one letter or digit"},
+		"only punctuation":     {testTenant, "---", "at least one letter or digit"},
+		"64 characters":        {testTenant, strings.Repeat("ü", 64), "spec.displayName"},
 		"id too short":         {"neteye-tenant-abc", "Default", "metadata.name must be"},
 		"look-alike character": {"neteye-tenant-2bh46bf0", "Default", "metadata.name must be"},
 		"shared namespace":     {neteye.NetEyeNamespace, "Default", "metadata.name must be"},
@@ -938,6 +942,11 @@ func TestAPIServerValidatesNetEyeTenantSchema(t *testing.T) {
 		})
 	}
 
+	// The length counts characters, not bytes: 63 two-byte characters fit.
+	longest := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{DisplayName: strings.Repeat("ü", 63)}}
+	if err := c.Create(ctx, longest, client.DryRunAll); err != nil {
+		t.Fatalf("display name of 63 characters rejected: %v", err)
+	}
 	tenant := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{DisplayName: "Würth Italy"}}
 	if err := c.Create(ctx, tenant); err != nil {
 		t.Fatalf("valid tenant rejected: %v", err)

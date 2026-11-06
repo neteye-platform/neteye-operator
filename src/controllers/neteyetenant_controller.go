@@ -50,6 +50,10 @@ type NetEyeTenantReconciler struct {
 	Log    logr.Logger
 	Scheme *runtime.Scheme
 
+	// APIReader reads from the API server without the cache. The deletion of a
+	// tenant uses it. When nil, the client is used.
+	APIReader client.Reader
+
 	// OperatorUsername is the Kubernetes username of the operator, the only
 	// user that the tenant namespace admission policy exempts. The tenant uses
 	// it to check that the policy in the cluster is the one of the operator.
@@ -196,26 +200,41 @@ func (r *NetEyeTenantReconciler) reconcileDelete(ctx context.Context, tenant *ne
 	if !controllerutil.ContainsFinalizer(tenant, NetEyeTenantFinalizer) {
 		return ctrl.Result{}, nil
 	}
+	// A tenant that is not valid never wrote metadata, so it must not remove
+	// the metadata that another tenant wrote on that namespace.
+	if invalidTenantReason(tenant) != "" {
+		return r.removeFinalizer(ctx, tenant)
+	}
 	if err := r.removeNamespaceMetadata(ctx, tenant); err != nil {
 		ctrl.LoggerFrom(ctx).Error(err, "unable to remove the tenant metadata from the namespace", "requeueAfter", r.failureRequeue())
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
+	ctrl.LoggerFrom(ctx).Info("NetEyeTenant deleted; its namespace is no longer marked as a tenant namespace", "namespace", tenant.Namespace)
+	return r.removeFinalizer(ctx, tenant)
+}
+
+func (r *NetEyeTenantReconciler) removeFinalizer(ctx context.Context, tenant *neteye.NetEyeTenant) (ctrl.Result, error) {
 	controllerutil.RemoveFinalizer(tenant, NetEyeTenantFinalizer)
 	if err := r.Update(ctx, tenant); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove NetEyeTenant finalizer: %w", err)
 	}
-	ctrl.LoggerFrom(ctx).Info("NetEyeTenant deleted; its namespace is no longer marked as a tenant namespace", "namespace", tenant.Namespace)
 	return ctrl.Result{}, nil
 }
 
+// removeNamespaceMetadata removes the label and the annotation that this
+// tenant wrote. It reads the namespace from the API server, not from the
+// cache: after the finalizer is gone nothing reconciles the namespace again,
+// and only the operator can remove the metadata, so a stale read would leave
+// it on the namespace for good. A label with the name of another tenant is
+// left alone.
 func (r *NetEyeTenantReconciler) removeNamespaceMetadata(ctx context.Context, tenant *neteye.NetEyeTenant) error {
 	namespace := &corev1.Namespace{}
-	if err := r.Get(ctx, types.NamespacedName{Name: tenant.Namespace}, namespace); err != nil {
+	if err := r.apiReader().Get(ctx, types.NamespacedName{Name: tenant.Namespace}, namespace); err != nil {
 		return client.IgnoreNotFound(err)
 	}
-	_, labeled := namespace.Labels[neteye.TenantLabel]
+	label, labeled := namespace.Labels[neteye.TenantLabel]
 	_, annotated := namespace.Annotations[neteye.TenantDisplayNameAnnotation]
-	if !labeled && !annotated {
+	if labeled && label != tenant.Name || !labeled && !annotated {
 		return nil
 	}
 	patch := client.MergeFrom(namespace.DeepCopy())
@@ -225,6 +244,13 @@ func (r *NetEyeTenantReconciler) removeNamespaceMetadata(ctx context.Context, te
 		return fmt.Errorf("remove the tenant metadata of namespace %q: %w", tenant.Namespace, err)
 	}
 	return nil
+}
+
+func (r *NetEyeTenantReconciler) apiReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // writeStatus publishes the component map and the conditions derived from it.

@@ -5,8 +5,9 @@ package v1alpha1
 
 // The component status contract, shared by every resource that reports
 // components: a Ready condition, Progressing and Degraded conditions, and a
-// map of component states. The names match the NetEye status contract, so the
-// NetEye and the NetEyeTenant status use one set of types.
+// map of component states. The names and the schema are the same as in the
+// NetEye status contract, so the NetEye and the NetEyeTenant status use one
+// set of types and the generated schemas do not differ.
 
 // Condition types reported in the status of a resource with components. Ready
 // is the stable readiness interface for scripts and users; consumers must also
@@ -38,7 +39,6 @@ const (
 )
 
 // ComponentState is the readiness state reported for one logical component.
-// +kubebuilder:validation:Enum=Ready;Progressing;Degraded;Blocked;Disabled
 type ComponentState string
 
 const (
@@ -93,10 +93,11 @@ type NetEyeComponentStatus struct {
 
 	// ResolvedImages is the complete set of container images the operator
 	// selected for this component. A component with no container images
-	// reports an empty list, so the field is always present. While the
-	// component is progressing this is the target set; once it is ready, the
-	// operator has confirmed its required workloads use that set.
+	// reports an empty list. While the component is progressing this is the
+	// target set; once it is ready, the operator has confirmed its required
+	// workloads use that set.
+	// +kubebuilder:validation:Optional
 	// +listType=map
 	// +listMapKey=name
-	ResolvedImages []NetEyeResolvedImage `json:"resolvedImages"`
+	ResolvedImages []NetEyeResolvedImage `json:"resolvedImages,omitempty"`
 }

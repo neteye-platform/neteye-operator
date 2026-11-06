@@ -16,6 +16,11 @@ import (
 
 const DefaultDenyPolicyName = "neteye-default-deny"
 
+// TenantDefaultDenyPolicyName names the default-deny NetworkPolicy of a tenant
+// namespace. It differs from DefaultDenyPolicyName, which the cleanup of the
+// shared namespace deletes as a legacy native policy.
+const TenantDefaultDenyPolicyName = "neteye-tenant-default-deny"
+
 // EnsureDefaultDenyNetworkPolicy reconciles the shared namespace-wide Cilium
 // default-deny baseline. Workload-specific Cilium allow policies compose with
 // this baseline without requiring native NetworkPolicy egress exceptions.
@@ -40,7 +45,7 @@ func EnsureDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namesp
 func ApplyTenantDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namespace string, owner metav1.OwnerReference) error {
 	_, err := Apply(ctx, c, ObjectDefinition{
 		GVK:       NetworkPolicyGVK(),
-		Name:      DefaultDenyPolicyName,
+		Name:      TenantDefaultDenyPolicyName,
 		Namespace: namespace,
 		Spec:      tenantDefaultDenyNetworkPolicySpec(),
 		Owner:     &owner,

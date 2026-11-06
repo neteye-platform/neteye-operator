@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -83,17 +84,22 @@ func ValidateTenantNamespace(tenant *NetEyeTenant) field.ErrorList {
 }
 
 // validateUniqueDisplayName refuses a display name that another tenant already
-// uses. Two names that look the same to the people who choose between them are
-// the same name: the comparison ignores case and Unicode normalization. The
-// check reads the existing tenants before the write, so two concurrent creates
-// can still both pass; it prevents mistakes, it is not a guarantee.
+// uses. Names that differ only in case, in Unicode normalization or
+// compatibility forms (for example ligatures and full-width letters), or in
+// the spaces between words are the same name. Characters of different scripts
+// that look alike are not detected. A tenant that is being deleted keeps its
+// name until it is gone, because its namespace still shows the name. The check
+// reads the existing tenants before the write, so two concurrent creates can
+// still both pass; it prevents mistakes, it is not a guarantee.
 func (v *NetEyeTenantValidator) validateUniqueDisplayName(ctx context.Context, tenant *NetEyeTenant) (field.ErrorList, error) {
 	if v.reader == nil {
 		return nil, nil
 	}
 	tenants := &NetEyeTenantList{}
 	if err := v.reader.List(ctx, tenants); err != nil {
-		return nil, fmt.Errorf("list NetEyeTenant resources: %w", err)
+		// A failed read is a server error, not a refusal of the tenant, so the
+		// client can retry.
+		return nil, apierrors.NewInternalError(fmt.Errorf("list NetEyeTenant resources: %w", err))
 	}
 	for i := range tenants.Items {
 		other := &tenants.Items[i]
@@ -108,7 +114,15 @@ func (v *NetEyeTenantValidator) validateUniqueDisplayName(ctx context.Context, t
 }
 
 func sameDisplayName(a, b string) bool {
-	return strings.EqualFold(norm.NFC.String(a), norm.NFC.String(b))
+	return displayNameKey(a) == displayNameKey(b)
+}
+
+// displayNameKey is the form of a display name that the uniqueness check
+// compares: compatibility normalization, full Unicode case folding, and one
+// space between words.
+func displayNameKey(name string) string {
+	folded := norm.NFKC.String(cases.Fold().String(norm.NFKC.String(name)))
+	return strings.Join(strings.Fields(folded), " ")
 }
 
 func tenantInvalid(tenant *NetEyeTenant, errors field.ErrorList) error {

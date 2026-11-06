@@ -5,10 +5,8 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -67,7 +65,16 @@ func tenantNamespacePolicyObjects() []client.Object {
 	binding.SetName(TenantNamespacePolicyName)
 	binding.SetOwnerReferences([]metav1.OwnerReference{owner})
 	binding.Object["spec"] = tenantNamespacePolicyBindingSpec()
-	return []client.Object{policy, binding}
+	return []client.Object{tenantCRD(), policy, binding}
+}
+
+// tenantCRD is the NetEyeTenant CRD that controls the policy objects.
+func tenantCRD() *unstructured.Unstructured {
+	crd := &unstructured.Unstructured{}
+	crd.SetGroupVersionKind(customResourceDefinitionGVK)
+	crd.SetName(netEyeTenantCRDName)
+	crd.SetUID("crd-uid")
+	return crd
 }
 
 // newTenantReconciler builds a reconciler on a fake cluster where the tenant
@@ -120,7 +127,7 @@ func defaultDenyPolicy(t *testing.T, c client.Client, namespace string) *unstruc
 	t.Helper()
 	policy := &unstructured.Unstructured{}
 	policy.SetGroupVersionKind(resources.NetworkPolicyGVK())
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: resources.DefaultDenyPolicyName}, policy); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: resources.TenantDefaultDenyPolicyName}, policy); err != nil {
 		t.Fatalf("default-deny policy of namespace %q: %v", namespace, err)
 	}
 	return policy
@@ -170,15 +177,6 @@ func TestNetEyeTenantPreparesItsNamespace(t *testing.T) {
 	if component.Status != neteye.ComponentStateReady || component.ObservedGeneration != tenant.Generation {
 		t.Errorf("namespace component = %#v", component)
 	}
-	// A component with no images reports an empty list, so the field
-	// must be present in the serialized status.
-	serialized, err := json.Marshal(component)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(serialized), `"resolvedImages":[]`) {
-		t.Errorf("serialized component = %s, want an empty resolvedImages list", serialized)
-	}
 }
 
 func TestNetEyeTenantDisplayNameChangeReachesTheNamespace(t *testing.T) {
@@ -200,7 +198,7 @@ func TestNetEyeTenantRefusesToAdoptAForeignNetworkPolicy(t *testing.T) {
 	foreign := &unstructured.Unstructured{}
 	foreign.SetGroupVersionKind(resources.NetworkPolicyGVK())
 	foreign.SetNamespace(testTenant)
-	foreign.SetName(resources.DefaultDenyPolicyName)
+	foreign.SetName(resources.TenantDefaultDenyPolicyName)
 	foreign.Object["spec"] = map[string]any{"podSelector": map[string]any{}}
 	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenantResource(), foreign)
 	reconcileTenant(t, r)
@@ -221,17 +219,17 @@ func TestNetEyeTenantRefusesToAdoptAForeignNetworkPolicy(t *testing.T) {
 }
 
 func TestNetEyeTenantWaitsForTheNamespaceAdmissionPolicy(t *testing.T) {
-	policyOnly := tenantNamespacePolicyObjects()[:1]
+	policyOnly := tenantNamespacePolicyObjects()[:2]
 	denyless := tenantNamespacePolicyObjects()
-	denyless[1].(*unstructured.Unstructured).Object["spec"] = map[string]any{"policyName": TenantNamespacePolicyName, "validationActions": []any{"Audit"}}
+	denyless[2].(*unstructured.Unstructured).Object["spec"] = map[string]any{"policyName": TenantNamespacePolicyName, "validationActions": []any{"Audit"}}
 	permissive := tenantNamespacePolicyObjects()
 	permissiveSpec := tenantNamespacePolicySpec(testOperatorUsername)
 	permissiveSpec["validations"] = []any{map[string]any{"expression": "true"}}
-	permissive[0].(*unstructured.Unstructured).Object["spec"] = permissiveSpec
+	permissive[1].(*unstructured.Unstructured).Object["spec"] = permissiveSpec
 	otherExemption := tenantNamespacePolicyObjects()
-	otherExemption[0].(*unstructured.Unstructured).Object["spec"] = tenantNamespacePolicySpec("system:serviceaccount:default:default")
+	otherExemption[1].(*unstructured.Unstructured).Object["spec"] = tenantNamespacePolicySpec("system:serviceaccount:default:default")
 	for name, objects := range map[string][]client.Object{
-		"no policy":                 nil,
+		"no policy":                 {tenantCRD()},
 		"no binding":                policyOnly,
 		"binding does not deny":     denyless,
 		"policy validates nothing":  permissive,
@@ -286,6 +284,32 @@ func TestNetEyeTenantReportsAForeignNamespaceAdmissionPolicy(t *testing.T) {
 	}
 }
 
+func TestNetEyeTenantAcceptsDefaultsThatTheAPIServerAdds(t *testing.T) {
+	objects := tenantNamespacePolicyObjects()
+	policy := objects[1].(*unstructured.Unstructured)
+	spec := tenantNamespacePolicySpec(testOperatorUsername)
+	spec["futureDefault"] = "value"
+	spec["matchConstraints"].(map[string]any)["futureDefault"] = "value"
+	policy.Object["spec"] = spec
+	r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), tenantResource())...)
+	reconcileTenant(t, r)
+	if ready := conditionOf(t, getTenant(t, c, testTenant, testTenant), neteye.ConditionReady); ready.Status != metav1.ConditionTrue {
+		t.Errorf("Ready = %#v, want true when the API server only adds fields", ready)
+	}
+}
+
+func TestNetEyeTenantReportsAPolicyOfAnEarlierCRD(t *testing.T) {
+	// After the CRD is created again, the old policy objects still name the
+	// old CRD and garbage collection removes them.
+	objects := tenantNamespacePolicyObjects()
+	objects[0].SetUID("new-crd-uid")
+	r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), tenantResource())...)
+	reconcileTenant(t, r)
+	if component := getTenant(t, c, testTenant, testTenant).Status.Components[string(tenantNamespaceComponentID)]; component.Reason != "NamespacePolicyConflict" {
+		t.Errorf("namespace component = %#v", component)
+	}
+}
+
 func TestNetEyeTenantReportsAMissingNamespace(t *testing.T) {
 	r, c := newTenantReconciler(t, tenantResource())
 	reconcileTenant(t, r)
@@ -335,6 +359,76 @@ func TestNetEyeTenantDeletionRemovesTheTenantMetadataAndKeepsTheNamespace(t *tes
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: testTenant}, &neteye.NetEyeTenant{}); err == nil {
 		t.Error("tenant finalizer was not removed")
 	}
+}
+
+func TestNetEyeTenantDeletionLeavesTheMetadataOfAnotherTenant(t *testing.T) {
+	namespace := plainNamespace(testTenant)
+	namespace.Labels = map[string]string{neteye.TenantLabel: "neteye-tenant-aaaaaaaa"}
+	namespace.Annotations = map[string]string{neteye.TenantDisplayNameAnnotation: "Other"}
+	tenant := tenantResource()
+	tenant.Finalizers = []string{NetEyeTenantFinalizer}
+	r, c := newTenantReconciler(t, namespace, tenant)
+	if err := c.Delete(context.Background(), getTenant(t, c, testTenant, testTenant)); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTenant(t, r)
+
+	if got := getNamespace(t, c, testTenant); got.Labels[neteye.TenantLabel] != "neteye-tenant-aaaaaaaa" || got.Annotations[neteye.TenantDisplayNameAnnotation] != "Other" {
+		t.Errorf("metadata of another tenant changed: labels %v, annotations %v", got.Labels, got.Annotations)
+	}
+}
+
+func TestNetEyeTenantDeletionOfAnInvalidTenantChangesNoNamespace(t *testing.T) {
+	// A tenant in the wrong namespace that got a finalizer by hand must not
+	// remove the metadata of the tenant that owns that namespace.
+	namespace := plainNamespace(testTenant)
+	namespace.Labels = map[string]string{neteye.TenantLabel: testTenant}
+	namespace.Annotations = map[string]string{neteye.TenantDisplayNameAnnotation: "Default"}
+	invalid := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: "neteye-tenant-aaaaaaaa", Finalizers: []string{NetEyeTenantFinalizer}}, Spec: neteye.NetEyeTenantSpec{DisplayName: "Other"}}
+	r, c := newTenantReconciler(t, namespace, invalid)
+	if err := c.Delete(context.Background(), invalid); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTenantRequest(t, r, testTenant, invalid.Name)
+
+	if got := getNamespace(t, c, testTenant); got.Labels[neteye.TenantLabel] != testTenant || got.Annotations[neteye.TenantDisplayNameAnnotation] != "Default" {
+		t.Errorf("deleting an invalid tenant changed the namespace: labels %v, annotations %v", got.Labels, got.Annotations)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: invalid.Name}, &neteye.NetEyeTenant{}); err == nil {
+		t.Error("finalizer of the invalid tenant was not removed")
+	}
+}
+
+func TestNetEyeTenantDeletionReadsTheNamespaceFromTheAPIServer(t *testing.T) {
+	// The cache can still show the namespace without the metadata that the
+	// first reconciliation wrote. The deletion must not trust it.
+	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenantResource())
+	reconcileTenant(t, r)
+	r.Client = staleNamespaceClient{Client: c}
+	r.APIReader = c
+	if err := c.Delete(context.Background(), getTenant(t, c, testTenant, testTenant)); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTenant(t, r)
+	if _, labeled := getNamespace(t, c, testTenant).Labels[neteye.TenantLabel]; labeled {
+		t.Error("tenant label left on the namespace after a stale cache read")
+	}
+}
+
+// staleNamespaceClient returns every namespace without labels and
+// annotations, like a cache that has not seen the last change yet.
+type staleNamespaceClient struct {
+	client.Client
+}
+
+func (c staleNamespaceClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := c.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if namespace, ok := obj.(*corev1.Namespace); ok {
+		namespace.Labels, namespace.Annotations = nil, nil
+	}
+	return nil
 }
 
 func TestNetEyeTenantDeletionWithTheNamespaceAlreadyGone(t *testing.T) {

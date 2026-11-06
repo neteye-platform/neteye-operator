@@ -5,11 +5,14 @@ package v1alpha1
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -49,6 +52,8 @@ func TestNetEyeTenantValidatorRequiresAUniqueDisplayNameOnCreate(t *testing.T) {
 	for name, displayName := range map[string]string{
 		"other case":          "CAFÉ",
 		"other normalization": "Café",
+		"full-width letters":  "Ｃａｆé",
+		"more inner spaces":   "Café ",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := v.ValidateCreate(context.Background(), testTenant("neteye-tenant-bbbbbbbb", "neteye-tenant-bbbbbbbb", displayName))
@@ -60,6 +65,47 @@ func TestNetEyeTenantValidatorRequiresAUniqueDisplayNameOnCreate(t *testing.T) {
 	if _, err := v.ValidateCreate(context.Background(), testTenant("neteye-tenant-bbbbbbbb", "neteye-tenant-bbbbbbbb", "Second")); err != nil {
 		t.Fatalf("distinct display name rejected: %v", err)
 	}
+}
+
+func TestNetEyeTenantDisplayNameKeyFoldsCaseAndCompatibilityForms(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"Straße", "STRASSE"},
+		{"\ufb01nance", "finance"},
+		{"Acme\u00a0Corp", "acme corp"},
+		{"Acme  Corp", "Acme Corp"},
+	} {
+		if !sameDisplayName(pair[0], pair[1]) {
+			t.Errorf("%q and %q are different display names, want the same", pair[0], pair[1])
+		}
+	}
+	if sameDisplayName("Acme", "Acne") {
+		t.Error("different display names compare as the same")
+	}
+}
+
+func TestNetEyeTenantValidatorKeepsTheNameOfATenantBeingDeleted(t *testing.T) {
+	deleting := testTenant("neteye-tenant-aaaaaaaa", "neteye-tenant-aaaaaaaa", "Acme")
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+	deleting.Finalizers = []string{"neteye.cloud/neteye-tenant"}
+	_, err := tenantValidator(t, deleting).ValidateCreate(context.Background(), testTenant("neteye-tenant-bbbbbbbb", "neteye-tenant-bbbbbbbb", "Acme"))
+	if err == nil || !strings.Contains(err.Error(), "Duplicate") {
+		t.Fatalf("display name of a tenant being deleted accepted: %v", err)
+	}
+}
+
+func TestNetEyeTenantValidatorReportsAReadFailureAsAServerError(t *testing.T) {
+	v := &NetEyeTenantValidator{reader: failingReader{}}
+	_, err := v.ValidateCreate(context.Background(), testTenant("neteye-tenant-bbbbbbbb", "neteye-tenant-bbbbbbbb", "Acme"))
+	if !apierrors.IsInternalError(err) {
+		t.Fatalf("error = %v, want an internal server error that the client can retry", err)
+	}
+}
+
+type failingReader struct{ client.Reader }
+
+func (failingReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
+	return errors.New("connection refused")
 }
 
 func TestNetEyeTenantValidatorChecksUniquenessOnlyForANewDisplayName(t *testing.T) {
