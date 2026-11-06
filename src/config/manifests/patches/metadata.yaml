@@ -25,7 +25,7 @@ spec:
     - operator
   relatedImages:
     - name: neteye-keycloak
-      image: ghcr.io/neteye-platform/neteye-keycloak:1.0.7@sha256:1211d99c1d9350f8049485ae843e5e374fadc920d019c9c614bfc15202fc220c
+      image: ghcr.io/neteye-platform/neteye-keycloak:1.0.8@sha256:5617558fab88584d7a3a034838e9babd09774ab15ee5948cad3918eb740e0520
     - name: neteye-otel-collector
       image: docker.io/otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
     - name: neteye-edot-gateway
