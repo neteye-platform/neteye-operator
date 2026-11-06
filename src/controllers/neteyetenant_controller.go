@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
@@ -140,6 +141,18 @@ func (r *NetEyeTenantReconciler) reconcileNamespace(ctx context.Context, tenant 
 	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
 	if err := resources.ApplyTenantDefaultDenyNetworkPolicy(ctx, r.Client, tenant.Namespace, owner); err != nil {
 		return degradedResult(tenantNamespaceComponentID, "NetworkPolicyFailed", fmt.Sprintf("failed to apply the default-deny network policy: %v", err), r.failureRequeue(), err)
+	}
+	// Without the admission policy, anyone who can edit namespaces can change
+	// the tenant metadata, so the namespace is not ready until the API server
+	// enforces it.
+	state, message, err := checkTenantNamespacePolicy(ctx, r.Client)
+	switch {
+	case err != nil:
+		return degradedResult(tenantNamespaceComponentID, "NamespacePolicyCheckFailed", fmt.Sprintf("failed to check the tenant namespace admission policy: %v", err), r.failureRequeue(), err)
+	case state == tenantNamespacePolicyConflict:
+		return degradedResult(tenantNamespaceComponentID, "NamespacePolicyConflict", message, r.failureRequeue(), fmt.Errorf("%s", message))
+	case state == tenantNamespacePolicyMissing:
+		return progressingResult(tenantNamespaceComponentID, "WaitingForNamespacePolicy", message, r.failureRequeue())
 	}
 	return readyResult(tenantNamespaceComponentID, "Available", "Tenant namespace is ready")
 }
@@ -304,14 +317,40 @@ func (r *NetEyeTenantReconciler) reconciliationRequeue() time.Duration {
 // SetupWithManager registers the controller. Besides the tenant, it watches
 // the network policies the tenant owns and the tenant namespaces, so drift in
 // either is corrected at once instead of at the next periodic reconciliation.
+// It also watches the admission policy that protects the tenant metadata and
+// its binding, so the readiness of every tenant follows their state at once.
 func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	networkPolicy := &unstructured.Unstructured{}
 	networkPolicy.SetGroupVersionKind(resources.NetworkPolicyGVK())
+	admissionPolicy := &unstructured.Unstructured{}
+	admissionPolicy.SetGroupVersionKind(validatingAdmissionPolicyGVK)
+	admissionPolicyBinding := &unstructured.Unstructured{}
+	admissionPolicyBinding.SetGroupVersionKind(validatingAdmissionPolicyBindingGVK)
+	onlyTheTenantNamespacePolicy := builder.WithPredicates(predicate.NewPredicateFuncs(func(object client.Object) bool {
+		return object.GetName() == TenantNamespacePolicyName
+	}))
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&neteye.NetEyeTenant{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Owns(networkPolicy).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(tenantForNamespace)).
+		Watches(admissionPolicy, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantNamespacePolicy).
+		Watches(admissionPolicyBinding, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantNamespacePolicy).
 		Complete(r)
+}
+
+// allTenants maps a change of the shared admission policy to every tenant,
+// because all tenants depend on it.
+func (r *NetEyeTenantReconciler) allTenants(ctx context.Context, _ client.Object) []reconcile.Request {
+	tenants := &neteye.NetEyeTenantList{}
+	if err := r.List(ctx, tenants); err != nil {
+		ctrl.LoggerFrom(ctx).Error(err, "list NetEyeTenants after a change of the tenant namespace admission policy")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(tenants.Items))
+	for _, tenant := range tenants.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: tenant.Namespace, Name: tenant.Name}})
+	}
+	return requests
 }
 
 // tenantForNamespace maps a namespace to the tenant it may contain, which has

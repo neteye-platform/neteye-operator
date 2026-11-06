@@ -208,7 +208,7 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
-		setupLog.Info("operator service account is unknown; the tenant namespace metadata is not protected", "severity", "warning", "envVars", []string{podNamespaceEnvVar, serviceAccountNameEnvVar})
+		setupLog.Info("operator service account is unknown; the tenant namespace metadata is not protected and no tenant becomes ready", "severity", "warning", "envVars", []string{podNamespaceEnvVar, serviceAccountNameEnvVar})
 	}
 	if err := neteye.SetupNetEyeWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create NetEye webhook")

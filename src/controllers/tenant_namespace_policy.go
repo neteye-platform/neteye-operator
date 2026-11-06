@@ -6,10 +6,12 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -130,6 +132,56 @@ func (p *TenantNamespacePolicy) Ensure(ctx context.Context) error {
 		return fmt.Errorf("apply ValidatingAdmissionPolicyBinding %q: %w", TenantNamespacePolicyName, err)
 	}
 	return nil
+}
+
+// tenantNamespacePolicyState tells whether the API server enforces the
+// protection of the tenant metadata: the policy and its binding exist, the
+// NetEyeTenant CRD controls both, and the binding denies with this policy.
+// The policy is reconciled by TenantNamespacePolicy, outside the tenant
+// controller, so a tenant reads this state before it reports itself ready.
+type tenantNamespacePolicyState int
+
+const (
+	// tenantNamespacePolicyEnforced means that the policy is in place.
+	tenantNamespacePolicyEnforced tenantNamespacePolicyState = iota
+	// tenantNamespacePolicyMissing means that the policy or the binding does
+	// not exist yet. TenantNamespacePolicy creates them.
+	tenantNamespacePolicyMissing
+	// tenantNamespacePolicyConflict means that an object with the reserved
+	// name exists but is not the one of the operator. The operator does not
+	// adopt it, so a person must remove it.
+	tenantNamespacePolicyConflict
+)
+
+// checkTenantNamespacePolicy reads the policy and its binding and returns their
+// state, with a message for the status of the tenant.
+func checkTenantNamespacePolicy(ctx context.Context, c client.Client) (tenantNamespacePolicyState, string, error) {
+	var binding *unstructured.Unstructured
+	for _, gvk := range []schema.GroupVersionKind{validatingAdmissionPolicyGVK, validatingAdmissionPolicyBindingGVK} {
+		object := &unstructured.Unstructured{}
+		object.SetGroupVersionKind(gvk)
+		if err := c.Get(ctx, types.NamespacedName{Name: TenantNamespacePolicyName}, object); err != nil {
+			if apierrors.IsNotFound(err) {
+				return tenantNamespacePolicyMissing, fmt.Sprintf("waiting for the %s %q that protects the tenant metadata of the namespace", gvk.Kind, TenantNamespacePolicyName), nil
+			}
+			return tenantNamespacePolicyMissing, "", fmt.Errorf("get %s %q: %w", gvk.Kind, TenantNamespacePolicyName, err)
+		}
+		if !controlledByTenantCRD(object) {
+			return tenantNamespacePolicyConflict, fmt.Sprintf("the %s %q is not controlled by the CustomResourceDefinition %q, so the tenant metadata of the namespace is not protected; remove it and the operator creates its own", gvk.Kind, TenantNamespacePolicyName, netEyeTenantCRDName), nil
+		}
+		binding = object
+	}
+	policyName, _, _ := unstructured.NestedString(binding.Object, "spec", "policyName")
+	actions, _, _ := unstructured.NestedStringSlice(binding.Object, "spec", "validationActions")
+	if policyName != TenantNamespacePolicyName || !slices.Contains(actions, "Deny") {
+		return tenantNamespacePolicyMissing, fmt.Sprintf("waiting for the %s %q to deny with the policy %q", validatingAdmissionPolicyBindingGVK.Kind, TenantNamespacePolicyName, TenantNamespacePolicyName), nil
+	}
+	return tenantNamespacePolicyEnforced, "", nil
+}
+
+func controlledByTenantCRD(object *unstructured.Unstructured) bool {
+	controller := metav1.GetControllerOf(object)
+	return controller != nil && controller.Kind == customResourceDefinitionGVK.Kind && controller.Name == netEyeTenantCRDName
 }
 
 // tenantNamespacePolicySpec refuses, for everyone except the operator, a

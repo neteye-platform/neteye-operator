@@ -17,8 +17,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -50,7 +52,34 @@ func plainNamespace(name string) *corev1.Namespace {
 	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
 }
 
+// tenantNamespacePolicyObjects returns the admission policy and its binding as
+// TenantNamespacePolicy writes them: controlled by the NetEyeTenant CRD, with a
+// binding that denies.
+func tenantNamespacePolicyObjects() []client.Object {
+	owner := metav1.OwnerReference{APIVersion: customResourceDefinitionGVK.GroupVersion().String(), Kind: customResourceDefinitionGVK.Kind, Name: netEyeTenantCRDName, UID: "crd-uid", Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(false)}
+	policy := &unstructured.Unstructured{}
+	policy.SetGroupVersionKind(validatingAdmissionPolicyGVK)
+	policy.SetName(TenantNamespacePolicyName)
+	policy.SetOwnerReferences([]metav1.OwnerReference{owner})
+	policy.Object["spec"] = tenantNamespacePolicySpec("system:serviceaccount:neteye-system:neteye-operator")
+	binding := &unstructured.Unstructured{}
+	binding.SetGroupVersionKind(validatingAdmissionPolicyBindingGVK)
+	binding.SetName(TenantNamespacePolicyName)
+	binding.SetOwnerReferences([]metav1.OwnerReference{owner})
+	binding.Object["spec"] = tenantNamespacePolicyBindingSpec()
+	return []client.Object{policy, binding}
+}
+
+// newTenantReconciler builds a reconciler on a fake cluster where the tenant
+// namespace admission policy is in place.
 func newTenantReconciler(t *testing.T, objects ...client.Object) (*NetEyeTenantReconciler, client.Client) {
+	t.Helper()
+	return newTenantReconcilerWithoutPolicy(t, append(tenantNamespacePolicyObjects(), objects...)...)
+}
+
+// newTenantReconcilerWithoutPolicy builds a reconciler on a fake cluster that
+// contains only the given objects.
+func newTenantReconcilerWithoutPolicy(t *testing.T, objects ...client.Object) (*NetEyeTenantReconciler, client.Client) {
 	t.Helper()
 	scheme := tenantScheme(t)
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithStatusSubresource(&neteye.NetEyeTenant{}).Build()
@@ -188,6 +217,53 @@ func TestNetEyeTenantRefusesToAdoptAForeignNetworkPolicy(t *testing.T) {
 	}
 	if spec, _, _ := unstructured.NestedMap(defaultDenyPolicy(t, c, testTenant).Object, "spec"); !reflect.DeepEqual(spec, foreign.Object["spec"]) {
 		t.Errorf("a network policy the tenant does not own was changed: %v", spec)
+	}
+}
+
+func TestNetEyeTenantWaitsForTheNamespaceAdmissionPolicy(t *testing.T) {
+	policyOnly := tenantNamespacePolicyObjects()[:1]
+	denyless := tenantNamespacePolicyObjects()
+	denyless[1].(*unstructured.Unstructured).Object["spec"] = map[string]any{"policyName": TenantNamespacePolicyName, "validationActions": []any{"Audit"}}
+	for name, objects := range map[string][]client.Object{
+		"no policy":             nil,
+		"no binding":            policyOnly,
+		"binding does not deny": denyless,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), tenantResource())...)
+			reconcileTenant(t, r)
+
+			tenant := getTenant(t, c, testTenant, testTenant)
+			if component := tenant.Status.Components[string(tenantNamespaceComponentID)]; component.Status != neteye.ComponentStateProgressing || component.Reason != "WaitingForNamespacePolicy" {
+				t.Errorf("namespace component = %#v", component)
+			}
+			if ready := conditionOf(t, tenant, neteye.ConditionReady); ready.Status != metav1.ConditionFalse {
+				t.Errorf("Ready = %#v, want false while the tenant metadata is not protected", ready)
+			}
+		})
+	}
+}
+
+func TestNetEyeTenantReportsAForeignNamespaceAdmissionPolicy(t *testing.T) {
+	for _, gvk := range []schema.GroupVersionKind{validatingAdmissionPolicyGVK, validatingAdmissionPolicyBindingGVK} {
+		t.Run(gvk.Kind, func(t *testing.T) {
+			objects := tenantNamespacePolicyObjects()
+			for _, object := range objects {
+				if object.GetObjectKind().GroupVersionKind() == gvk {
+					object.SetOwnerReferences(nil)
+				}
+			}
+			r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), tenantResource())...)
+			reconcileTenant(t, r)
+
+			tenant := getTenant(t, c, testTenant, testTenant)
+			if component := tenant.Status.Components[string(tenantNamespaceComponentID)]; component.Status != neteye.ComponentStateDegraded || component.Reason != "NamespacePolicyConflict" {
+				t.Errorf("namespace component = %#v", component)
+			}
+			if degraded := conditionOf(t, tenant, neteye.ConditionDegraded); degraded.Status != metav1.ConditionTrue {
+				t.Errorf("Degraded = %#v", degraded)
+			}
+		})
 	}
 }
 
