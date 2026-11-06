@@ -6,6 +6,19 @@ a running NetEye installation on Kubernetes.
 
 ## Language
 
+### Tenants
+
+**Tenant**:
+A NetEye tenant: one namespace that contains one `NetEyeTenant` custom
+resource with the same name, `neteye-tenant-<id>`. Its dedicated resources
+live in that namespace.
+_Avoid_: Realm (the Keycloak mechanism a tenant maps to)
+
+**Display name**:
+The `spec.displayName` of a tenant, the name that people see and can change at
+any time. Derived names use `metadata.name`, which never changes.
+_Avoid_: Tenant name, when the stable `metadata.name` is meant
+
 ### Keycloak identity
 
 **Realm**:

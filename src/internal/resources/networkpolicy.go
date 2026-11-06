@@ -17,6 +17,10 @@ import (
 
 const DefaultDenyPolicyName = "neteye-default-deny"
 
+// TenantDefaultDenyPolicyName names the default-deny NetworkPolicy of a tenant
+// namespace.
+const TenantDefaultDenyPolicyName = "neteye-tenant-default-deny"
+
 // EnsureDefaultDenyNetworkPolicy reconciles the namespace-wide default deny that
 // the workload-specific allow policies open up.
 func EnsureDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namespace string, owner metav1.OwnerReference) error {
@@ -53,6 +57,22 @@ func deleteLegacyCiliumNetworkPolicy(ctx context.Context, c client.Client, names
 	return nil
 }
 
+// ApplyTenantDefaultDenyNetworkPolicy reconciles the namespace-wide
+// default-deny baseline of a tenant namespace. It selects every Pod and allows
+// no ingress and no egress. Workloads that the tenant adds later open only the
+// traffic they need with their own policies. Tenant namespaces never held a
+// CiliumNetworkPolicy, so no legacy cleanup runs.
+func ApplyTenantDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namespace string, owner metav1.OwnerReference) error {
+	_, err := Apply(ctx, c, ObjectDefinition{
+		GVK:       NetworkPolicyGVK(),
+		Name:      TenantDefaultDenyPolicyName,
+		Namespace: namespace,
+		Spec:      defaultDenyNetworkPolicySpec(),
+		Owner:     &owner,
+	})
+	return err
+}
+
 func defaultDenyNetworkPolicySpec() map[string]any {
 	return map[string]any{
 		"podSelector": map[string]any{},
@@ -70,6 +90,8 @@ func NetworkPolicyPorts(protocol string, ports ...int64) []any {
 	return entries
 }
 
+// NetworkPolicyGVK identifies the native Kubernetes network policies the
+// operator manages.
 func NetworkPolicyGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"}
 }

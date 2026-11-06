@@ -86,6 +86,7 @@ bundle: kustomize-manifests ## Render the versioned OLM bundle directly from the
 	rm -f "$(CURDIR)/bundle/manifests/"*.yaml; \
 	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone "$$release_dir" > "$$release_dir/rendered.yaml"; \
 	cp "$(CURDIR)/config/crd/bases/neteye.cloud_neteyes.yaml" "$(CURDIR)/bundle/manifests/neteyes.neteye.cloud.crd.yaml"; \
+	cp "$(CURDIR)/config/crd/bases/neteye.cloud_neteyetenants.yaml" "$(CURDIR)/bundle/manifests/neteyetenants.neteye.cloud.crd.yaml"; \
 	cp "$(CURDIR)/config/crd/bases/neteye.cloud_keycloakclients.yaml" "$(CURDIR)/bundle/manifests/keycloakclients.neteye.cloud.crd.yaml"; \
 	cp "$(CURDIR)/config/crd/bases/neteye.cloud_keycloakusers.yaml" "$(CURDIR)/bundle/manifests/keycloakusers.neteye.cloud.crd.yaml"; \
 	cp "$(CURDIR)/config/crd/bases/neteye.cloud_keycloakauthflows.yaml" "$(CURDIR)/bundle/manifests/keycloakauthflows.neteye.cloud.crd.yaml"; \
