@@ -6,6 +6,7 @@ package v1alpha1
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -133,5 +134,74 @@ func TestNetEyeTenantValidatorChecksUniquenessOnlyForANewDisplayName(t *testing.
 	deleting.DeletionTimestamp = &now
 	if _, err := v.ValidateUpdate(context.Background(), third, deleting); err != nil {
 		t.Errorf("update of a tenant being deleted rejected: %v", err)
+	}
+}
+
+func TestNetEyeTenantValidatorChecksThePermissionSyncConfiguration(t *testing.T) {
+	for name, test := range map[string]struct {
+		spec NetEyeTenantPermissionSyncSpec
+		want string
+	}{
+		"http endpoint":             {NetEyeTenantPermissionSyncSpec{Provider: &NetEyeTenantPermissionSyncProviderSpec{Endpoint: "http://node.example.com/p"}}, "spec.permissionSync.provider.endpoint"},
+		"endpoint with credentials": {NetEyeTenantPermissionSyncSpec{Provider: &NetEyeTenantPermissionSyncProviderSpec{Endpoint: "https://user@node.example.com/p"}}, "spec.permissionSync.provider.endpoint"},
+		"glpi target without glpi":  {NetEyeTenantPermissionSyncSpec{Targets: []NetEyeTenantPermissionSyncTarget{{LogicalTarget: "glpi", Adapter: "glpi"}}}, "spec.permissionSync.glpi"},
+		"bad logical target":        {NetEyeTenantPermissionSyncSpec{GLPI: &NetEyeTenantPermissionSyncGLPISpec{Endpoint: "https://node.example.com/glpi/apirest.php", CredentialsSecretRef: NetEyeTenantPermissionSyncGLPICredentials{Name: "s"}}, Targets: []NetEyeTenantPermissionSyncTarget{{LogicalTarget: "GLPI-", Adapter: "glpi"}}}, "spec.permissionSync.targets[0].logicalTarget"},
+		"managed variable":          {NetEyeTenantPermissionSyncSpec{PodExtraEnvVars: []NetEyeEnvVar{{Name: "PERMISSIONSYNC_AUTHENTICATION__ISSUER", Value: "https://other"}}}, "spec.permissionSync.podExtraEnvVars[0].name"},
+		"exporter header":           {NetEyeTenantPermissionSyncSpec{PodExtraEnvVars: []NetEyeEnvVar{{Name: "PERMISSIONSYNC_OBSERVABILITY__TRACING__HEADERS__AUTHORIZATION", Value: "Bearer x"}}}, "spec.permissionSync.podExtraEnvVars[0].name"},
+		"tracing":                   {NetEyeTenantPermissionSyncSpec{PodExtraEnvVars: []NetEyeEnvVar{{Name: "PERMISSIONSYNC_OBSERVABILITY__TRACING__ENABLED", Value: "true"}}}, "spec.permissionSync.podExtraEnvVars[0].name"},
+		"timeout above deadline":    {NetEyeTenantPermissionSyncSpec{PodExtraEnvVars: []NetEyeEnvVar{{Name: "PERMISSIONSYNC_GLPI__OPERATION_TIMEOUT_MILLISECONDS", Value: "20000"}}}, "spec.permissionSync.podExtraEnvVars[0].value"},
+		"non-numeric capacity":      {NetEyeTenantPermissionSyncSpec{PodExtraEnvVars: []NetEyeEnvVar{{Name: "PERMISSIONSYNC_REQUEST__SYNCHRONIZATION_CAPACITY", Value: "many"}}}, "spec.permissionSync.podExtraEnvVars[0].value"},
+		"glpi endpoint not REST":    {NetEyeTenantPermissionSyncSpec{GLPI: &NetEyeTenantPermissionSyncGLPISpec{Endpoint: "https://node.example.com:8443/glpi", CredentialsSecretRef: NetEyeTenantPermissionSyncGLPICredentials{Name: "s"}}}, "spec.permissionSync.glpi.endpoint"},
+		"bad Secret key":            {NetEyeTenantPermissionSyncSpec{GLPI: &NetEyeTenantPermissionSyncGLPISpec{Endpoint: "https://node.example.com/glpi/apirest.php", CredentialsSecretRef: NetEyeTenantPermissionSyncGLPICredentials{Name: "s", AppTokenKey: "a/b"}}}, "spec.permissionSync.glpi.credentialsSecretRef.appTokenKey"},
+		"bad Secret name":           {NetEyeTenantPermissionSyncSpec{GLPI: &NetEyeTenantPermissionSyncGLPISpec{Endpoint: "https://node.example.com/glpi/apirest.php", CredentialsSecretRef: NetEyeTenantPermissionSyncGLPICredentials{Name: "Bad_Name"}}}, "spec.permissionSync.glpi.credentialsSecretRef.name"},
+		"realm with slash":          {NetEyeTenantPermissionSyncSpec{Realm: "a/b"}, "spec.permissionSync.realm"},
+		"empty query":               {NetEyeTenantPermissionSyncSpec{Provider: &NetEyeTenantPermissionSyncProviderSpec{Endpoint: "https://node.example.com/p?"}}, "spec.permissionSync.provider.endpoint"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tenant := testTenant("neteye-tenant-bbbbbbbb", "neteye-tenant-bbbbbbbb", "Acme")
+			tenant.Spec.PermissionSync = test.spec
+			_, err := tenantValidator(t).ValidateCreate(context.Background(), tenant)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want it to name %s", err, test.want)
+			}
+		})
+	}
+
+	valid := testTenant("neteye-tenant-bbbbbbbb", "neteye-tenant-bbbbbbbb", "Acme")
+	valid.Spec.PermissionSync = NetEyeTenantPermissionSyncSpec{
+		Realm:           "master",
+		Provider:        &NetEyeTenantPermissionSyncProviderSpec{Endpoint: "https://node.example.com/neteye/api/v2/permission-provider/desired-state"},
+		GLPI:            &NetEyeTenantPermissionSyncGLPISpec{Endpoint: "https://node.example.com:8443/glpi/apirest.php", CredentialsSecretRef: NetEyeTenantPermissionSyncGLPICredentials{Name: "permissionsync-glpi-credentials"}},
+		Targets:         []NetEyeTenantPermissionSyncTarget{{LogicalTarget: "glpi", Adapter: "glpi"}},
+		PodExtraEnvVars: []NetEyeEnvVar{{Name: "PERMISSIONSYNC_OBSERVABILITY__LOG_LEVEL", Value: "debug"}},
+	}
+	if _, err := tenantValidator(t).ValidateCreate(context.Background(), valid); err != nil {
+		t.Fatalf("valid configuration rejected: %v", err)
+	}
+}
+
+func TestPermissionSyncValidationNeverRepeatsAnEndpoint(t *testing.T) {
+	endpoint := (&url.URL{Scheme: "https", User: url.UserPassword("user", "hunter2"), Host: "node.example.com", Path: "/p"}).String()
+	spec := NetEyeTenantPermissionSyncSpec{Provider: &NetEyeTenantPermissionSyncProviderSpec{Endpoint: endpoint}}
+	if message := ValidatePermissionSync(&spec).ToAggregate().Error(); strings.Contains(message, "hunter2") || strings.Contains(message, "user") {
+		t.Errorf("validation error repeats the endpoint and its credentials: %s", message)
+	}
+}
+
+func TestNetEyeTenantValidatorChecksPermissionSyncOnlyWhenItChanges(t *testing.T) {
+	// A tenant that bypassed admission with an invalid section must still
+	// accept unrelated updates, such as the removal of a finalizer.
+	invalid := testTenant("neteye-tenant-bbbbbbbb", "neteye-tenant-bbbbbbbb", "Acme")
+	invalid.Spec.PermissionSync.Provider = &NetEyeTenantPermissionSyncProviderSpec{Endpoint: "http://node.example.com/p"}
+	v := tenantValidator(t, invalid)
+	unrelated := invalid.DeepCopy()
+	unrelated.Finalizers = nil
+	if _, err := v.ValidateUpdate(context.Background(), invalid, unrelated); err != nil {
+		t.Errorf("unrelated update rejected: %v", err)
+	}
+	changed := invalid.DeepCopy()
+	changed.Spec.PermissionSync.Realm = "master"
+	if _, err := v.ValidateUpdate(context.Background(), invalid, changed); err == nil {
+		t.Error("a change of an invalid permissionSync section was accepted")
 	}
 }

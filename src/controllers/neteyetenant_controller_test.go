@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,6 +24,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/keycloak"
+	"github.com/neteye-platform/neteye-operator/internal/permissionsync"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -78,10 +81,59 @@ func tenantCRD() *unstructured.Unstructured {
 }
 
 // newTenantReconciler builds a reconciler on a fake cluster where the tenant
-// namespace admission policy is in place.
+// namespace admission policy is in place and the NetEye resource and the root
+// CA that PermissionSync needs exist.
 func newTenantReconciler(t *testing.T, objects ...client.Object) (*NetEyeTenantReconciler, client.Client) {
 	t.Helper()
-	return newTenantReconcilerWithoutPolicy(t, append(tenantNamespacePolicyObjects(), objects...)...)
+	base := append(tenantNamespacePolicyObjects(), permissionSyncPrerequisites()...)
+	return newTenantReconcilerWithoutPolicy(t, append(base, objects...)...)
+}
+
+const testIdentityHostname = "neteye.example.com"
+
+// permissionSyncPrerequisites are the shared objects that the PermissionSync
+// of a tenant reads: the NetEye resource and the root CA.
+func permissionSyncPrerequisites() []client.Object {
+	return []client.Object{
+		&neteye.NetEye{
+			ObjectMeta: metav1.ObjectMeta{Name: "neteye"},
+			Spec: neteye.NetEyeSpec{
+				Version:  neteye.CurrentNetEyeVersion,
+				Identity: neteye.NetEyeIdentitySpec{Hostname: testIdentityHostname},
+			},
+		},
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: permissionsync.RootCASecretName},
+			Data:       map[string][]byte{corev1.TLSCertKey: []byte(testRootCAPEM)},
+		},
+	}
+}
+
+const testRootCAPEM = "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"
+
+// markPermissionSyncRolledOut reports every desired Pod of the PermissionSync
+// Deployment of the tenant as updated and ready, as the Deployment controller
+// does after a rollout.
+func markPermissionSyncRolledOut(t *testing.T, c client.Client, namespace string) {
+	t.Helper()
+	deployment := &appsv1.Deployment{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: permissionsync.DeploymentName}, deployment); err != nil {
+		t.Fatalf("PermissionSync Deployment: %v", err)
+	}
+	replicas := *deployment.Spec.Replicas
+	deployment.Status = appsv1.DeploymentStatus{ObservedGeneration: deployment.Generation, Replicas: replicas, ReadyReplicas: replicas, UpdatedReplicas: replicas, AvailableReplicas: replicas}
+	if err := c.Status().Update(context.Background(), deployment); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// reconcileTenantUntilReady reconciles, reports the PermissionSync rollout as
+// complete, and reconciles again.
+func reconcileTenantUntilReady(t *testing.T, r *NetEyeTenantReconciler, c client.Client) {
+	t.Helper()
+	reconcileTenant(t, r)
+	markPermissionSyncRolledOut(t, c, testTenant)
+	reconcileTenant(t, r)
 }
 
 // newTenantReconcilerWithoutPolicy builds a reconciler on a fake cluster that
@@ -144,7 +196,7 @@ func conditionOf(t *testing.T, tenant *neteye.NetEyeTenant, conditionType string
 
 func TestNetEyeTenantPreparesItsNamespace(t *testing.T) {
 	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenantResource())
-	reconcileTenant(t, r)
+	reconcileTenantUntilReady(t, r, c)
 
 	namespace := getNamespace(t, c, testTenant)
 	if namespace.Labels[neteye.TenantLabel] != testTenant || namespace.Annotations[neteye.TenantDisplayNameAnnotation] != "Default" {
@@ -291,8 +343,8 @@ func TestNetEyeTenantAcceptsDefaultsThatTheAPIServerAdds(t *testing.T) {
 	spec["futureDefault"] = "value"
 	spec["matchConstraints"].(map[string]any)["futureDefault"] = "value"
 	policy.Object["spec"] = spec
-	r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), tenantResource())...)
-	reconcileTenant(t, r)
+	r, c := newTenantReconcilerWithoutPolicy(t, append(append(objects, permissionSyncPrerequisites()...), plainNamespace(testTenant), tenantResource())...)
+	reconcileTenantUntilReady(t, r, c)
 	if ready := conditionOf(t, getTenant(t, c, testTenant, testTenant), neteye.ConditionReady); ready.Status != metav1.ConditionTrue {
 		t.Errorf("Ready = %#v, want true when the API server only adds fields", ready)
 	}
@@ -308,6 +360,67 @@ func TestNetEyeTenantReportsAPolicyOfAnEarlierCRD(t *testing.T) {
 	if component := getTenant(t, c, testTenant, testTenant).Status.Components[string(tenantNamespaceComponentID)]; component.Reason != "NamespacePolicyConflict" {
 		t.Errorf("namespace component = %#v", component)
 	}
+}
+
+func TestNetEyeTenantWaitsForTheNetEyeResource(t *testing.T) {
+	objects := append(tenantNamespacePolicyObjects(), plainNamespace(testTenant), tenantResource())
+	r, c := newTenantReconcilerWithoutPolicy(t, objects...)
+	reconcileTenant(t, r)
+	tenant := getTenant(t, c, testTenant, testTenant)
+	if component := tenant.Status.Components[string(tenantPermissionSyncComponentID)]; component.Status != neteye.ComponentStateProgressing || component.Reason != "WaitingForNetEye" {
+		t.Errorf("permission-sync component = %#v", component)
+	}
+	if degraded := conditionOf(t, tenant, neteye.ConditionDegraded); degraded.Status != metav1.ConditionFalse {
+		t.Errorf("Degraded = %#v, want false while a prerequisite is missing", degraded)
+	}
+}
+
+func TestNetEyeTenantDeploysPermissionSyncAfterItsNamespace(t *testing.T) {
+	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenantResource())
+	reconcileTenantUntilReady(t, r, c)
+	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(tenantPermissionSyncComponentID)]
+	if component.Status != neteye.ComponentStateReady {
+		t.Fatalf("permission-sync component = %#v", component)
+	}
+	if want := []neteye.NetEyeResolvedImage{{Name: permissionsync.DeploymentName, Image: mustRelease(t).PermissionSyncImage}}; !reflect.DeepEqual(component.ResolvedImages, want) {
+		t.Errorf("resolved images = %#v, want %#v", component.ResolvedImages, want)
+	}
+}
+
+func TestNetEyeTenantBlocksPermissionSyncWhileTheNamespaceIsNotReady(t *testing.T) {
+	r, c := newTenantReconciler(t, tenantResource())
+	reconcileTenant(t, r)
+	if component := getTenant(t, c, testTenant, testTenant).Status.Components[string(tenantPermissionSyncComponentID)]; component.Status != neteye.ComponentStateBlocked {
+		t.Errorf("permission-sync component = %#v, want blocked by the namespace", component)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: permissionsync.DeploymentName}, &appsv1.Deployment{}); err == nil {
+		t.Error("PermissionSync was deployed before its namespace was ready")
+	}
+}
+
+func TestTenantsForSecretMapsTheSecretsThatPermissionSyncReads(t *testing.T) {
+	r, _ := newTenantReconciler(t, plainNamespace(testTenant), tenantResource())
+	inTenant := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: "permissionsync-glpi-credentials"}}
+	if requests := r.tenantsForSecret(context.Background(), inTenant); len(requests) != 1 || requests[0].Name != testTenant || requests[0].Namespace != testTenant {
+		t.Errorf("requests for a tenant Secret = %v", requests)
+	}
+	rootCA := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: permissionsync.RootCASecretName}}
+	if requests := r.tenantsForSecret(context.Background(), rootCA); len(requests) != 1 {
+		t.Errorf("requests for the root CA = %v, want every tenant", requests)
+	}
+	other := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: keycloak.WorkloadNamespace, Name: "other"}}
+	if requests := r.tenantsForSecret(context.Background(), other); len(requests) != 0 {
+		t.Errorf("requests for an unrelated Secret = %v", requests)
+	}
+}
+
+func mustRelease(t *testing.T) neteye.NetEyeComponents {
+	t.Helper()
+	release, ok := neteye.ComponentsForVersion(neteye.CurrentNetEyeVersion)
+	if !ok {
+		t.Fatal("no release data for the current version")
+	}
+	return release
 }
 
 func TestNetEyeTenantReportsAMissingNamespace(t *testing.T) {
@@ -450,8 +563,10 @@ func TestTenantForNamespaceMapsOnlyTenantNamespaces(t *testing.T) {
 	if requests := tenantForNamespace(context.Background(), plainNamespace(testTenant)); len(requests) != 1 || requests[0].Namespace != testTenant || requests[0].Name != testTenant {
 		t.Errorf("requests for a tenant namespace = %v", requests)
 	}
-	if requests := tenantForNamespace(context.Background(), plainNamespace("kube-system")); len(requests) != 0 {
-		t.Errorf("requests for another namespace = %v", requests)
+	for _, name := range []string{"kube-system", neteye.NetEyeNamespace} {
+		if requests := tenantForNamespace(context.Background(), plainNamespace(name)); len(requests) != 0 {
+			t.Errorf("requests for namespace %s = %v", name, requests)
+		}
 	}
 }
 

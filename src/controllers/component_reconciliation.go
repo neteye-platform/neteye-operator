@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 )
 
 type componentID string
@@ -39,7 +41,10 @@ type componentResult struct {
 	Message              string
 	RequeueAfter         time.Duration
 	BlockingDependencies []componentID
-	Err                  error
+	// ResolvedImages are the images that the component deploys. A resource
+	// that publishes them in its component status reads them from here.
+	ResolvedImages []neteye.NetEyeResolvedImage
+	Err            error
 }
 
 func readyResult(id componentID, reason, message string) (componentResult, error) {
