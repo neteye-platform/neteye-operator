@@ -72,6 +72,140 @@ spec:
                   rule: '!self.matches(''[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]'')'
                 - message: must contain at least one letter or digit
                   rule: self.matches('[\\p{L}\\p{N}]')
+              permissionSync:
+                description: |-
+                  PermissionSync configures the PermissionSync instance of the tenant.
+                  PermissionSync runs in every tenant, also without this section: every
+                  field is optional and has a default. Keycloak does not call it yet.
+                properties:
+                  glpi:
+                    description: |-
+                      GLPI is the GLPI instance of the glpi adapter. A target with the glpi
+                      adapter requires it.
+                    properties:
+                      credentialsSecretRef:
+                        description: |-
+                          CredentialsSecretRef is the Secret, in the namespace of the tenant, with
+                          the application token and the user token of the GLPI API.
+                        properties:
+                          appTokenKey:
+                            description: |-
+                              AppTokenKey is the key of the application token. The default is
+                              app_token.
+                            maxLength: 253
+                            type: string
+                          name:
+                            description: Name is the name of the Secret.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          userTokenKey:
+                            description: UserTokenKey is the key of the user token.
+                              The default is user_token.
+                            maxLength: 253
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      endpoint:
+                        description: |-
+                          Endpoint is the absolute HTTPS URL of the GLPI REST API, without
+                          credentials, query or fragment.
+                        maxLength: 2048
+                        minLength: 1
+                        type: string
+                    required:
+                    - credentialsSecretRef
+                    - endpoint
+                    type: object
+                  podExtraEnvVars:
+                    description: |-
+                      PodExtraEnvVars are copied to the PermissionSync container as they are,
+                      for example PERMISSIONSYNC_OBSERVABILITY__LOG_LEVEL. The variables that
+                      the operator sets itself are refused.
+                    items:
+                      description: NetEyeEnvVar defines an environment variable.
+                      properties:
+                        name:
+                          description: Name is the environment variable name.
+                          pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                          type: string
+                        value:
+                          description: |-
+                            Value is the environment variable value. It is stored in plaintext and
+                            must not contain secrets.
+                          type: string
+                      required:
+                      - name
+                      - value
+                      type: object
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  provider:
+                    description: |-
+                      Provider is the Permission Provider that PermissionSync reads the desired
+                      permissions from. Without it, PermissionSync starts and answers only
+                      requests without a target.
+                    properties:
+                      endpoint:
+                        description: |-
+                          Endpoint is the absolute HTTPS URL of the desired-state API of the
+                          provider, without credentials, query or fragment.
+                        maxLength: 2048
+                        minLength: 1
+                        type: string
+                    required:
+                    - endpoint
+                    type: object
+                  realm:
+                    description: |-
+                      Realm is the Keycloak realm whose tokens PermissionSync trusts. The
+                      default is the realm of the tenant, which has the name of the tenant.
+                    maxLength: 255
+                    minLength: 1
+                    type: string
+                  replicas:
+                    description: Replicas is the number of PermissionSync Pods. The
+                      default is 2.
+                    format: int32
+                    maximum: 10
+                    minimum: 1
+                    type: integer
+                  targets:
+                    description: |-
+                      Targets are the logical targets that PermissionSync serves. Without
+                      targets, PermissionSync starts and is ready, and a request for any
+                      target is refused.
+                    items:
+                      description: NetEyeTenantPermissionSyncTarget routes one logical
+                        target to an adapter.
+                      properties:
+                        adapter:
+                          description: Adapter selects the adapter. glpi is the only
+                            adapter.
+                          enum:
+                          - glpi
+                          type: string
+                        logicalTarget:
+                          description: |-
+                            LogicalTarget is the suffix of the permissionsync:<target> scope of the
+                            caller token.
+                          maxLength: 64
+                          minLength: 1
+                          type: string
+                      required:
+                      - adapter
+                      - logicalTarget
+                      type: object
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - logicalTarget
+                    x-kubernetes-list-type: map
+                type: object
             required:
             - displayName
             type: object

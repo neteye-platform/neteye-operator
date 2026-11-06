@@ -19,6 +19,32 @@ The `spec.displayName` of a tenant, the name that people see and can change at
 any time. Derived names use `metadata.name`, which never changes.
 _Avoid_: Tenant name, when the stable `metadata.name` is meant
 
+**PermissionSync**:
+The service that synchronizes the permissions of a user in a target
+application, such as GLPI, after a login. Every tenant runs its own instance in
+its namespace. Keycloak does not call it yet.
+_Avoid_: Permission Provider (the API that PermissionSync reads the desired
+permissions from)
+
+**Tenant realm**:
+The Keycloak realm of a tenant, with the name of the tenant. The tenant creates
+it empty: it holds only what Keycloak adds to every realm. Its `KeycloakRealm`
+resource lives in the tenant namespace, and the realm goes away with the
+tenant.
+_Avoid_: Realm, when the realm of a tenant is meant
+
+**Tenant realm administrator**:
+The master realm account `<tenant>-admin` that administers the tenant realm,
+and only it: every role of the management client of the realm except
+impersonation. Its credentials are the `neteye-kc-initial-admin` Secret of the
+tenant namespace, which the `KeycloakRealm` resource of the tenant uses.
+_Avoid_: Tenant admin, when a NetEye user is meant
+
+**Trusted realm**:
+The Keycloak realm whose tokens the PermissionSync of a tenant accepts: the
+realm of the tenant, or the `spec.permissionSync.realm` override.
+_Avoid_: Realm of the tenant, when the override is active
+
 ### Keycloak identity
 
 **Realm**:
