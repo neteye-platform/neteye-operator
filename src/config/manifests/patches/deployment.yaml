@@ -21,7 +21,11 @@ spec:
               verbs: [get, list, watch]
             - apiGroups: [""]
               resources: [namespaces]
-              verbs: [create, delete, get, list, watch]
+              verbs: [create, delete, get, list, patch, watch]
+            - apiGroups: [admissionregistration.k8s.io]
+              resources:
+                [validatingadmissionpolicies, validatingadmissionpolicybindings]
+              verbs: [create, get, list, update, watch]
             - apiGroups: [storage.k8s.io]
               resources: [storageclasses]
               verbs: [get, list, watch]
@@ -64,6 +68,15 @@ spec:
               verbs: [get, patch, update]
             - apiGroups: [neteye.cloud]
               resources: [neteyes/finalizers]
+              verbs: [update]
+            - apiGroups: [neteye.cloud]
+              resources: [neteyetenants]
+              verbs: [get, list, patch, update, watch]
+            - apiGroups: [neteye.cloud]
+              resources: [neteyetenants/status]
+              verbs: [get, patch, update]
+            - apiGroups: [neteye.cloud]
+              resources: [neteyetenants/finalizers]
               verbs: [update]
             - apiGroups: [neteye.cloud]
               resources: [keycloakclients]
@@ -121,6 +134,14 @@ spec:
                     image: controller:latest
                     imagePullPolicy: Always
                     env:
+                      - {
+                        name: POD_NAMESPACE,
+                        valueFrom: { fieldRef: { fieldPath: metadata.namespace } },
+                      }
+                      - {
+                        name: SERVICE_ACCOUNT_NAME,
+                        valueFrom: { fieldRef: { fieldPath: spec.serviceAccountName } },
+                      }
                       - {
                         name: RELATED_IMAGE_KEYCLOAK,
                         value: ghcr.io/neteye-platform/neteye-keycloak:1.0.8@sha256:5617558fab88584d7a3a034838e9babd09774ab15ee5948cad3918eb740e0520,

@@ -16,6 +16,11 @@ import (
 
 const DefaultDenyPolicyName = "neteye-default-deny"
 
+// TenantDefaultDenyPolicyName names the default-deny NetworkPolicy of a tenant
+// namespace. It differs from DefaultDenyPolicyName, which the cleanup of the
+// shared namespace deletes as a legacy native policy.
+const TenantDefaultDenyPolicyName = "neteye-tenant-default-deny"
+
 // EnsureDefaultDenyNetworkPolicy reconciles the shared namespace-wide Cilium
 // default-deny baseline. Workload-specific Cilium allow policies compose with
 // this baseline without requiring native NetworkPolicy egress exceptions.
@@ -33,9 +38,31 @@ func EnsureDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namesp
 	return err
 }
 
+// ApplyTenantDefaultDenyNetworkPolicy reconciles the namespace-wide
+// default-deny baseline of a tenant namespace as a native NetworkPolicy. It
+// selects every Pod and allows no ingress and no egress. Workloads that the
+// tenant adds later open only the traffic they need with their own policies.
+func ApplyTenantDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namespace string, owner metav1.OwnerReference) error {
+	_, err := Apply(ctx, c, ObjectDefinition{
+		GVK:       NetworkPolicyGVK(),
+		Name:      TenantDefaultDenyPolicyName,
+		Namespace: namespace,
+		Spec:      tenantDefaultDenyNetworkPolicySpec(),
+		Owner:     &owner,
+	})
+	return err
+}
+
+func tenantDefaultDenyNetworkPolicySpec() map[string]any {
+	return map[string]any{
+		"podSelector": map[string]any{},
+		"policyTypes": []any{"Ingress", "Egress"},
+	}
+}
+
 func deleteLegacyDefaultDenyNetworkPolicy(ctx context.Context, c client.Client, namespace string) error {
 	legacy := &unstructured.Unstructured{}
-	legacy.SetGroupVersionKind(nativeNetworkPolicyGVK())
+	legacy.SetGroupVersionKind(NetworkPolicyGVK())
 	key := types.NamespacedName{Name: DefaultDenyPolicyName, Namespace: namespace}
 	if err := c.Get(ctx, key, legacy); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -61,7 +88,9 @@ func defaultDenyNetworkPolicySpec() map[string]any {
 	}
 }
 
-func nativeNetworkPolicyGVK() schema.GroupVersionKind {
+// NetworkPolicyGVK identifies the native Kubernetes network policies the
+// operator manages.
+func NetworkPolicyGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"}
 }
 
