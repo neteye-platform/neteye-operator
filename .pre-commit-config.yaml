@@ -58,7 +58,7 @@ repos:
       - id: shellcheck
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 44b5042edab9382aba712eed4f9c7bab7a3d6a3e # frozen: v0.17.0
+    rev: c0f278f1254ccc8fb09676bcdb8d847e7db493e5 # frozen: v0.17.4
     hooks:
       - id: ruff-check
         args:
@@ -66,7 +66,7 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 2e145a365871c9fef3715d38b9b7393ce4174c85 # frozen: 0.13.0
+    rev: d1df990f871e616da38bb602a2671d5e840b9989 # frozen: 0.13.7
     hooks:
       - id: uv-lock
 
@@ -82,12 +82,12 @@ repos:
       - id: shfmt
 
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: fa412071e4f5d44d44f9e365f4676f9df92456a2 # frozen: v1.30.1
+    rev: 06a39750ec31860bb44f2acf67182c40016cd1e7 # frozen: v1.32.0
     hooks:
       - id: zizmor
 
   - repo: https://github.com/ansible/ansible-lint
-    rev: fac2489f3e4ccffa83a40b839770abbf4ab52327 # frozen: v26.10.0
+    rev: b74fb6f73d234bf92672372cb1c10768e4018d16 # frozen: v26.11.0
     hooks:
       - id: ansible-lint
 
@@ -97,12 +97,12 @@ repos:
       - id: hadolint-docker
 
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: 916ad0aaa108c64d294101002066f530ea170b10 # frozen: v0.23.3
+    rev: 341e2a331ba578029e66c2e01183e7a6b5ca9ab4 # frozen: v0.24.0
     hooks:
       - id: markdownlint-cli2
 
   - repo: https://github.com/renovatebot/pre-commit-hooks
-    rev: 3a3ccbf1efda5c8ace58412617b47d14e4f99302 # frozen: 44.155.1
+    rev: 4ee883e252e77c6a287bb68c28740ac71b75d71c # frozen: 44.222.0
     hooks:
       - id: renovate-config-validator
         args: [--strict]
@@ -122,7 +122,7 @@ repos:
         language: golang
         language_version: "1.27.0"
         additional_dependencies:
-          - github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          - github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
         types: [go]
         pass_filenames: false
       - id: version-consistency
