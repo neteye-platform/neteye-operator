@@ -25,12 +25,12 @@ spec:
     - operator
   relatedImages:
     - name: neteye-keycloak
-      image: ghcr.io/neteye-platform/neteye-keycloak:1.0.8@sha256:5617558fab88584d7a3a034838e9babd09774ab15ee5948cad3918eb740e0520
+      image: ghcr.io/neteye-platform/neteye-keycloak:1.1.2@sha256:4677db82e4f0fdbed75826fc9741b8c213dfbc1840a5856d5ab509b111d5ce18
     - name: neteye-otel-collector
-      image: docker.io/otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+      image: docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
     - name: neteye-edot-gateway
-      image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.5@sha256:e167d4a672625d7049f00b631cd2914f94d878377322f5f90dacb199f87e292f
+      image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1
     - name: neteye-ca-bundle
-      image: docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+      image: docker.io/alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4
   install:
     strategy: deployment
