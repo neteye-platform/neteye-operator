@@ -4,9 +4,9 @@ BUNDLE_IMG ?= ghcr.io/neteye-platform/neteye-operator-bundle:$(VERSION)
 
 # Tool versions.
 # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools
-CONTROLLER_GEN_VERSION ?= v0.22.0
+CONTROLLER_GEN_VERSION ?= v0.23.0
 # renovate: datasource=github-releases depName=golangci/golangci-lint
-GOLANGCI_LINT_VERSION ?= v2.14.0
+GOLANGCI_LINT_VERSION ?= v2.15.0
 # renovate: datasource=github-releases depName=kubernetes-sigs/kustomize extractVersion=^kustomize/(?<version>.+)$
 KUSTOMIZE_VERSION ?= v5.8.3
 # renovate: datasource=github-releases depName=operator-framework/operator-sdk
