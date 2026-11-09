@@ -43,7 +43,7 @@ func NewEDOTGatewayComponent(c client.Client) *EDOTGatewayComponent {
 	return &EDOTGatewayComponent{client: c}
 }
 
-func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeEDOTGatewaySpec, elasticsearchEndpoints []string, image, caBundleImage string, identityTelemetryEnabled bool, owner metav1.OwnerReference) Outcome {
+func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeEDOTGatewaySpec, elasticsearchEndpoints []string, image string, identityTelemetryEnabled bool, owner metav1.OwnerReference) Outcome {
 	if spec == nil {
 		return degradedOutcome(ReasonInvalidConfiguration, "edot gateway configuration is required", nil)
 	}
@@ -80,7 +80,7 @@ func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spe
 	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := resources.EnsureDeployment(ctx, c.client, edotGatewayDeployment(namespace, spec, image, caBundleImage, string(encodedEndpoints), versions), owner); err != nil {
+	if err := resources.EnsureDeployment(ctx, c.client, edotGatewayDeployment(namespace, spec, image, string(encodedEndpoints), versions), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := deleteOwnedResources(ctx, c.client, namespace, owner, edotGatewayLegacyInventory()); err != nil {
@@ -117,7 +117,7 @@ func (c *EDOTGatewayComponent) ensureEgressPolicy(ctx context.Context, namespace
 	return resources.EnsureNetworkPolicy(ctx, c.client, namespace, EDOTGatewayEgressPolicyName, edotGatewayEgressPolicy(targets), owner)
 }
 
-func edotGatewayDeployment(namespace string, spec *neteye.NetEyeEDOTGatewaySpec, image, caBundleImage, elasticsearchEndpoints string, annotations map[string]string) *appsv1.Deployment {
+func edotGatewayDeployment(namespace string, spec *neteye.NetEyeEDOTGatewaySpec, image, elasticsearchEndpoints string, annotations map[string]string) *appsv1.Deployment {
 	labels := map[string]string{"app": edotGatewayAppLabel}
 	apiKey := spec.EffectiveAPIKeySecret()
 	return &appsv1.Deployment{
@@ -125,12 +125,9 @@ func edotGatewayDeployment(namespace string, spec *neteye.NetEyeEDOTGatewaySpec,
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr.To(spec.EffectiveReplicas()), Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations}, Spec: corev1.PodSpec{
-				InitContainers: []corev1.Container{{Name: "edot-gateway-ca-bundle", Image: caBundleImage, Command: []string{"/bin/sh", "-ec", caBundleCommand}, VolumeMounts: []corev1.VolumeMount{{Name: "trusted-ca", MountPath: "/work"}, {Name: "host-ca", MountPath: "/input/system/tls-ca-bundle.pem", ReadOnly: true}, {Name: "root-ca", MountPath: "/input/neteye", ReadOnly: true}}}},
-				Containers:     []corev1.Container{{Name: "edot-gateway", Image: image, Args: []string{"--config", "/etc/edot/config.yaml"}, Ports: collectorPorts(), Env: []corev1.EnvVar{{Name: "ELASTICSEARCH_ENDPOINTS", Value: elasticsearchEndpoints}, {Name: "ELASTICSEARCH_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: apiKey.Name}, Key: apiKey.Key}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/etc/edot", ReadOnly: true}, {Name: "trusted-ca", MountPath: "/etc/pki/tls/certs/ca-bundle.crt", SubPath: "ca-bundle.pem", ReadOnly: true}}, StartupProbe: healthProbe(5, 30), ReadinessProbe: healthProbe(10, 3), LivenessProbe: healthProbe(10, 3)}},
+				Containers: []corev1.Container{{Name: "edot-gateway", Image: image, Args: []string{"--config", "/etc/edot/config.yaml"}, Ports: collectorPorts(), Env: []corev1.EnvVar{{Name: "ELASTICSEARCH_ENDPOINTS", Value: elasticsearchEndpoints}, {Name: "ELASTICSEARCH_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: apiKey.Name}, Key: apiKey.Key}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/etc/edot", ReadOnly: true}, {Name: "root-ca", MountPath: rootCAMountPath, ReadOnly: true}}, StartupProbe: healthProbe(5, 30), ReadinessProbe: healthProbe(10, 3), LivenessProbe: healthProbe(10, 3)}},
 				Volumes: []corev1.Volume{
 					{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: EDOTGatewayConfigMapName}, Items: []corev1.KeyToPath{{Key: "edot-gateway-config.yaml", Path: "config.yaml"}}}}},
-					{Name: "trusted-ca", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-					{Name: "host-ca", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", Type: ptr.To(corev1.HostPathFile)}}},
 					{Name: "root-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: spec.EffectiveRootCASecretName(), Items: []corev1.KeyToPath{{Key: "tls.crt", Path: "ca.crt"}}}}},
 				},
 			}},
@@ -273,7 +270,7 @@ exporters:
   elasticsearch/otel:
     endpoints: ${ELASTICSEARCH_ENDPOINTS}
     api_key: "${ELASTICSEARCH_API_KEY}"
-    tls: {ca_file: /etc/pki/tls/certs/ca-bundle.crt}
+    tls: {ca_file: /etc/neteye/root-ca/ca.crt}
     mapping: {mode: otel}
 extensions:
   health_check: {endpoint: 0.0.0.0:13133}

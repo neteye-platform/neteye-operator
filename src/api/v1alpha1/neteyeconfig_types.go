@@ -19,9 +19,6 @@ type NetEyeComponents struct {
 	OTelCollectorImage string
 	// Full image reference for the EDOT Gateway container.
 	EDOTGatewayImage string
-	// Full image reference for the CA-bundle init container shared by the OTel
-	// Collector and EDOT Gateway deployments.
-	CABundleImage string
 }
 
 // NetEyeSecretKeySelector identifies one key inside a Secret in the NetEye CR
@@ -390,7 +387,7 @@ type NetEyeGatewaySpec struct {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.8@sha256:5617558fab88584d7a3a034838e9babd09774ab15ee5948cad3918eb740e0520", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.5@sha256:e167d4a672625d7049f00b631cd2914f94d878377322f5f90dacb199f87e292f", CABundleImage: "docker.io/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.8@sha256:5617558fab88584d7a3a034838e9babd09774ab15ee5948cad3918eb740e0520", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.5@sha256:e167d4a672625d7049f00b631cd2914f94d878377322f5f90dacb199f87e292f"},
 }
 
 const (
@@ -400,10 +397,8 @@ const (
 	RelatedImageOTelCollectorEnv = "RELATED_IMAGE_OTEL_COLLECTOR"
 	// RelatedImageEDOTGatewayEnv overrides the EDOT Gateway image packaged with the operator.
 	RelatedImageEDOTGatewayEnv = "RELATED_IMAGE_EDOT_GATEWAY"
-	// RelatedImageCABundleEnv overrides the CA-bundle init-container image packaged with the operator.
-	RelatedImageCABundleEnv = "RELATED_IMAGE_CA_BUNDLE"
-	CurrentNetEyeVersion    = "4.51"
-	PreviousNetEyeVersion   = "4.50"
+	CurrentNetEyeVersion       = "4.51"
+	PreviousNetEyeVersion      = "4.50"
 )
 
 // ComponentsForVersion returns the component image set for the given NetEye
@@ -422,9 +417,6 @@ func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	}
 	if image := strings.TrimSpace(os.Getenv(RelatedImageEDOTGatewayEnv)); image != "" {
 		c.EDOTGatewayImage = image
-	}
-	if image := strings.TrimSpace(os.Getenv(RelatedImageCABundleEnv)); image != "" {
-		c.CABundleImage = image
 	}
 	return c, ok
 }

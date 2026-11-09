@@ -6,7 +6,7 @@ from hack.update_neteye_support import update_repository, update_source
 
 SOURCE = """\
 var netEyeVersionMap = map[string]NetEyeComponents{
-\tCurrentNetEyeVersion: {KeycloakImage: "keycloak:1", OTelCollectorImage: "otel:1", EDOTGatewayImage: "gateway:1", CABundleImage: "ca@sha256:abc"},
+\tCurrentNetEyeVersion: {KeycloakImage: "keycloak:1", OTelCollectorImage: "otel:1", EDOTGatewayImage: "gateway:1"},
 }
 
 const (
