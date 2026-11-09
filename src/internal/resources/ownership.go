@@ -60,3 +60,12 @@ func RequireManagedOwner(object *unstructured.Unstructured, owner metav1.OwnerRe
 	}
 	return fmt.Errorf("%s %s/%s is not controlled by the expected owner and cannot be adopted", object.GetKind(), object.GetNamespace(), object.GetName())
 }
+
+func controlledBy(object client.Object, owner metav1.OwnerReference) bool {
+	for _, existing := range object.GetOwnerReferences() {
+		if existing.UID == owner.UID && existing.Controller != nil && *existing.Controller {
+			return true
+		}
+	}
+	return false
+}

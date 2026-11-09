@@ -33,4 +33,3 @@
       - {displayName: Gateway API HTTPRoute, kind: HTTPRoute, name: httproutes.gateway.networking.k8s.io, version: v1}
       - {displayName: Gateway API Gateway, kind: Gateway, name: gateways.gateway.networking.k8s.io, version: v1}
       - {displayName: Kubernetes NetworkPolicy, kind: NetworkPolicy, name: networkpolicies.networking.k8s.io, version: v1}
-      - {displayName: Cilium NetworkPolicy, kind: CiliumNetworkPolicy, name: ciliumnetworkpolicies.cilium.io, version: v2}

@@ -8,11 +8,14 @@ import (
 	"context"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
 const (
@@ -50,8 +53,8 @@ func collectorResourceInventory() []managedResource {
 		{schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}, HTTPRouteName},
 		{schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}, GRPCTLSCertName},
 		{schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}, CrossTenantTLSCertName},
-		{schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, IngressPolicyName},
-		{schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, EgressPolicyName},
+		{resources.NetworkPolicyGVK(), IngressPolicyName},
+		{resources.NetworkPolicyGVK(), EgressPolicyName},
 	}
 }
 
@@ -60,8 +63,8 @@ func edotGatewayResourceInventory() []managedResource {
 		{schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, EDOTGatewayConfigMapName},
 		{schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, EDOTGatewayDeploymentName},
 		{schema.GroupVersionKind{Version: "v1", Kind: "Service"}, EDOTGatewayServiceName},
-		{schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, EDOTGatewayIngressPolicyName},
-		{schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}, EDOTGatewayEgressPolicyName},
+		{resources.NetworkPolicyGVK(), EDOTGatewayIngressPolicyName},
+		{resources.NetworkPolicyGVK(), EDOTGatewayEgressPolicyName},
 	}
 }
 
@@ -81,12 +84,25 @@ func edotGatewayLegacyInventory() []managedResource {
 	}
 }
 
+// legacyPolicyInventory lists the CiliumNetworkPolicy objects earlier releases
+// created under the given names. Ensure deletes each one after applying its
+// replacement, so only Delete prunes them through an inventory.
+func legacyPolicyInventory(names ...string) []managedResource {
+	inventory := make([]managedResource, 0, len(names))
+	for _, name := range names {
+		inventory = append(inventory, managedResource{resources.LegacyCiliumNetworkPolicyGVK(), name})
+	}
+	return inventory
+}
+
+// deleteOwnedResources skips kinds the cluster doesn't serve, such as the
+// Cilium CRD on other CNIs.
 func deleteOwnedResources(ctx context.Context, c client.Client, namespace string, owner metav1.OwnerReference, inventory []managedResource) error {
 	for _, resource := range inventory {
 		object := &unstructured.Unstructured{}
 		object.SetGroupVersionKind(resource.gvk)
 		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resource.name}, object); err != nil {
-			if apierrors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
 				continue
 			}
 			return err

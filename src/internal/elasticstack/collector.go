@@ -107,7 +107,7 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayName, CrossTenantListenerName, []string{CrossTenantRouteHostname}, ServiceName, 4318, &owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := c.ensurePolicies(ctx, namespace, identityHostname, targets, owner); err != nil {
+	if err := c.ensurePolicies(ctx, namespace, targets, owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	for _, name := range []string{GRPCTLSCertName, CrossTenantTLSCertName} {
@@ -141,15 +141,15 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 // Delete removes only collector-owned objects. It never deletes EDOT resources
 // or externally managed credential and CA Secrets.
 func (c *OTelCollectorComponent) Delete(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
-	return deleteOwnedResources(ctx, c.client, namespace, owner, append(collectorResourceInventory(), collectorLegacyInventory()...))
+	inventory := append(collectorResourceInventory(), collectorLegacyInventory()...)
+	return deleteOwnedResources(ctx, c.client, namespace, owner, append(inventory, legacyPolicyInventory(IngressPolicyName, EgressPolicyName)...))
 }
 
-func (c *OTelCollectorComponent) ensurePolicies(ctx context.Context, namespace, identityHostname string, targets []egressTarget, owner metav1.OwnerReference) error {
-	if _, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: IngressPolicyName, Owner: &owner, Spec: collectorIngressPolicy()}); err != nil {
+func (c *OTelCollectorComponent) ensurePolicies(ctx context.Context, namespace string, targets []egressTarget, owner metav1.OwnerReference) error {
+	if err := resources.EnsureNetworkPolicy(ctx, c.client, namespace, IngressPolicyName, collectorIngressPolicy(), owner); err != nil {
 		return err
 	}
-	_, err := resources.Apply(ctx, c.client, resources.ObjectDefinition{GVK: ciliumPolicyGVK, Namespace: namespace, Name: EgressPolicyName, Owner: &owner, Spec: collectorEgressPolicy(namespace, identityHostname, targets)})
-	return err
+	return resources.EnsureNetworkPolicy(ctx, c.client, namespace, EgressPolicyName, collectorEgressPolicy(targets), owner)
 }
 
 func collectorDeployment(namespace string, spec *neteye.NetEyeOtelCollectorSpec, image, caBundleImage, oidcIssuer string, apiKeySecret neteye.NetEyeSecretKeySelector, elasticsearchEndpoints string, annotations map[string]string) *appsv1.Deployment {
@@ -179,45 +179,35 @@ func telemetryService(namespace, name, app string) *corev1.Service {
 	return &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP, Selector: map[string]string{"app": app}, Ports: []corev1.ServicePort{{Name: "otlp-grpc", Protocol: corev1.ProtocolTCP, Port: 4317, TargetPort: intstr.FromInt32(4317), AppProtocol: ptr.To("kubernetes.io/h2c")}, {Name: "otlp-http", Protocol: corev1.ProtocolTCP, Port: 4318, TargetPort: intstr.FromInt32(4318)}}}}
 }
 
-var ciliumPolicyGVK = schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}
-
+// collectorIngressPolicy admits the Gateway on the OTLP ports. A NetworkPolicy
+// can't select the Gateway's proxy, so the ports are open to every source.
 func collectorIngressPolicy() map[string]any {
-	return map[string]any{"endpointSelector": labelsFor(collectorAppLabel), "ingress": []any{map[string]any{"fromEntities": []any{"ingress"}, "toPorts": []any{tcpPorts("4317", "4318")}}, map[string]any{"fromEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("13133")}}}}
-}
-
-func collectorEgressPolicy(namespace, identityHostname string, targets []egressTarget) map[string]any {
-	rules := []any{dnsEgress(), map[string]any{"toEndpoints": []any{namespaceScopedEndpoint(edotGatewayAppLabel, namespace)}, "toPorts": []any{tcpPorts("4317")}}, fqdnEgress(identityHostname, "443"), map[string]any{"toEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("443")}}, map[string]any{"toEntities": []any{"host", "remote-node"}, "toPorts": []any{tcpPorts("9200")}}}
-	for _, target := range targets {
-		rules = append(rules, targetEgress(target))
-	}
-	return map[string]any{"endpointSelector": labelsFor(collectorAppLabel), "egress": rules}
-}
-
-func labelsFor(app string) map[string]any {
-	return map[string]any{"matchLabels": map[string]any{"k8s:app": app}}
-}
-
-func namespaceScopedEndpoint(app, namespace string) map[string]any {
-	return map[string]any{"matchLabels": map[string]any{"k8s:app": app, "k8s:io.kubernetes.pod.namespace": namespace}}
-}
-
-func tcpPorts(ports ...string) map[string]any {
-	values := make([]any, 0, len(ports))
-	for _, p := range ports {
-		values = append(values, map[string]any{"port": p, "protocol": "TCP"})
-	}
-	return map[string]any{"ports": values}
-}
-
-func dnsEgress() map[string]any {
 	return map[string]any{
-		"toEndpoints": []any{map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}},
-		"toPorts":     []any{map[string]any{"ports": []any{map[string]any{"port": "53", "protocol": "TCP"}, map[string]any{"port": "53", "protocol": "UDP"}}, "rules": map[string]any{"dns": []any{map[string]any{"matchPattern": "*"}}}}},
+		"podSelector": appSelector(collectorAppLabel),
+		"policyTypes": []any{"Ingress"},
+		"ingress":     []any{map[string]any{"ports": resources.NetworkPolicyPorts("TCP", 4317, 4318)}},
 	}
 }
 
-func fqdnEgress(host, port string) map[string]any {
-	return map[string]any{"toFQDNs": []any{map[string]any{"matchName": host}}, "toPorts": []any{tcpPorts(port)}}
+// collectorEgressPolicy also opens TCP 443 for OIDC discovery on the identity
+// hostname, which a NetworkPolicy can't select.
+func collectorEgressPolicy(targets []egressTarget) map[string]any {
+	rules := []any{
+		dnsEgress(),
+		map[string]any{"to": []any{map[string]any{"podSelector": appSelector(edotGatewayAppLabel)}}, "ports": resources.NetworkPolicyPorts("TCP", 4317)},
+	}
+	rules = append(rules, elasticsearchEgress(targets, 443)...)
+	return map[string]any{"podSelector": appSelector(collectorAppLabel), "policyTypes": []any{"Egress"}, "egress": rules}
+}
+
+func appSelector(app string) map[string]any {
+	return map[string]any{"matchLabels": map[string]any{"app": app}}
+}
+
+// dnsEgress allows DNS to any destination: the resolver's namespace, labels and
+// port (53, or 5353 on OpenShift) differ between distributions.
+func dnsEgress() map[string]any {
+	return map[string]any{"ports": append(resources.NetworkPolicyPorts("UDP", 53, 5353), resources.NetworkPolicyPorts("TCP", 53, 5353)...)}
 }
 
 func requiredSecretResourceVersion(ctx context.Context, c client.Client, namespace, name, key string) (string, error) {
