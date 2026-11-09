@@ -58,11 +58,27 @@ jobs:
 
       # The upstream chart uses the "devel" tag for the operator-controller and catalogd images.
       # We need to pin them to the release tag to ensure that the chart is reproducible and coherent with the OLM release.
-      # This is the only modification we make to the upstream chart, and it is necessary to ensure that the chart is usable in production.
+      # This is necessary to ensure that the chart is usable in production.
       - name: Pin container images to release tag
         run: |
           sed -i "s|operator-controller:devel|operator-controller:${OLM_VERSION}|" helm/olmv1/values.yaml
           sed -i "s|catalogd:devel|catalogd:${OLM_VERSION}|" helm/olmv1/values.yaml
+
+      # The upstream chart defaults the nodeSelector to `node-role.kubernetes.io/control-plane: ""`.
+      # Managed clusters (e.g. EKS, GKE) expose no control-plane nodes, so the pods would stay Pending.
+      # Helm deep-merges maps, so users can add keys to the default nodeSelector but cannot replace it.
+      # Emptying the default lets users define the full nodeSelector from scratch through their values,
+      # e.g. on kubeadm clusters: deployments.templateSpec.nodeSelector."node-role.kubernetes.io/control-plane"="".
+      # Architecture/OS constraints are still enforced by the upstream nodeAffinity.
+      - name: Reset default nodeSelector
+        run: |
+          VALUES=helm/olmv1/values.yaml
+          if [ "$(yq '.deployments.templateSpec | has("nodeSelector")' "$VALUES")" != "true" ]; then
+            echo "::error::.deployments.templateSpec.nodeSelector not found in upstream values.yaml, the chart layout changed"
+            exit 1
+          fi
+          yq -i '.deployments.templateSpec.nodeSelector = {}' "$VALUES"
+          yq '.deployments.templateSpec' "$VALUES"
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
