@@ -41,7 +41,7 @@ func NewOTelCollectorComponent(c client.Client) *OTelCollectorComponent {
 	return &OTelCollectorComponent{client: c}
 }
 
-func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeOtelCollectorSpec, elasticsearchEndpoints []string, identityHostname, gatewayNamespace, gatewayName, image string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) Outcome {
+func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeOtelCollectorSpec, elasticsearchEndpoints []string, identityHostname, gatewayNamespace, gatewayName, image string, caBundle resources.CABundleRef, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) Outcome {
 	if spec == nil {
 		return degradedOutcome(ReasonInvalidConfiguration, "otel collector configuration is required", nil)
 	}
@@ -82,11 +82,11 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 	if err := resources.EnsureConfigMap(ctx, c.client, namespace, ConfigMapName, map[string]string{"otel-collector-config.yaml": collectorConfig}, owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	versions, err := collectorInputVersions(ctx, c.client, namespace, basicAuthVersion, apiKeyVersion, rootCAVersion)
+	versions, err := collectorInputVersions(ctx, c.client, namespace, caBundle, basicAuthVersion, apiKeyVersion, rootCAVersion)
 	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := resources.EnsureDeployment(ctx, c.client, collectorDeployment(namespace, spec, image, issuer, apiKey, string(encodedEndpoints), versions), owner); err != nil {
+	if err := resources.EnsureDeployment(ctx, c.client, collectorDeployment(namespace, spec, image, caBundle, issuer, apiKey, string(encodedEndpoints), versions), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := deleteOwnedResources(ctx, c.client, namespace, owner, collectorLegacyInventory()); err != nil {
@@ -152,13 +152,13 @@ func (c *OTelCollectorComponent) ensurePolicies(ctx context.Context, namespace s
 	return resources.EnsureNetworkPolicy(ctx, c.client, namespace, EgressPolicyName, collectorEgressPolicy(targets), owner)
 }
 
-func collectorDeployment(namespace string, spec *neteye.NetEyeOtelCollectorSpec, image, oidcIssuer string, apiKeySecret neteye.NetEyeSecretKeySelector, elasticsearchEndpoints string, annotations map[string]string) *appsv1.Deployment {
+func collectorDeployment(namespace string, spec *neteye.NetEyeOtelCollectorSpec, image string, caBundle resources.CABundleRef, oidcIssuer string, apiKeySecret neteye.NetEyeSecretKeySelector, elasticsearchEndpoints string, annotations map[string]string) *appsv1.Deployment {
 	labels := map[string]string{"app": collectorAppLabel}
 	mode := int32(0o440)
 	replicas := spec.EffectiveReplicas()
 	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: DeploymentName, Namespace: namespace}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To(replicas), Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations}, Spec: corev1.PodSpec{
 		Containers: []corev1.Container{{Name: "otel-collector", Image: image, Args: []string{"--config", "/etc/otel/config.yaml"}, Ports: collectorPorts(), Env: []corev1.EnvVar{{Name: "SSL_CERT_DIR", Value: "/etc/ssl/certs:" + userCAMountPath}, {Name: "OIDC_ISSUER", Value: oidcIssuer}, {Name: "ELASTICSEARCH_ENDPOINTS", Value: elasticsearchEndpoints}, {Name: "ELASTICSEARCH_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: apiKeySecret.Name}, Key: apiKeySecret.Key}}}}, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/etc/otel", ReadOnly: true}, {Name: "root-ca", MountPath: rootCAMountPath, ReadOnly: true}, {Name: resources.UserCABundleVolumeName, MountPath: userCAMountPath, ReadOnly: true}, {Name: "basic-auth", MountPath: "/etc/otel/basicauth", ReadOnly: true}}, StartupProbe: healthProbe(5, 30), ReadinessProbe: healthProbe(10, 3), LivenessProbe: healthProbe(10, 3)}},
-		Volumes:    []corev1.Volume{{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName}, Items: []corev1.KeyToPath{{Key: "otel-collector-config.yaml", Path: "config.yaml"}}}}}, {Name: resources.UserCABundleVolumeName, VolumeSource: userCAVolumeSource()}, {Name: "root-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: spec.EffectiveRootCASecretName(), Items: []corev1.KeyToPath{{Key: "tls.crt", Path: "ca.crt"}}}}}, {Name: "basic-auth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: spec.EffectiveBasicAuthSecretName(), DefaultMode: &mode}}}},
+		Volumes:    []corev1.Volume{{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName}, Items: []corev1.KeyToPath{{Key: "otel-collector-config.yaml", Path: "config.yaml"}}}}}, {Name: resources.UserCABundleVolumeName, VolumeSource: resources.UserCABundleVolumeSource(caBundle)}, {Name: "root-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: spec.EffectiveRootCASecretName(), Items: []corev1.KeyToPath{{Key: "tls.crt", Path: "ca.crt"}}}}}, {Name: "basic-auth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: spec.EffectiveBasicAuthSecretName(), DefaultMode: &mode}}}},
 	}}}}
 }
 
@@ -237,13 +237,13 @@ func configMapResourceVersion(ctx context.Context, c client.Client, namespace, n
 	return object.ResourceVersion, nil
 }
 
-func collectorInputVersions(ctx context.Context, c client.Client, namespace, basicAuthVersion, apiKeyVersion, rootCAVersion string) (map[string]string, error) {
+func collectorInputVersions(ctx context.Context, c client.Client, namespace string, caBundle resources.CABundleRef, basicAuthVersion, apiKeyVersion, rootCAVersion string) (map[string]string, error) {
 	configVersion, err := configMapResourceVersion(ctx, c, namespace, ConfigMapName)
 	if err != nil {
 		return nil, err
 	}
 	versions := map[string]string{"neteye.cloud/config-resource-version": configVersion, "neteye.cloud/basic-auth-resource-version": basicAuthVersion, "neteye.cloud/api-key-resource-version": apiKeyVersion, "neteye.cloud/root-ca-resource-version": rootCAVersion}
-	userCAVersion, err := resources.UserCABundleVersion(ctx, c, namespace)
+	userCAVersion, err := resources.UserCABundleVersion(ctx, c, namespace, caBundle)
 	if err != nil {
 		return nil, err
 	}
@@ -257,11 +257,6 @@ const (
 	rootCAMountPath = "/etc/neteye/root-ca"
 	userCAMountPath = "/etc/neteye/user-ca"
 )
-
-// userCAVolumeSource mounts the optional user CA ConfigMap; it stays empty when absent.
-func userCAVolumeSource() corev1.VolumeSource {
-	return corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: resources.UserCABundleConfigMapName}, Optional: ptr.To(true)}}
-}
 
 type expectedParent struct{ group, kind, namespace, name, section string }
 

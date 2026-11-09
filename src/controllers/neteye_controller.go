@@ -212,7 +212,7 @@ func (r *NetEyeReconciler) reconcileOTelCollector(ctx context.Context, ne *netey
 	if ne.Spec.ElasticStack.Telemetry != nil {
 		spec = ne.Spec.ElasticStack.Telemetry.OTelCollector
 	}
-	outcome := r.OTelCollectorComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, ne.Spec.Identity.Hostname, ns, ne.Spec.Gateway.Name, image, issuerRefFor(ne), owner)
+	outcome := r.OTelCollectorComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, ne.Spec.Identity.Hostname, ns, ne.Spec.Gateway.Name, image, caBundleRefFor(ne), issuerRefFor(ne), owner)
 	ne.Status.ServicesStatus.ElasticStack.OTelCollector = elasticStackServiceStatus(phaseToServiceState(outcome.Phase), outcome.Message, image)
 	return mapTelemetryOutcome(otelCollectorComponentID, outcome, r.waitForProgressingRequeue(), r.failureRequeue())
 }
@@ -415,7 +415,7 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, message, image)
 		return degradedResult(identityComponentID, "IssuerCheckFailed", message, r.failureRequeue(), err)
 	}
-	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, ne.Spec.Identity, keycloak.WorkloadNamespace, ne.Spec.Gateway.Name, issuerRef, owner)
+	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, caBundleRefFor(ne), ne.Spec.Identity, keycloak.WorkloadNamespace, ne.Spec.Gateway.Name, issuerRef, owner)
 	if err != nil {
 		log.Error(err, "failed to ensure keycloak resources", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to ensure keycloak resources in namespace %q: %v", keycloak.WorkloadNamespace, err), image)
@@ -579,6 +579,11 @@ func (r *NetEyeReconciler) ensureClusterAuthority(ctx context.Context, ne *netey
 
 func issuerRefFor(ne *neteye.NetEye) resources.CertificateIssuerRef {
 	return resources.CertificateIssuerRef{Name: ne.Spec.InternalCertificateIssuerRef}
+}
+
+func caBundleRefFor(ne *neteye.NetEye) resources.CABundleRef {
+	selector := ne.Spec.EffectiveCABundle()
+	return resources.CABundleRef{Name: selector.Name, Key: selector.Key}
 }
 
 func ownerReferenceFor(ne *neteye.NetEye) metav1.OwnerReference {

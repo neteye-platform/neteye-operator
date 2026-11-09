@@ -35,6 +35,21 @@ type NetEyeSecretKeySelector struct {
 	Key string `json:"key"`
 }
 
+// NetEyeConfigMapKeySelector identifies one key inside a ConfigMap in the
+// shared NetEye namespace.
+type NetEyeConfigMapKeySelector struct {
+	// Name is the name of the ConfigMap containing the referenced value.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Key is the key inside the ConfigMap holding the PEM bundle.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:default=ca-bundle.pem
+	Key string `json:"key,omitempty"`
+}
+
 // NetEyeDBConnectionSpec defines the database connection used by a
 // NetEye component.
 type NetEyeDBConnectionSpec struct {
@@ -397,8 +412,13 @@ const (
 	RelatedImageOTelCollectorEnv = "RELATED_IMAGE_OTEL_COLLECTOR"
 	// RelatedImageEDOTGatewayEnv overrides the EDOT Gateway image packaged with the operator.
 	RelatedImageEDOTGatewayEnv = "RELATED_IMAGE_EDOT_GATEWAY"
-	CurrentNetEyeVersion       = "4.51"
-	PreviousNetEyeVersion      = "4.50"
+	// DefaultCABundleConfigMapName and DefaultCABundleKey select the optional
+	// CA bundle when spec.caBundle is unset.
+	DefaultCABundleConfigMapName = "neteye-ca-bundle"
+	DefaultCABundleKey           = "ca-bundle.pem"
+
+	CurrentNetEyeVersion  = "4.51"
+	PreviousNetEyeVersion = "4.50"
 )
 
 // ComponentsForVersion returns the component image set for the given NetEye
@@ -479,6 +499,29 @@ type NetEyeSpec struct {
 	// OTel Collector and EDOT Gateway. Images are resolved from release data.
 	// +kubebuilder:validation:Optional
 	ElasticStack *NetEyeElasticStackSpec `json:"elasticStack,omitempty"`
+
+	// CABundle selects the optional ConfigMap with extra PEM CA certificates
+	// that Keycloak and the OpenTelemetry Collector trust in addition to their
+	// built-in roots. The ConfigMap lives in the shared NetEye namespace and may
+	// be absent. The default is neteye-ca-bundle/ca-bundle.pem.
+	// +kubebuilder:validation:Optional
+	CABundle *NetEyeConfigMapKeySelector `json:"caBundle,omitempty"`
+}
+
+// EffectiveCABundle returns the CA bundle ConfigMap selector, applying the
+// defaults for objects that bypassed admission defaulting.
+func (s *NetEyeSpec) EffectiveCABundle() NetEyeConfigMapKeySelector {
+	selector := NetEyeConfigMapKeySelector{Name: DefaultCABundleConfigMapName, Key: DefaultCABundleKey}
+	if s == nil || s.CABundle == nil {
+		return selector
+	}
+	if s.CABundle.Name != "" {
+		selector.Name = s.CABundle.Name
+	}
+	if s.CABundle.Key != "" {
+		selector.Key = s.CABundle.Key
+	}
+	return selector
 }
 
 // ServiceState is the per-service state reported in NetEyeServiceStatus.Status.

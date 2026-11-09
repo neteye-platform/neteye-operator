@@ -177,7 +177,7 @@ func clusterExtensionSpec() map[string]any {
 
 // EnsureResources reconciles the identity component resources owned by the Keycloak
 // integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
-func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
+func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, caBundle resources.CABundleRef, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
 	ctx = logf.IntoContext(ctx, c.log)
 	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, RouteHostname, []string{RouteHostname}, issuerRef, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
@@ -198,7 +198,7 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if !certificateReady {
 		return false, certificateMessage, nil
 	}
-	if err := c.EnsureInstance(ctx, namespace, image, identity, &owner); err != nil {
+	if err := c.EnsureInstance(ctx, namespace, image, caBundle, identity, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
 	}
 
@@ -288,8 +288,8 @@ func (c *Component) IsUserReady(ctx context.Context, namespace, name string) (bo
 	return true, "", nil
 }
 
-func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, identity neteye.NetEyeIdentitySpec, owner *metav1.OwnerReference) error {
-	userCAVersion, err := resources.UserCABundleVersion(ctx, c.client, namespace)
+func (c *Component) EnsureInstance(ctx context.Context, namespace, image string, caBundle resources.CABundleRef, identity neteye.NetEyeIdentitySpec, owner *metav1.OwnerReference) error {
+	userCAVersion, err := resources.UserCABundleVersion(ctx, c.client, namespace, caBundle)
 	if err != nil {
 		return fmt.Errorf("read user CA bundle: %w", err)
 	}
@@ -297,7 +297,7 @@ func (c *Component) EnsureInstance(ctx context.Context, namespace, image string,
 		GVK:       keycloakGVK(),
 		Name:      InstanceName,
 		Namespace: namespace,
-		Spec:      keycloakInstanceSpec(image, userCAVersion, identity),
+		Spec:      keycloakInstanceSpec(image, caBundle, userCAVersion, identity),
 		Owner:     owner,
 	})
 	if err != nil {
@@ -312,7 +312,7 @@ func (c *Component) EnsureInstance(ctx context.Context, namespace, image string,
 	return nil
 }
 
-func keycloakInstanceSpec(image, userCAVersion string, identity neteye.NetEyeIdentitySpec) map[string]any {
+func keycloakInstanceSpec(image string, caBundle resources.CABundleRef, userCAVersion string, identity neteye.NetEyeIdentitySpec) map[string]any {
 	database := identity.DBConnection
 	usernameSecret := database.EffectiveUsernameSecret()
 	passwordSecret := database.EffectivePasswordSecret()
@@ -350,7 +350,7 @@ func keycloakInstanceSpec(image, userCAVersion string, identity neteye.NetEyeIde
 			"headers": "xforwarded",
 		},
 		"additionalOptions": keycloakAdditionalOptions(identity.AdditionalOptions, identity.Telemetry),
-		"unsupported":       map[string]any{"podTemplate": keycloakPodTemplate(userCAVersion)},
+		"unsupported":       map[string]any{"podTemplate": keycloakPodTemplate(caBundle, userCAVersion)},
 	}
 	if features := keycloakFeatures(identity); len(features) > 0 {
 		spec["features"] = map[string]any{"enabled": features}
@@ -374,7 +374,7 @@ func keycloakInstanceSpec(image, userCAVersion string, identity neteye.NetEyeIde
 // Operator builds its pod from this template and then prepends its own volumes
 // and mounts, editing the first container by position: that entry therefore
 // carries no name and declares only the mount Keycloak needs.
-func keycloakPodTemplate(userCAVersion string) map[string]any {
+func keycloakPodTemplate(caBundle resources.CABundleRef, userCAVersion string) map[string]any {
 	template := map[string]any{
 		"spec": map[string]any{
 			"containers": []any{map[string]any{
@@ -383,7 +383,11 @@ func keycloakPodTemplate(userCAVersion string) map[string]any {
 				},
 			}},
 			"volumes": []any{
-				map[string]any{"name": resources.UserCABundleVolumeName, "configMap": map[string]any{"name": resources.UserCABundleConfigMapName, "optional": true}},
+				map[string]any{"name": resources.UserCABundleVolumeName, "configMap": map[string]any{
+					"name":     caBundle.Name,
+					"optional": true,
+					"items":    []any{map[string]any{"key": caBundle.Key, "path": resources.UserCABundleFile}},
+				}},
 			},
 		},
 	}

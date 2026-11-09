@@ -57,6 +57,27 @@ spec:
           spec:
             description: NetEyeSpec defines the desired state of NetEyeConfig.
             properties:
+              caBundle:
+                description: |-
+                  CABundle selects the optional ConfigMap with extra PEM CA certificates
+                  that Keycloak and the OpenTelemetry Collector trust in addition to their
+                  built-in roots. The ConfigMap lives in the shared NetEye namespace and may
+                  be absent. The default is neteye-ca-bundle/ca-bundle.pem.
+                properties:
+                  key:
+                    default: ca-bundle.pem
+                    description: Key is the key inside the ConfigMap holding the PEM
+                      bundle.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the ConfigMap containing the
+                      referenced value.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               elasticStack:
                 description: |-
                   ElasticStack configures the shared telemetry pipeline. Its telemetry group

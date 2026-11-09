@@ -447,3 +447,23 @@ func TestSupportedVersions(t *testing.T) {
 	}
 	t.Errorf("SupportedVersions() = %v, missing %q", versions, CurrentNetEyeVersion)
 }
+
+func TestEffectiveCABundle(t *testing.T) {
+	tests := []struct {
+		name string
+		spec *NetEyeSpec
+		want NetEyeConfigMapKeySelector
+	}{
+		{"unset", &NetEyeSpec{}, NetEyeConfigMapKeySelector{Name: "neteye-ca-bundle", Key: "ca-bundle.pem"}},
+		{"nil spec", nil, NetEyeConfigMapKeySelector{Name: "neteye-ca-bundle", Key: "ca-bundle.pem"}},
+		{"name only", &NetEyeSpec{CABundle: &NetEyeConfigMapKeySelector{Name: "corp-cas"}}, NetEyeConfigMapKeySelector{Name: "corp-cas", Key: "ca-bundle.pem"}},
+		{"custom", &NetEyeSpec{CABundle: &NetEyeConfigMapKeySelector{Name: "corp-cas", Key: "roots.pem"}}, NetEyeConfigMapKeySelector{Name: "corp-cas", Key: "roots.pem"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.spec.EffectiveCABundle(); got != tt.want {
+				t.Errorf("EffectiveCABundle() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
