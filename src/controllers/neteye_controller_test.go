@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -367,5 +368,81 @@ func TestAggregateElasticStackStatus(t *testing.T) {
 		if got != test.want {
 			t.Fatalf("got=%s want=%s", got, test.want)
 		}
+	}
+}
+
+func TestLifecycleNodesForCollectorWaitsForIdentityOnlyWhenEnabled(t *testing.T) {
+	tests := []struct {
+		name         string
+		elasticStack *neteye.NetEyeElasticStackSpec
+		want         []componentID
+	}{
+		{name: "elastic stack unset", elasticStack: nil, want: nil},
+		{name: "elastic stack disabled", elasticStack: &neteye.NetEyeElasticStackSpec{Enabled: false}, want: nil},
+		{name: "elastic stack enabled", elasticStack: &neteye.NetEyeElasticStackSpec{Enabled: true}, want: []componentID{identityComponentID}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ne := newNetEye(neteye.CurrentNetEyeVersion)
+			ne.Spec.ElasticStack = tt.elasticStack
+			graph, err := newLifecycleGraph(lifecycleNodesFor(ne))
+			if err != nil {
+				t.Fatalf("graph: %v", err)
+			}
+			blocking, err := graph.blockingDependencies(otelCollectorComponentID, map[componentID]componentResult{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(blocking, tt.want) && (len(blocking) != 0 || len(tt.want) != 0) {
+				t.Errorf("collector blocked by %v, want %v", blocking, tt.want)
+			}
+			for _, id := range []componentID{identityComponentID, edotGatewayComponentID} {
+				if blocking, _ := graph.blockingDependencies(id, map[componentID]componentResult{}); len(blocking) != 0 {
+					t.Errorf("%s blocked by %v, want no dependency", id, blocking)
+				}
+			}
+		})
+	}
+}
+
+func TestCollectorWaitsForIdentityToBeReady(t *testing.T) {
+	ne := newNetEye(neteye.CurrentNetEyeVersion)
+	ne.Spec.ElasticStack = &neteye.NetEyeElasticStackSpec{Enabled: true}
+	ne.Status.ServicesStatus.ElasticStack = &neteye.NetEyeElasticStackStatus{
+		OTelCollector: &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown},
+		EDOTGateway:   &neteye.NetEyeServiceStatus{Status: neteye.ServiceStateUnknown},
+	}
+	graph, err := newLifecycleGraph(lifecycleNodesFor(ne))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := map[componentID]bool{}
+	operation := func(id componentID, result func() (componentResult, error)) componentOperation {
+		return func() (componentResult, error) { ran[id] = true; return result() }
+	}
+	results, err := runComponentOperations(graph, map[componentID]componentOperation{
+		identityComponentID: operation(identityComponentID, func() (componentResult, error) {
+			return progressingResult(identityComponentID, "ServiceNotReady", "starting", time.Second)
+		}),
+		otelCollectorComponentID: operation(otelCollectorComponentID, func() (componentResult, error) { return readyResult(otelCollectorComponentID, "Ready", "") }),
+		edotGatewayComponentID:   operation(edotGatewayComponentID, func() (componentResult, error) { return readyResult(edotGatewayComponentID, "Ready", "") }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ran[otelCollectorComponentID] {
+		t.Error("the collector was reconciled while identity is not ready")
+	}
+	if !ran[edotGatewayComponentID] {
+		t.Error("the gateway must not wait for identity")
+	}
+	markBlockedCollector(ne, results, "collector-image")
+	status := ne.Status.ServicesStatus.ElasticStack.OTelCollector
+	if status == nil || status.Status != neteye.ServiceStateNotReady || status.ResolvedImage != "collector-image" {
+		t.Fatalf("collector status = %+v, want NotReady with the resolved image", status)
+	}
+	ne.Status.ServicesStatus.ElasticStack.EDOTGateway = elasticStackServiceStatus(neteye.ServiceStateReady, "", "gateway-image")
+	if state, _ := aggregateElasticStackStatus(ne.Status.ServicesStatus.ElasticStack.OTelCollector, ne.Status.ServicesStatus.ElasticStack.EDOTGateway); state != neteye.ServiceStateNotReady {
+		t.Errorf("elastic stack state = %q, want NotReady while the collector waits", state)
 	}
 }
