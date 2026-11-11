@@ -550,7 +550,10 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		// reconciliation.
 		log.Error(err, "failed to disable the Keycloak bootstrap admin", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateReady, "Identity service is ready; bootstrap admin disable is pending", image)
-		return progressingResult(identityComponentID, "BootstrapAdminDisablePending", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue())
+		result, err := progressingResult(identityComponentID, "BootstrapAdminDisablePending", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue())
+		// Keycloak is up: dependants such as the collector must not wait for this.
+		result.ServesDependants = true
+		return result, err
 	}
 
 	log.Info("Keycloak reconciled and ready", "namespace", ne.Namespace, "name", owner.Name)

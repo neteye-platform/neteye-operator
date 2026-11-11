@@ -242,3 +242,40 @@ func ids(nodes []lifecycleNode) []componentID {
 	}
 	return ids
 }
+
+func TestDependantsWaitForServingNotForFullReconciliation(t *testing.T) {
+	graph, err := newLifecycleGraph([]lifecycleNode{{ID: "a"}, {ID: "b", Dependencies: []componentID{"a"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name         string
+		dependency   componentResult
+		wantBlocking []componentID
+	}{
+		{name: "ready", dependency: componentResult{ID: "a", State: componentStateReady}},
+		{name: "progressing and serving", dependency: componentResult{ID: "a", State: componentStateProgressing, ServesDependants: true}},
+		{name: "progressing", dependency: componentResult{ID: "a", State: componentStateProgressing}, wantBlocking: []componentID{"a"}},
+		{name: "degraded", dependency: componentResult{ID: "a", State: componentStateDegraded, Err: errors.New("boom")}, wantBlocking: []componentID{"a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocking, err := graph.blockingDependencies("b", map[componentID]componentResult{"a": tt.dependency})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(blocking) != len(tt.wantBlocking) || (len(blocking) > 0 && blocking[0] != tt.wantBlocking[0]) {
+				t.Errorf("blocking = %v, want %v", blocking, tt.wantBlocking)
+			}
+		})
+	}
+}
+
+func TestValidateOperationResultRejectsServingOutsideProgressing(t *testing.T) {
+	for _, state := range []componentState{componentStateReady, componentStateDegraded, componentStateBlocked} {
+		result := componentResult{ID: "a", State: state, ServesDependants: true}
+		if err := validateOperationResult("a", result); err == nil {
+			t.Errorf("a %s result serving its dependants was accepted", state)
+		}
+	}
+}
