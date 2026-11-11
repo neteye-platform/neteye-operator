@@ -22,6 +22,7 @@ spec:
       type: string
     - jsonPath: .status.currentVersion
       name: Current
+      priority: 1
       type: string
     - jsonPath: .metadata.namespace
       name: Namespace

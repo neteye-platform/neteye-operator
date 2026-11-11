@@ -618,7 +618,7 @@ type NetEyeStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=neteyes,shortName=ne
 // +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.spec.version`
-// +kubebuilder:printcolumn:name="Current",type=string,JSONPath=`.status.currentVersion`
+// +kubebuilder:printcolumn:name="Current",type=string,JSONPath=`.status.currentVersion`,priority=1
 // +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.metadata.namespace`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
