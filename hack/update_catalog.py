@@ -207,6 +207,20 @@ class Channel:
             )
         return heads[0]
 
+    def append_release(self, bundle_name: str) -> None:
+        """Add a new head that every earlier entry can upgrade to directly.
+
+        The new entry replaces the current head and skips every other existing
+        entry, so an installation can jump from any version in the channel to
+        the new one without stepping through the versions in between.
+        """
+        head = self.head()
+        if head is None:
+            self.entries.append(Entry(bundle_name))
+            return
+        skips = [entry.name for entry in self.entries if entry.name != head.name]
+        self.entries.append(Entry(bundle_name, replaces=head.name, skips=skips))
+
     def validate_entry_versions(self) -> None:
         for entry in self.entries:
             if not entry.name.startswith(f"{PACKAGE_NAME}."):
@@ -367,9 +381,7 @@ def update_catalog(
             f"{head.version}"
         )
 
-    channel.entries.append(
-        Entry(bundle_name, replaces=head.name if head is not None else None)
-    )
+    channel.append_release(bundle_name)
     catalog.write_channel(channel)
     catalog.write_bundle(version, bundle_image)
     if neteye_version:
@@ -386,7 +398,10 @@ def release_minor(version: str) -> str:
 def update_catalog_backport(
     catalog_root: Path, version: str, bundle_image: str
 ) -> bool:
-    """Add a bugfix release to every channel whose head is on the same minor line."""
+    """Add a bugfix release to every channel whose head is on the same minor line.
+
+    As for any release, the new head skips every earlier entry of the channel.
+    """
     if not valid_semver(version):
         raise ValueError(f"invalid release version: {version}")
     if not BUNDLE_IMAGE_PATTERN.fullmatch(bundle_image):
@@ -422,7 +437,7 @@ def update_catalog_backport(
         )
 
     for channel in matched:
-        channel.entries.append(Entry(bundle_name, replaces=channel.head().name))
+        channel.append_release(bundle_name)
         catalog.write_channel(channel)
     catalog.write_bundle(version, bundle_image)
     return True
