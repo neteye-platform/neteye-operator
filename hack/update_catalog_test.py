@@ -157,6 +157,43 @@ class UpdateCatalogTest(CatalogTreeTestCase):
         self.assertIn("replaces: neteye-operator.0.1.0", stable)
         self.assertNotIn("0.2.0\n", self.channel("alpha"))
 
+    def test_release_skips_every_earlier_stable_entry(self) -> None:
+        update_catalog(self.catalog_path, "0.1.1", digest("a"))
+        update_catalog(self.catalog_path, "0.1.2", digest("b"))
+        update_catalog(self.catalog_path, "0.2.0", digest("c"))
+
+        stable = self.channel("stable")
+        self.assertTrue(
+            stable.endswith(
+                "  - name: neteye-operator.0.2.0\n"
+                "    replaces: neteye-operator.0.1.2\n"
+                "    skips:\n"
+                "      - neteye-operator.0.1.0\n"
+                "      - neteye-operator.0.1.1\n"
+            )
+        )
+
+    def test_release_skips_keep_existing_edges(self) -> None:
+        update_catalog(self.catalog_path, "0.1.1", digest("a"))
+        update_catalog(self.catalog_path, "0.1.2", digest("b"))
+
+        stable = self.channel("stable")
+        self.assertIn(
+            "  - name: neteye-operator.0.1.1\n"
+            "    replaces: neteye-operator.0.1.0\n"
+            "  - name: neteye-operator.0.1.2\n",
+            stable,
+        )
+
+    def test_release_skips_stay_within_the_channel(self) -> None:
+        update_catalog(self.catalog_path, "0.2.0-alpha2", digest("b"))
+
+        self.assertNotIn("skips", self.channel("alpha"))
+        update_catalog(self.catalog_path, "0.2.0-alpha3", digest("c"))
+        alpha = self.channel("alpha")
+        self.assertIn("      - neteye-operator.0.2.0-alpha1\n", alpha)
+        self.assertNotIn("neteye-operator.0.1.0", alpha)
+
     def test_writes_bundle_file_with_gvk_property(self) -> None:
         update_catalog(self.catalog_path, "0.2.0", digest("c"))
 
@@ -275,6 +312,19 @@ class UpdateCatalogBackportTest(CatalogTreeTestCase):
         self.assertIn("name: neteye-operator.0.1.1", self.channel("stable"))
         self.assertIn("replaces: neteye-operator.0.1.0", self.channel("stable"))
         self.assertNotIn("0.1.1", self.channel("alpha"))
+
+    def test_backport_skips_every_earlier_entry(self) -> None:
+        update_catalog_backport(self.catalog_path, "0.1.1", digest("5"))
+        update_catalog_backport(self.catalog_path, "0.1.2", digest("6"))
+
+        self.assertTrue(
+            self.channel("stable").endswith(
+                "  - name: neteye-operator.0.1.2\n"
+                "    replaces: neteye-operator.0.1.1\n"
+                "    skips:\n"
+                "      - neteye-operator.0.1.0\n"
+            )
+        )
 
     def test_adds_bugfix_to_every_matching_channel(self) -> None:
         self.write_channel("alpha", "  - name: neteye-operator.0.1.0-alpha1\n")

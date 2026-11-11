@@ -116,7 +116,9 @@ make bundle bundle-validate
 ```
 
 Use the `alpha` catalog channel for prerelease versions and `stable` for GA
-versions. The release workflow rejects tags that do not exactly match the
+versions. In every channel the new release replaces the previous head and
+skips all earlier entries, so installations can upgrade straight to it from any
+older version. The release workflow rejects tags that do not exactly match the
 checked-in version or do not come from an allowed release source.
 
 After validation, the workflow builds and publishes the operator and bundle
