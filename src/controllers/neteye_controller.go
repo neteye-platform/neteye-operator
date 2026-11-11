@@ -165,13 +165,13 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	}
 	results, err := runComponentOperations(graph, map[componentID]componentOperation{
 		identityComponentID: func() (componentResult, error) {
-			return r.reconcileKeycloak(ctx, ne, components.KeycloakImage, components.CABundleImage)
+			return r.reconcileKeycloak(ctx, ne, components.KeycloakImage)
 		},
 		otelCollectorComponentID: func() (componentResult, error) {
-			return r.reconcileOTelCollector(ctx, ne, components.OTelCollectorImage, components.CABundleImage)
+			return r.reconcileOTelCollector(ctx, ne, components.OTelCollectorImage)
 		},
 		edotGatewayComponentID: func() (componentResult, error) {
-			return r.reconcileEDOTGateway(ctx, ne, components.EDOTGatewayImage, components.CABundleImage)
+			return r.reconcileEDOTGateway(ctx, ne, components.EDOTGatewayImage)
 		},
 	})
 	if err != nil {
@@ -197,7 +197,7 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-func (r *NetEyeReconciler) reconcileOTelCollector(ctx context.Context, ne *neteye.NetEye, image, caBundleImage string) (componentResult, error) {
+func (r *NetEyeReconciler) reconcileOTelCollector(ctx context.Context, ne *neteye.NetEye, image string) (componentResult, error) {
 	owner, ns := ownerReferenceFor(ne), keycloak.WorkloadNamespace
 	if ne.Spec.ElasticStack == nil || !ne.Spec.ElasticStack.Enabled {
 		if err := r.OTelCollectorComponent.Delete(ctx, ns, owner); err != nil {
@@ -212,11 +212,11 @@ func (r *NetEyeReconciler) reconcileOTelCollector(ctx context.Context, ne *netey
 	if ne.Spec.ElasticStack.Telemetry != nil {
 		spec = ne.Spec.ElasticStack.Telemetry.OTelCollector
 	}
-	outcome := r.OTelCollectorComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, ne.Spec.Identity.Hostname, ns, ne.Spec.Gateway.Name, image, caBundleImage, issuerRefFor(ne), owner)
+	outcome := r.OTelCollectorComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, ne.Spec.Identity.Hostname, ns, ne.Spec.Gateway.Name, image, caBundleRefFor(ne), issuerRefFor(ne), owner)
 	ne.Status.ServicesStatus.ElasticStack.OTelCollector = elasticStackServiceStatus(phaseToServiceState(outcome.Phase), outcome.Message, image)
 	return mapTelemetryOutcome(otelCollectorComponentID, outcome, r.waitForProgressingRequeue(), r.failureRequeue())
 }
-func (r *NetEyeReconciler) reconcileEDOTGateway(ctx context.Context, ne *neteye.NetEye, image, caBundleImage string) (componentResult, error) {
+func (r *NetEyeReconciler) reconcileEDOTGateway(ctx context.Context, ne *neteye.NetEye, image string) (componentResult, error) {
 	owner, ns := ownerReferenceFor(ne), keycloak.WorkloadNamespace
 	if ne.Spec.ElasticStack == nil || !ne.Spec.ElasticStack.Enabled {
 		if err := r.EDOTGatewayComponent.Delete(ctx, ns, owner); err != nil {
@@ -231,7 +231,7 @@ func (r *NetEyeReconciler) reconcileEDOTGateway(ctx context.Context, ne *neteye.
 	if ne.Spec.ElasticStack.Telemetry != nil {
 		spec = ne.Spec.ElasticStack.Telemetry.EDOTGateway
 	}
-	outcome := r.EDOTGatewayComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, image, caBundleImage, identityTelemetryEnabled(ne.Spec.Identity), owner)
+	outcome := r.EDOTGatewayComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, image, identityTelemetryEnabled(ne.Spec.Identity), owner)
 	ne.Status.ServicesStatus.ElasticStack.EDOTGateway = elasticStackServiceStatus(phaseToServiceState(outcome.Phase), outcome.Message, image)
 	return mapTelemetryOutcome(edotGatewayComponentID, outcome, r.waitForProgressingRequeue(), r.failureRequeue())
 }
@@ -400,7 +400,7 @@ func gatewayListeners(ne *neteye.NetEye) []resources.GatewayListener {
 	return listeners
 }
 
-func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.NetEye, image, caBundleImage string) (componentResult, error) {
+func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.NetEye, image string) (componentResult, error) {
 	log := ctrl.LoggerFrom(ctx)
 	owner := ownerReferenceFor(ne)
 	log.Info("Started Keycloak reconciliation", "namespace", ne.Namespace, "name", owner.Name)
@@ -415,7 +415,7 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, message, image)
 		return degradedResult(identityComponentID, "IssuerCheckFailed", message, r.failureRequeue(), err)
 	}
-	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, caBundleImage, ne.Spec.Identity, keycloak.WorkloadNamespace, ne.Spec.Gateway.Name, issuerRef, owner)
+	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, caBundleRefFor(ne), ne.Spec.Identity, keycloak.WorkloadNamespace, ne.Spec.Gateway.Name, issuerRef, owner)
 	if err != nil {
 		log.Error(err, "failed to ensure keycloak resources", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to ensure keycloak resources in namespace %q: %v", keycloak.WorkloadNamespace, err), image)
@@ -579,6 +579,11 @@ func (r *NetEyeReconciler) ensureClusterAuthority(ctx context.Context, ne *netey
 
 func issuerRefFor(ne *neteye.NetEye) resources.CertificateIssuerRef {
 	return resources.CertificateIssuerRef{Name: ne.Spec.InternalCertificateIssuerRef}
+}
+
+func caBundleRefFor(ne *neteye.NetEye) resources.CABundleRef {
+	selector := ne.Spec.EffectiveCABundle()
+	return resources.CABundleRef{Name: selector.Name, Key: selector.Key}
 }
 
 func ownerReferenceFor(ne *neteye.NetEye) metav1.OwnerReference {
