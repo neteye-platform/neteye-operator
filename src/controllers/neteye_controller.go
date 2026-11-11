@@ -158,7 +158,7 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure shared default-deny network policy: %w", err)
 	}
 
-	graph, err := newLifecycleGraph([]lifecycleNode{{ID: identityComponentID}, {ID: otelCollectorComponentID}, {ID: edotGatewayComponentID}})
+	graph, err := newLifecycleGraph(lifecycleNodesFor(ne))
 	if err != nil {
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		return ctrl.Result{}, fmt.Errorf("construct component lifecycle graph: %w", err)
@@ -178,6 +178,7 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		return ctrl.Result{}, err
 	}
+	markBlockedCollector(ne, results, components.OTelCollectorImage)
 	state, message := aggregateElasticStackStatus(ne.Status.ServicesStatus.ElasticStack.OTelCollector, ne.Status.ServicesStatus.ElasticStack.EDOTGateway)
 	ne.Status.ServicesStatus.ElasticStack.Status, ne.Status.ServicesStatus.ElasticStack.Message = state, message
 	phase, message := aggregateComponentPhase(results)
@@ -195,6 +196,25 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		log.Info("NetEye is ready", "namespace", ne.Namespace, "name", ne.Name, "requeueAfter", requeueAfter)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// lifecycleNodesFor declares what each component waits for. The collector's OIDC extension fails to start until
+// Keycloak serves its realm through the Gateway, so an enabled collector waits for identity. A disabled one has no
+// dependency, so that its cleanup does not depend on identity being healthy.
+func lifecycleNodesFor(ne *neteye.NetEye) []lifecycleNode {
+	collector := lifecycleNode{ID: otelCollectorComponentID}
+	if ne.Spec.ElasticStack != nil && ne.Spec.ElasticStack.Enabled {
+		collector.Dependencies = []componentID{identityComponentID}
+	}
+	return []lifecycleNode{{ID: identityComponentID}, collector, {ID: edotGatewayComponentID}}
+}
+
+// markBlockedCollector reports a collector that was not reconciled because it waits for identity. Without it the
+// Elastic Stack status would ignore the collector.
+func markBlockedCollector(ne *neteye.NetEye, results map[componentID]componentResult, image string) {
+	if result := results[otelCollectorComponentID]; result.State == componentStateBlocked {
+		ne.Status.ServicesStatus.ElasticStack.OTelCollector = elasticStackServiceStatus(neteye.ServiceStateNotReady, result.Message, image)
+	}
 }
 
 func (r *NetEyeReconciler) reconcileOTelCollector(ctx context.Context, ne *neteye.NetEye, image string) (componentResult, error) {
@@ -530,7 +550,10 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		// reconciliation.
 		log.Error(err, "failed to disable the Keycloak bootstrap admin", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateReady, "Identity service is ready; bootstrap admin disable is pending", image)
-		return progressingResult(identityComponentID, "BootstrapAdminDisablePending", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue())
+		result, err := progressingResult(identityComponentID, "BootstrapAdminDisablePending", ne.Status.ServicesStatus.Identity.Message, r.failureRequeue())
+		// Keycloak is up: dependants such as the collector must not wait for this.
+		result.ServesDependants = true
+		return result, err
 	}
 
 	log.Info("Keycloak reconciled and ready", "namespace", ne.Namespace, "name", owner.Name)

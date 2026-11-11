@@ -39,7 +39,10 @@ type componentResult struct {
 	Message              string
 	RequeueAfter         time.Duration
 	BlockingDependencies []componentID
-	Err                  error
+	// ServesDependants marks a progressing component that is already usable, with only non-essential work pending, so
+	// that its dependants do not wait for it.
+	ServesDependants bool
+	Err              error
 }
 
 func readyResult(id componentID, reason, message string) (componentResult, error) {
@@ -199,15 +202,15 @@ func (g *lifecycleGraph) blockingDependencies(id componentID, results map[compon
 func blockingDependenciesForNode(node lifecycleNode, results map[componentID]componentResult) []componentID {
 	blocking := make([]componentID, 0, len(node.Dependencies))
 	for _, dependency := range node.Dependencies {
-		if !isReadyEquivalent(results[dependency].State) {
+		if !isReadyEquivalent(results[dependency]) {
 			blocking = append(blocking, dependency)
 		}
 	}
 	return blocking
 }
 
-func isReadyEquivalent(state componentState) bool {
-	return state == componentStateReady
+func isReadyEquivalent(result componentResult) bool {
+	return result.State == componentStateReady || (result.State == componentStateProgressing && result.ServesDependants)
 }
 
 // runComponentOperations executes a complete lifecycle graph synchronously in
@@ -263,6 +266,9 @@ func validateOperationResult(id componentID, result componentResult) error {
 	}
 	if result.State == componentStateDegraded && result.Err == nil {
 		return fmt.Errorf("component operation %q returned degraded result without error", id)
+	}
+	if result.ServesDependants && result.State != componentStateProgressing {
+		return fmt.Errorf("component operation %q marked a %s result as serving its dependants", id, result.State)
 	}
 	if result.State != componentStateBlocked && len(result.BlockingDependencies) != 0 {
 		return fmt.Errorf("component operation %q returned blocking dependencies for non-blocked result", id)
