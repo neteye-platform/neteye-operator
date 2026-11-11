@@ -506,6 +506,19 @@ type NetEyeSpec struct {
 	// be absent. The default is neteye-ca-bundle/ca-bundle.pem.
 	// +kubebuilder:validation:Optional
 	CABundle *NetEyeConfigMapKeySelector `json:"caBundle,omitempty"`
+
+	// UseProcedureGates makes the operator wait for and create
+	// NetEyeProcedureGates during installs and upgrades. Disable it where no
+	// NetEye Ansible procedure runs and an administrator performs those steps.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=true
+	UseProcedureGates *bool `json:"useProcedureGates,omitempty"`
+}
+
+// EffectiveUseProcedureGates reports whether procedure gates are honored,
+// defaulting to true for objects that bypassed admission defaulting.
+func (s *NetEyeSpec) EffectiveUseProcedureGates() bool {
+	return s == nil || s.UseProcedureGates == nil || *s.UseProcedureGates
 }
 
 // EffectiveCABundle returns the CA bundle ConfigMap selector, applying the
@@ -540,6 +553,8 @@ type NetEyePhase string
 
 const (
 	PhasePendingUpgrades NetEyePhase = "PendingUpgrades"
+	PhaseInstalling      NetEyePhase = "Installing"
+	PhaseUpgrading       NetEyePhase = "Upgrading"
 	PhaseNotReady        NetEyePhase = "NotReady"
 	PhaseReady           NetEyePhase = "Ready"
 	PhaseFailed          NetEyePhase = "Failed"
@@ -591,12 +606,19 @@ type NetEyeStatus struct {
 	// ObservedGeneration is the generation of the most recently observed
 	// NetEye.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// CurrentVersion is the NetEye release whose install or upgrade has
+	// completed. While it differs from spec.version the operator is installing
+	// (when empty) or upgrading, and waits for the required
+	// NetEyeProcedureGates.
+	CurrentVersion string `json:"currentVersion,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=neteyes,shortName=ne
 // +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.spec.version`
+// +kubebuilder:printcolumn:name="Current",type=string,JSONPath=`.status.currentVersion`
 // +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.metadata.namespace`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

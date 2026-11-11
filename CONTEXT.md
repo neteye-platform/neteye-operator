@@ -32,3 +32,20 @@ The set of Keycloak themes (login, admin console, account console, email)
 applied to a realm's pages and emails. Optional and opt-in: unlike Events and
 Brute Force Protection, theme names are installation-specific branding, not
 a Keycloak-side default worth enforcing.
+
+### Install and upgrade
+
+**Procedure Gate**:
+A record that one side of a NetEye install or upgrade (the operator or the
+NetEye Ansible procedure) has completed a step the other side waits for.
+Declared by the `NetEyeProcedureGate` custom resource; its existence is the
+signal. Each release lists, per component, the gates its install and its
+upgrade require and produce. Disabled with `spec.useProcedureGates: false`
+where no Ansible procedure runs.
+_Avoid_: Upgrade gate (gates apply to installs too), lock, flag
+
+**Current Version**:
+The NetEye release whose install or upgrade has completed, reported in
+`status.currentVersion`. Empty means the operator is installing; a value
+different from `spec.version` means it is upgrading.
+_Avoid_: Installed version (it is set only once every component is ready)

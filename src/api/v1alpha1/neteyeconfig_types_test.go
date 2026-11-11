@@ -467,3 +467,50 @@ func TestEffectiveCABundle(t *testing.T) {
 		})
 	}
 }
+
+func TestEffectiveUseProcedureGates(t *testing.T) {
+	enabled, disabled := true, false
+	tests := []struct {
+		name string
+		spec *NetEyeSpec
+		want bool
+	}{
+		{name: "nil spec", want: true},
+		{name: "omitted", spec: &NetEyeSpec{}, want: true},
+		{name: "enabled", spec: &NetEyeSpec{UseProcedureGates: &enabled}, want: true},
+		{name: "disabled", spec: &NetEyeSpec{UseProcedureGates: &disabled}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.spec.EffectiveUseProcedureGates(); got != tt.want {
+				t.Errorf("EffectiveUseProcedureGates() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGeneratedCRDDefaultsUseProcedureGates(t *testing.T) {
+	data, err := os.ReadFile("../../config/crd/bases/neteye.cloud_neteyes.yaml")
+	if err != nil {
+		t.Fatalf("read generated NetEye CRD: %v", err)
+	}
+	crd := &unstructured.Unstructured{}
+	if err := yaml.Unmarshal(data, crd); err != nil {
+		t.Fatalf("decode generated NetEye CRD: %v", err)
+	}
+	versions, found, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	if err != nil || !found || len(versions) == 0 {
+		t.Fatalf("find versions in generated CRD: found=%t err=%v", found, err)
+	}
+	version, ok := versions[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("generated CRD version has unexpected type %T", versions[0])
+	}
+	value, found, err := unstructured.NestedFieldCopy(version, "schema", "openAPIV3Schema", "properties", "spec", "properties", "useProcedureGates", "default")
+	if err != nil || !found {
+		t.Fatalf("find useProcedureGates default in generated CRD: found=%t err=%v", found, err)
+	}
+	if value != true {
+		t.Errorf("useProcedureGates default = %v, want true", value)
+	}
+}
