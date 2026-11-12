@@ -90,14 +90,7 @@ func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spe
 	if err := c.ensureEgressPolicy(ctx, namespace, targets, owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	ready, message, err := resources.IsDeploymentReady(ctx, c.client, namespace, EDOTGatewayDeploymentName)
-	if err != nil {
-		return degradedOutcome(ReasonReconcileFailed, message, err)
-	}
-	if !ready {
-		return progressingOutcome(ReasonDeploymentNotAvailable, message)
-	}
-	return readyOutcome("EDOT Gateway is ready")
+	return deploymentOutcome(ctx, c.client, namespace, EDOTGatewayDeploymentName, "EDOT Gateway is ready")
 }
 
 // Delete removes only EDOT gateway-owned objects. It never deletes collector

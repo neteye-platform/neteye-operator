@@ -6,6 +6,7 @@ package elasticstack
 
 import (
 	"context"
+	"errors"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -124,4 +125,18 @@ func controlledBy(object client.Object, owner metav1.OwnerReference) bool {
 		}
 	}
 	return false
+}
+
+// deploymentOutcome maps Deployment readiness to an Outcome; a stalled rollout is Degraded.
+func deploymentOutcome(ctx context.Context, c client.Client, namespace, name, readyMessage string) Outcome {
+	ready, message, err := resources.IsDeploymentReady(ctx, c, namespace, name)
+	switch {
+	case errors.Is(err, resources.ErrDeploymentStalled):
+		return degradedOutcome(ReasonDeploymentStalled, message, err)
+	case err != nil:
+		return degradedOutcome(ReasonReconcileFailed, message, err)
+	case !ready:
+		return progressingOutcome(ReasonDeploymentNotAvailable, message)
+	}
+	return readyOutcome(readyMessage)
 }

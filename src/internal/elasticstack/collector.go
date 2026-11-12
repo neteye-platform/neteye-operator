@@ -129,14 +129,7 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 			return progressingOutcome(ReasonRouteNotReady, message)
 		}
 	}
-	ready, message, err := resources.IsDeploymentReady(ctx, c.client, namespace, DeploymentName)
-	if err != nil {
-		return degradedOutcome(ReasonReconcileFailed, message, err)
-	}
-	if !ready {
-		return progressingOutcome(ReasonDeploymentNotAvailable, message)
-	}
-	return readyOutcome("OpenTelemetry Collector is ready")
+	return deploymentOutcome(ctx, c.client, namespace, DeploymentName, "OpenTelemetry Collector is ready")
 }
 
 // Delete removes only collector-owned objects. It never deletes EDOT resources

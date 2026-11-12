@@ -150,6 +150,28 @@ func TestTelemetryConfigMapCreationToleratesStaleCache(t *testing.T) {
 	})
 }
 
+func TestStalledTelemetryRolloutIsDegraded(t *testing.T) {
+	namespace := "telemetry"
+	spec := &neteye.NetEyeEDOTGatewaySpec{APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: "elastic-key", Key: "key"}, RootCASecretName: "elastic-ca"}
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithStatusSubresource(&appsv1.Deployment{}).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-key"}, Data: map[string][]byte{"key": []byte("value")}}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-ca"}, Data: map[string][]byte{"tls.crt": []byte("ca")}}).Build()
+	component := NewEDOTGatewayComponent(c)
+	if outcome := component.Ensure(context.Background(), namespace, spec, []string{"https://198.51.100.23:9243"}, "image", false, owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("first pass outcome=%+v", outcome)
+	}
+	deployment := &appsv1.Deployment{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: EDOTGatewayDeploymentName}, deployment); err != nil {
+		t.Fatal(err)
+	}
+	deployment.Status = appsv1.DeploymentStatus{ObservedGeneration: deployment.Generation, UpdatedReplicas: 1, Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse, Reason: "ProgressDeadlineExceeded", Message: "ReplicaSet has timed out progressing."}}}
+	if err := c.Status().Update(context.Background(), deployment); err != nil {
+		t.Fatal(err)
+	}
+	outcome := component.Ensure(context.Background(), namespace, spec, []string{"https://198.51.100.23:9243"}, "image", false, owner())
+	if outcome.Phase != PhaseDegraded || outcome.Reason != ReasonDeploymentStalled || !strings.Contains(outcome.Message, "timed out progressing") {
+		t.Fatalf("outcome=%+v", outcome)
+	}
+}
+
 func TestEDOTGatewayBuildsElasticsearchBoundary(t *testing.T) {
 	namespace := "telemetry"
 	spec := &neteye.NetEyeEDOTGatewaySpec{Replicas: 2, APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: "elastic-key", Key: "key"}, RootCASecretName: "elastic-ca"}
