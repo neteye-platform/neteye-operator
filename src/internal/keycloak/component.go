@@ -67,7 +67,6 @@ const (
 const (
 	operatorReconcileInterval = 10 * time.Minute
 	operatorRetryInterval     = 10 * time.Second
-	defaultDatabasePort       = 3306
 )
 
 // Component ensures Keycloak-related cluster and namespaced resources exist.
@@ -320,9 +319,9 @@ func keycloakInstanceSpec(image string, caBundle resources.CABundleRef, userCAVe
 		"instances": int64(identityReplicas(identity)),
 		"image":     image,
 		"db": map[string]any{
-			"vendor":   "mariadb",
+			"vendor":   string(database.EffectiveVendor()),
 			"host":     database.Host,
-			"port":     int64(externalDatabasePort(database)),
+			"port":     int64(database.EffectivePort()),
 			"database": database.EffectiveDBName(),
 			"usernameSecret": map[string]any{
 				"name": usernameSecret.Name,
@@ -528,13 +527,6 @@ func identityReplicas(identity neteye.NetEyeIdentitySpec) int32 {
 
 func resourceURI(hostname string) string {
 	return "https://" + hostname + HTTPRelativePath
-}
-
-func externalDatabasePort(database neteye.NetEyeDBConnectionSpec) int32 {
-	if database.Port == 0 {
-		return defaultDatabasePort
-	}
-	return database.Port
 }
 
 func keycloakEnv(values []neteye.NetEyeEnvVar) []any {

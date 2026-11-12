@@ -178,6 +178,43 @@ func TestNetEyeValidatorUpdateUsesTelemetryContract(t *testing.T) {
 	}
 }
 
+func TestNetEyeValidatorWarnsOnPostgresWithMariaDBPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		vendor   NetEyeDBVendor
+		port     int32
+		wantWarn bool
+	}{
+		{name: "mariadb default port", vendor: DBVendorMariaDB, port: 3306},
+		{name: "unset vendor", port: 3306},
+		{name: "postgres port", vendor: DBVendorPostgres, port: 5432},
+		{name: "postgres on mariadb port", vendor: DBVendorPostgres, port: 3306, wantWarn: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := netEyeWithVersion(CurrentNetEyeVersion)
+			obj.Spec.Identity.DBConnection = NetEyeDBConnectionSpec{Vendor: tt.vendor, Host: "db.example.com", Port: tt.port}
+			createWarnings, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj)
+			if err != nil {
+				t.Fatalf("ValidateCreate() error = %v", err)
+			}
+			updateWarnings, err := (&NetEyeValidator{}).ValidateUpdate(context.Background(), netEyeWithVersion(CurrentNetEyeVersion), obj)
+			if err != nil {
+				t.Fatalf("ValidateUpdate() error = %v", err)
+			}
+			upgradeWarnings, err := (&NetEyeValidator{}).ValidateUpdate(context.Background(), netEyeWithVersion(PreviousNetEyeVersion), obj)
+			if err != nil {
+				t.Fatalf("ValidateUpdate() upgrade error = %v", err)
+			}
+			for operation, warnings := range map[string][]string{"create": createWarnings, "update": updateWarnings, "upgrade": upgradeWarnings} {
+				if (len(warnings) > 0) != tt.wantWarn {
+					t.Errorf("%s warnings = %q, wantWarn %t", operation, warnings, tt.wantWarn)
+				}
+			}
+		})
+	}
+}
+
 func TestNetEyeValidatorRejectsManagedKeycloakOptions(t *testing.T) {
 	tests := []struct {
 		name       string

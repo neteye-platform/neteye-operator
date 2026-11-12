@@ -31,24 +31,6 @@ func TestIdentityReplicas(t *testing.T) {
 	}
 }
 
-func TestExternalDatabasePort(t *testing.T) {
-	tests := []struct {
-		name string
-		port int32
-		want int32
-	}{
-		{name: "defaults to mariadb port", port: 0, want: defaultDatabasePort},
-		{name: "uses configured value", port: 5306, want: 5306},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := externalDatabasePort(neteye.NetEyeDBConnectionSpec{Port: tt.port}); got != tt.want {
-				t.Errorf("externalDatabasePort() = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestResourceURI(t *testing.T) {
 	want := "https://kc.example.com" + HTTPRelativePath
 	if got := resourceURI("kc.example.com"); got != want {
@@ -183,7 +165,7 @@ func TestKeycloakInstanceSpecDatabaseDefaultsAndOverrides(t *testing.T) {
 			want: map[string]any{
 				"vendor":         "mariadb",
 				"host":           "db.example.com",
-				"port":           int64(defaultDatabasePort),
+				"port":           int64(neteye.DefaultKeycloakDatabasePort),
 				"database":       "keycloak",
 				"usernameSecret": map[string]any{"name": "keycloak-db-credentials", "key": "username"},
 				"passwordSecret": map[string]any{"name": "keycloak-db-credentials", "key": "password"},
@@ -205,6 +187,18 @@ func TestKeycloakInstanceSpecDatabaseDefaultsAndOverrides(t *testing.T) {
 				"database":       "custom-keycloak",
 				"usernameSecret": map[string]any{"name": "custom-credentials", "key": "user"},
 				"passwordSecret": map[string]any{"name": "custom-credentials", "key": "pass"},
+			},
+		},
+		{
+			name:     "uses postgres vendor",
+			database: neteye.NetEyeDBConnectionSpec{Vendor: neteye.DBVendorPostgres, Host: "pg.example.com", Port: 5432},
+			want: map[string]any{
+				"vendor":         "postgres",
+				"host":           "pg.example.com",
+				"port":           int64(5432),
+				"database":       "keycloak",
+				"usernameSecret": map[string]any{"name": "keycloak-db-credentials", "key": "username"},
+				"passwordSecret": map[string]any{"name": "keycloak-db-credentials", "key": "password"},
 			},
 		},
 	}

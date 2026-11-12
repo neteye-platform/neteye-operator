@@ -268,7 +268,7 @@ spec:
                     x-kubernetes-list-type: map
                   dbConnection:
                     description: |-
-                      DBConnection configures the MariaDB database used by identity services.
+                      DBConnection configures the database used by identity services.
                       Credential Secrets must exist in the shared Keycloak workload namespace.
                     properties:
                       dbName:
@@ -307,7 +307,9 @@ spec:
                         type: object
                       port:
                         default: 3306
-                        description: Port is the service port.
+                        description: |-
+                          Port is the service port. The default is the MariaDB port; set it for
+                          PostgreSQL, usually to 5432.
                         format: int32
                         maximum: 65535
                         minimum: 1
@@ -334,6 +336,13 @@ spec:
                         - key
                         - name
                         type: object
+                      vendor:
+                        default: mariadb
+                        description: Vendor is the database engine.
+                        enum:
+                        - mariadb
+                        - postgres
+                        type: string
                     required:
                     - host
                     type: object

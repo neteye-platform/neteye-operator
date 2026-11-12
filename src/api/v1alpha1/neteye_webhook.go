@@ -52,7 +52,7 @@ func (v *NetEyeValidator) ValidateCreate(ctx context.Context, obj *NetEye) (admi
 		return nil, err
 	}
 	if obj.Spec.Version == CurrentNetEyeVersion {
-		return nil, v.validateSingleAuthority(ctx, obj)
+		return databaseWarnings(obj), v.validateSingleAuthority(ctx, obj)
 	}
 
 	return nil, invalidVersionError(
@@ -76,10 +76,10 @@ func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *Ne
 	newVersion := newObj.Spec.Version
 
 	if oldVersion == CurrentNetEyeVersion && newVersion == CurrentNetEyeVersion {
-		return nil, v.validateSingleAuthority(ctx, newObj)
+		return databaseWarnings(newObj), v.validateSingleAuthority(ctx, newObj)
 	}
 	if oldVersion == PreviousNetEyeVersion && newVersion == CurrentNetEyeVersion {
-		return nil, v.validateSingleAuthority(ctx, newObj)
+		return databaseWarnings(newObj), v.validateSingleAuthority(ctx, newObj)
 	}
 
 	return nil, invalidVersionError(
@@ -112,6 +112,16 @@ func validateIdentity(neteye *NetEye) error {
 	}
 	if len(errors) > 0 {
 		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, errors)
+	}
+	return nil
+}
+
+// databaseWarnings flags PostgreSQL left on the defaulted MariaDB port, which
+// the schema default makes indistinguishable from an explicit choice.
+func databaseWarnings(neteye *NetEye) admission.Warnings {
+	db := &neteye.Spec.Identity.DBConnection
+	if db.EffectiveVendor() == DBVendorPostgres && db.EffectivePort() == DefaultKeycloakDatabasePort {
+		return admission.Warnings{fmt.Sprintf("spec.identity.dbConnection.port is %d, the MariaDB default; PostgreSQL usually listens on 5432", DefaultKeycloakDatabasePort)}
 	}
 	return nil
 }

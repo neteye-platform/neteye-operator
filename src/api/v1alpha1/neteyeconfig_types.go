@@ -50,16 +50,31 @@ type NetEyeConfigMapKeySelector struct {
 	Key string `json:"key,omitempty"`
 }
 
+// NetEyeDBVendor is a database engine, named as in the Keycloak db vendor.
+// +kubebuilder:validation:Enum=mariadb;postgres
+type NetEyeDBVendor string
+
+const (
+	DBVendorMariaDB  NetEyeDBVendor = "mariadb"
+	DBVendorPostgres NetEyeDBVendor = "postgres"
+)
+
 // NetEyeDBConnectionSpec defines the database connection used by a
 // NetEye component.
 type NetEyeDBConnectionSpec struct {
+	// Vendor is the database engine.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=mariadb
+	Vendor NetEyeDBVendor `json:"vendor,omitempty"`
+
 	// Host is the DNS name or IP address of the external service.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:example="mariadb.example.com"
 	Host string `json:"host"`
 
-	// Port is the service port.
+	// Port is the service port. The default is the MariaDB port; set it for
+	// PostgreSQL, usually to 5432.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
@@ -87,11 +102,31 @@ type NetEyeDBConnectionSpec struct {
 }
 
 const (
-	DefaultKeycloakDatabaseName              = "keycloak"
-	DefaultKeycloakDatabaseCredentialsName   = "keycloak-db-credentials"
-	DefaultKeycloakDatabaseUsernameSecretKey = "username"
-	DefaultKeycloakDatabasePasswordSecretKey = "password"
+	DefaultKeycloakDatabaseVendor                  = DBVendorMariaDB
+	DefaultKeycloakDatabasePort              int32 = 3306
+	DefaultKeycloakDatabaseName                    = "keycloak"
+	DefaultKeycloakDatabaseCredentialsName         = "keycloak-db-credentials"
+	DefaultKeycloakDatabaseUsernameSecretKey       = "username"
+	DefaultKeycloakDatabasePasswordSecretKey       = "password"
 )
+
+// EffectiveVendor returns the Keycloak database vendor for objects that
+// bypassed admission defaulting.
+func (s *NetEyeDBConnectionSpec) EffectiveVendor() NetEyeDBVendor {
+	if s == nil || s.Vendor == "" {
+		return DefaultKeycloakDatabaseVendor
+	}
+	return s.Vendor
+}
+
+// EffectivePort returns the Keycloak database port for objects that bypassed
+// admission defaulting.
+func (s *NetEyeDBConnectionSpec) EffectivePort() int32 {
+	if s == nil || s.Port == 0 {
+		return DefaultKeycloakDatabasePort
+	}
+	return s.Port
+}
 
 // EffectiveDBName returns the Keycloak database name for objects that bypassed
 // admission defaulting.
@@ -192,7 +227,7 @@ type NetEyeIdentitySpec struct {
 	// +kubebuilder:validation:Optional
 	Telemetry *NetEyeIdentityTelemetrySpec `json:"telemetry,omitempty"`
 
-	// DBConnection configures the MariaDB database used by identity services.
+	// DBConnection configures the database used by identity services.
 	// Credential Secrets must exist in the shared Keycloak workload namespace.
 	// +kubebuilder:validation:Required
 	DBConnection NetEyeDBConnectionSpec `json:"dbConnection"`
