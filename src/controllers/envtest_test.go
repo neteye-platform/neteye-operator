@@ -368,8 +368,15 @@ func TestAPIServerAppliesKeycloakDatabaseDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := current.Spec.Identity.DBConnection
-	if db.DBName != "keycloak" || db.UsernameSecret == nil || *db.UsernameSecret != (neteye.NetEyeSecretKeySelector{Name: "keycloak-db-credentials", Key: "username"}) || db.PasswordSecret == nil || *db.PasswordSecret != (neteye.NetEyeSecretKeySelector{Name: "keycloak-db-credentials", Key: "password"}) {
+	if db.Vendor != neteye.DBVendorMariaDB || db.Port != 3306 || db.DBName != "keycloak" || db.UsernameSecret == nil || *db.UsernameSecret != (neteye.NetEyeSecretKeySelector{Name: "keycloak-db-credentials", Key: "username"}) || db.PasswordSecret == nil || *db.PasswordSecret != (neteye.NetEyeSecretKeySelector{Name: "keycloak-db-credentials", Key: "password"}) {
 		t.Errorf("database defaults = %+v", db)
+	}
+
+	unsupported := ne.DeepCopy()
+	unsupported.ObjectMeta = metav1.ObjectMeta{Name: "unsupported-vendor", Namespace: keycloak.WorkloadNamespace}
+	unsupported.Spec.Identity.DBConnection.Vendor = "mysql"
+	if err := c.Create(ctx, unsupported); !apierrors.IsInvalid(err) {
+		t.Errorf("create NetEye with unsupported database vendor: err = %v, want Invalid", err)
 	}
 }
 

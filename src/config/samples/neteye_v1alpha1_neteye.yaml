@@ -34,6 +34,8 @@ spec:
     enabledFeatures:
       - token-exchange
     dbConnection:
+      # mariadb (default) or postgres. Set port to 5432 for PostgreSQL.
+      vendor: mariadb
       host: mariadb.example.com
       port: 3306
       dbName: keycloak
