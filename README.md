@@ -17,6 +17,39 @@ Reconciliation is version-aware — a validating webhook guards the declared
 product `version` and its allowed upgrade transitions — and reports progress
 through the resource `status`.
 
+### Procedure gates
+
+Parts of NetEye still run on the legacy infrastructure and are installed and
+upgraded by the NetEye Ansible procedure. The two sides synchronize through
+`NetEyeProcedureGate` resources (short name `nepg`) in the namespace of the
+`NetEye` resource. A gate records that a step for a NetEye `version` is done;
+its existence is the signal:
+
+```yaml
+apiVersion: neteye.cloud/v1alpha1
+kind: NetEyeProcedureGate
+metadata:
+  name: 4.52-keycloak-db-configured
+  namespace: neteye-tenant-shared
+spec:
+  version: "4.52"
+  gate: keycloak-db-configured
+  producer: Ansible
+```
+
+While installing (`status.currentVersion` empty, phase `Installing`) or
+upgrading (`status.currentVersion` is the previous release, phase
+`Upgrading`), each component waits for the gates its release plan requires and
+the operator creates the gates it produces once that component is ready. The
+other components keep reconciling. A disabled component, such as the Elastic
+Stack when `elasticStack.enabled` is false, neither waits for nor creates
+gates, since its feature module is disabled on the legacy side too.
+`status.currentVersion` is set once every component is ready, after which
+gates are no longer checked. An administrator can create a missing gate by
+hand to unblock a procedure. Set
+`spec.useProcedureGates: false` where no Ansible procedure runs; the operator
+then neither waits for nor creates gates.
+
 ## Documentation and support
 
 This repository contains the operator only. NetEye itself is a commercial

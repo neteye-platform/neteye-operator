@@ -27,6 +27,11 @@
         kind: KeycloakRealm
         name: keycloakrealms.neteye.cloud
         version: v1alpha1
+      - description: NetEyeProcedureGate records a completed install or upgrade step, so the operator and the NetEye Ansible procedure can wait for each other.
+        displayName: NetEye Procedure Gate
+        kind: NetEyeProcedureGate
+        name: neteyeproceduregates.neteye.cloud
+        version: v1alpha1
     required:
       - {displayName: cert-manager Certificate, kind: Certificate, name: certificates.cert-manager.io, version: v1}
       - {displayName: cert-manager Issuer, kind: Issuer, name: issuers.cert-manager.io, version: v1}

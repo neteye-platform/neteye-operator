@@ -40,6 +40,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&KeycloakAuthFlowList{},
 		&KeycloakRealm{},
 		&KeycloakRealmList{},
+		&NetEyeProcedureGate{},
+		&NetEyeProcedureGateList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, GroupVersion)

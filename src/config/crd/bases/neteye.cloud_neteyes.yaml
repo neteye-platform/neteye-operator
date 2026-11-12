@@ -20,6 +20,10 @@ spec:
     - jsonPath: .spec.version
       name: Version
       type: string
+    - jsonPath: .status.currentVersion
+      name: Current
+      priority: 1
+      type: string
     - jsonPath: .metadata.namespace
       name: Namespace
       type: string
@@ -423,6 +427,13 @@ spec:
                 example: neteye-internal-issuer
                 minLength: 1
                 type: string
+              useProcedureGates:
+                default: true
+                description: |-
+                  UseProcedureGates makes the operator wait for and create
+                  NetEyeProcedureGates during installs and upgrades. Disable it where no
+                  NetEye Ansible procedure runs and an administrator performs those steps.
+                type: boolean
               version:
                 description: |-
                   Version is the NetEye product version string, e.g. "4.51".
@@ -440,6 +451,13 @@ spec:
           status:
             description: NetEyeStatus defines the observed state of NetEyeConfig.
             properties:
+              currentVersion:
+                description: |-
+                  CurrentVersion is the NetEye release whose install or upgrade has
+                  completed. While it differs from spec.version the operator is installing
+                  (when empty) or upgrading, and waits for the required
+                  NetEyeProcedureGates.
+                type: string
               message:
                 description: Message is a human-readable aggregate status message.
                 type: string

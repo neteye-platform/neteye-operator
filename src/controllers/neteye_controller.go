@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -59,11 +60,15 @@ type NetEyeReconciler struct {
 	WaitForProgressingRequeueAfter time.Duration
 	FailureRequeueAfter            time.Duration
 	ReconciliationRequeueAfter     time.Duration
+
+	// releasePlans overrides defaultReleasePlans in tests.
+	releasePlans map[string]releasePlan
 }
 
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyes/finalizers,verbs=update
+// +kubebuilder:rbac:groups=neteye.cloud,resources=neteyeproceduregates,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update
@@ -143,6 +148,13 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	}
 	log.V(1).Info("Components loaded", "version", ne.Spec.Version)
 
+	procedure, ok := lifecycleFor(ne)
+	if !ok {
+		log.Error(nil, "unsupported NetEye upgrade", "currentVersion", ne.Status.CurrentVersion, "version", ne.Spec.Version, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("cannot upgrade NetEye from '%s' to '%s'; only upgrades from '%s' are supported", ne.Status.CurrentVersion, ne.Spec.Version, neteye.PreviousNetEyeVersion))
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+	}
+
 	if err := r.ensureClusterAuthority(ctx, ne); err != nil {
 		log.Error(err, "failed to establish NetEye cluster authority", "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, err.Error())
@@ -163,7 +175,12 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		return ctrl.Result{}, fmt.Errorf("construct component lifecycle graph: %w", err)
 	}
-	results, err := runComponentOperations(graph, map[componentID]componentOperation{
+	images := map[componentID]string{
+		identityComponentID:      components.KeycloakImage,
+		otelCollectorComponentID: components.OTelCollectorImage,
+		edotGatewayComponentID:   components.EDOTGatewayImage,
+	}
+	operations := map[componentID]componentOperation{
 		identityComponentID: func() (componentResult, error) {
 			return r.reconcileKeycloak(ctx, ne, components.KeycloakImage)
 		},
@@ -173,7 +190,23 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		edotGatewayComponentID: func() (componentResult, error) {
 			return r.reconcileEDOTGateway(ctx, ne, components.EDOTGatewayImage)
 		},
-	})
+	}
+	if procedure != lifecycleSteady {
+		useGates := ne.Spec.EffectiveUseProcedureGates()
+		var present map[string]struct{}
+		if useGates {
+			if present, err = r.procedureGates(ctx, ne); err != nil {
+				log.Error(err, "failed to read NetEye procedure gates", "requeueAfter", r.failureRequeue())
+				setPhase(ne, neteye.PhaseFailed, err.Error())
+				return ctrl.Result{RequeueAfter: r.failureRequeue()}, err
+			}
+		}
+		plan := r.gatePlanFor(ne.Spec.Version, procedure)
+		for id, op := range operations {
+			operations[id] = r.gatedOperation(ctx, ne, id, images[id], plan[id], useGates, present, op)
+		}
+	}
+	results, err := runComponentOperations(graph, operations)
 	if err != nil {
 		setPhase(ne, neteye.PhaseFailed, "Check services status for details")
 		return ctrl.Result{}, err
@@ -182,6 +215,13 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	state, message := aggregateElasticStackStatus(ne.Status.ServicesStatus.ElasticStack.OTelCollector, ne.Status.ServicesStatus.ElasticStack.EDOTGateway)
 	ne.Status.ServicesStatus.ElasticStack.Status, ne.Status.ServicesStatus.ElasticStack.Message = state, message
 	phase, message := aggregateComponentPhase(results)
+	if procedure != lifecycleSteady {
+		previous := ne.Status.CurrentVersion
+		phase, message = lifecyclePhase(ne, procedure, phase, message, results)
+		if ne.Status.CurrentVersion == ne.Spec.Version {
+			log.Info("NetEye procedure completed", "procedure", procedure, "fromVersion", previous, "version", ne.Spec.Version)
+		}
+	}
 	setPhase(ne, phase, message)
 	requeueAfter := earliestComponentRequeue(results)
 	if requeueAfter == 0 {
@@ -631,7 +671,7 @@ func phaseSeverity(phase neteye.NetEyePhase) int {
 	switch phase {
 	case neteye.PhaseFailed:
 		return 3
-	case neteye.PhaseNotReady, neteye.PhasePendingUpgrades:
+	case neteye.PhaseNotReady, neteye.PhasePendingUpgrades, neteye.PhaseInstalling, neteye.PhaseUpgrading:
 		return 2
 	case neteye.PhaseReady:
 		return 1
@@ -651,5 +691,6 @@ func identityStatus(state neteye.ServiceState, message, image string) *neteye.Ne
 func (r *NetEyeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&neteye.NetEye{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
+		Watches(&neteye.NetEyeProcedureGate{}, handler.EnqueueRequestsFromMapFunc(r.netEyesForProcedureGate)).
 		Complete(r)
 }

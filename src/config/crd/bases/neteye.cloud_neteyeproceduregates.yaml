@@ -1,0 +1,104 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: neteyeproceduregates.neteye.cloud
+spec:
+  group: neteye.cloud
+  names:
+    kind: NetEyeProcedureGate
+    listKind: NetEyeProcedureGateList
+    plural: neteyeproceduregates
+    shortNames:
+    - nepg
+    singular: neteyeproceduregate
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.version
+      name: Version
+      type: string
+    - jsonPath: .spec.gate
+      name: Gate
+      type: string
+    - jsonPath: .spec.producer
+      name: Producer
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          NetEyeProcedureGate records that a step of a NetEye install or upgrade has
+          been completed. Its existence is the signal: the operator and the NetEye
+          Ansible procedure create gates for each other in the namespace of the NetEye
+          resource and wait for the gates they require.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NetEyeProcedureGateSpec records one completed install or
+              upgrade step.
+            properties:
+              gate:
+                description: |-
+                  Gate is the step key agreed between the operator and the NetEye Ansible
+                  procedure.
+                example: keycloak-db-configured
+                maxLength: 63
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                type: string
+              message:
+                description: Message is an optional human-readable note about the
+                  step.
+                maxLength: 1024
+                type: string
+              producer:
+                description: |-
+                  Producer is who completed the step. It is informational: a gate
+                  satisfies its consumers whoever created it, so an administrator can
+                  create one by hand to unblock an install or upgrade.
+                enum:
+                - Ansible
+                - Operator
+                type: string
+              version:
+                description: Version is the NetEye release being installed or upgraded
+                  to, e.g. "4.52".
+                example: "4.52"
+                pattern: ^[0-9]+\.[0-9]+$
+                type: string
+            required:
+            - gate
+            - producer
+            - version
+            type: object
+            x-kubernetes-validations:
+            - message: spec is immutable
+              rule: self == oldSelf
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

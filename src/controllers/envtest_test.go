@@ -63,6 +63,7 @@ func startEnvtest(t *testing.T) (client.Client, *runtime.Scheme) {
 				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakusers.yaml"),
 				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakauthflows.yaml"),
 				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakrealms.yaml"),
+				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_neteyeproceduregates.yaml"),
 			},
 		},
 	}
@@ -753,8 +754,8 @@ func TestReconcileBaseResourcesAgainstAPIServer(t *testing.T) {
 	if err := c.Get(ctx, req.NamespacedName, got); err != nil {
 		t.Fatalf("get neteye: %v", err)
 	}
-	if got.Status.Phase != neteye.PhaseNotReady {
-		t.Errorf("phase = %q, want %q", got.Status.Phase, neteye.PhaseNotReady)
+	if got.Status.Phase != neteye.PhaseInstalling {
+		t.Errorf("phase = %q, want %q", got.Status.Phase, neteye.PhaseInstalling)
 	}
 
 	keycloakCertificate := requireExists(ctx, t, c, certificateGVK, keycloak.WorkloadNamespace, keycloak.TLSCertificateName)
