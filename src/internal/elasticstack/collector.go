@@ -79,10 +79,11 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 	if _, err := url.Parse(issuer); err != nil { // identity hostname was validated; retain defensive failure semantics.
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := resources.EnsureConfigMap(ctx, c.client, namespace, ConfigMapName, map[string]string{"otel-collector-config.yaml": collectorConfig}, owner); err != nil {
+	configVersion, err := resources.EnsureConfigMap(ctx, c.client, namespace, ConfigMapName, map[string]string{"otel-collector-config.yaml": collectorConfig}, owner)
+	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	versions, err := collectorInputVersions(ctx, c.client, namespace, caBundle, basicAuthVersion, apiKeyVersion, rootCAVersion)
+	versions, err := collectorInputVersions(ctx, c.client, namespace, caBundle, configVersion, basicAuthVersion, apiKeyVersion, rootCAVersion)
 	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
@@ -128,14 +129,7 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 			return progressingOutcome(ReasonRouteNotReady, message)
 		}
 	}
-	ready, message, err := resources.IsDeploymentReady(ctx, c.client, namespace, DeploymentName)
-	if err != nil {
-		return degradedOutcome(ReasonReconcileFailed, message, err)
-	}
-	if !ready {
-		return progressingOutcome(ReasonDeploymentNotAvailable, message)
-	}
-	return readyOutcome("OpenTelemetry Collector is ready")
+	return deploymentOutcome(ctx, c.client, namespace, DeploymentName, "OpenTelemetry Collector is ready")
 }
 
 // Delete removes only collector-owned objects. It never deletes EDOT resources
@@ -229,19 +223,7 @@ func requiredSecretResourceVersion(ctx context.Context, c client.Client, namespa
 	return secret.ResourceVersion, nil
 }
 
-func configMapResourceVersion(ctx context.Context, c client.Client, namespace, name string) (string, error) {
-	object := &corev1.ConfigMap{}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, object); err != nil {
-		return "", err
-	}
-	return object.ResourceVersion, nil
-}
-
-func collectorInputVersions(ctx context.Context, c client.Client, namespace string, caBundle resources.CABundleRef, basicAuthVersion, apiKeyVersion, rootCAVersion string) (map[string]string, error) {
-	configVersion, err := configMapResourceVersion(ctx, c, namespace, ConfigMapName)
-	if err != nil {
-		return nil, err
-	}
+func collectorInputVersions(ctx context.Context, c client.Client, namespace string, caBundle resources.CABundleRef, configVersion, basicAuthVersion, apiKeyVersion, rootCAVersion string) (map[string]string, error) {
 	versions := map[string]string{"neteye.cloud/config-resource-version": configVersion, "neteye.cloud/basic-auth-resource-version": basicAuthVersion, "neteye.cloud/api-key-resource-version": apiKeyVersion, "neteye.cloud/root-ca-resource-version": rootCAVersion}
 	userCAVersion, err := resources.UserCABundleVersion(ctx, c, namespace, caBundle)
 	if err != nil {
@@ -389,7 +371,6 @@ exporters:
     endpoints: ${ELASTICSEARCH_ENDPOINTS}
     api_key: "${ELASTICSEARCH_API_KEY}"
     tls: {ca_file: /etc/neteye/root-ca/ca.crt}
-    mapping: {mode: otel}
 service:
   extensions: [oidc, basicauth/crosstenant, health_check]
   pipelines:

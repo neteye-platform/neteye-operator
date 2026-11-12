@@ -19,6 +19,7 @@ const (
 	ReasonSecretNotFound         = "SecretNotFound"
 	ReasonSecretKeyMissing       = "SecretKeyMissing"
 	ReasonDeploymentNotAvailable = "DeploymentNotAvailable"
+	ReasonDeploymentStalled      = "DeploymentStalled"
 	ReasonRouteNotReady          = "RouteNotReady"
 	ReasonCertificateNotReady    = "CertificateNotReady"
 	ReasonReconcileFailed        = "ReconcileFailed"

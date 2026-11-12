@@ -107,6 +107,71 @@ func TestOTelCollectorPrerequisitesAndInvalidSpecDoNotCreateWorkloads(t *testing
 	}
 }
 
+// staleConfigMapCache hides ConfigMaps from reads, as an informer cache does
+// right after the operator creates one.
+func staleConfigMapCache() interceptor.Funcs {
+	return interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		if _, ok := obj.(*corev1.ConfigMap); ok {
+			return apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, key.Name)
+		}
+		return c.Get(ctx, key, obj, opts...)
+	}}
+}
+
+func TestTelemetryConfigMapCreationToleratesStaleCache(t *testing.T) {
+	namespace := "telemetry"
+	assertConfigVersion := func(t *testing.T, c client.Client, deploymentName, configMapName string) {
+		t.Helper()
+		deployment := &appsv1.Deployment{}
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: deploymentName}, deployment); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := deployment.Spec.Template.Annotations["neteye.cloud/config-resource-version"], configMap(t, c, namespace, configMapName).ResourceVersion; got != want {
+			t.Fatalf("config-resource-version=%q, want %q", got, want)
+		}
+	}
+
+	t.Run("collector", func(t *testing.T) {
+		base := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
+		outcome := NewOTelCollectorComponent(interceptor.NewClient(base, staleConfigMapCache())).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner())
+		if outcome.Phase != PhaseProgressing {
+			t.Fatalf("outcome=%+v", outcome)
+		}
+		assertConfigVersion(t, base, DeploymentName, ConfigMapName)
+	})
+	t.Run("edot gateway", func(t *testing.T) {
+		spec := &neteye.NetEyeEDOTGatewaySpec{APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: "elastic-key", Key: "key"}, RootCASecretName: "elastic-ca"}
+		base := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-key"}, Data: map[string][]byte{"key": []byte("value")}}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-ca"}, Data: map[string][]byte{"tls.crt": []byte("ca")}}).Build()
+		outcome := NewEDOTGatewayComponent(interceptor.NewClient(base, staleConfigMapCache())).Ensure(context.Background(), namespace, spec, []string{"https://198.51.100.23:9243"}, "image", false, owner())
+		if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonDeploymentNotAvailable {
+			t.Fatalf("outcome=%+v", outcome)
+		}
+		assertConfigVersion(t, base, EDOTGatewayDeploymentName, EDOTGatewayConfigMapName)
+	})
+}
+
+func TestStalledTelemetryRolloutIsDegraded(t *testing.T) {
+	namespace := "telemetry"
+	spec := &neteye.NetEyeEDOTGatewaySpec{APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: "elastic-key", Key: "key"}, RootCASecretName: "elastic-ca"}
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithStatusSubresource(&appsv1.Deployment{}).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-key"}, Data: map[string][]byte{"key": []byte("value")}}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-ca"}, Data: map[string][]byte{"tls.crt": []byte("ca")}}).Build()
+	component := NewEDOTGatewayComponent(c)
+	if outcome := component.Ensure(context.Background(), namespace, spec, []string{"https://198.51.100.23:9243"}, "image", false, owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("first pass outcome=%+v", outcome)
+	}
+	deployment := &appsv1.Deployment{}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: EDOTGatewayDeploymentName}, deployment); err != nil {
+		t.Fatal(err)
+	}
+	deployment.Status = appsv1.DeploymentStatus{ObservedGeneration: deployment.Generation, UpdatedReplicas: 1, Conditions: []appsv1.DeploymentCondition{{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse, Reason: "ProgressDeadlineExceeded", Message: "ReplicaSet has timed out progressing."}}}
+	if err := c.Status().Update(context.Background(), deployment); err != nil {
+		t.Fatal(err)
+	}
+	outcome := component.Ensure(context.Background(), namespace, spec, []string{"https://198.51.100.23:9243"}, "image", false, owner())
+	if outcome.Phase != PhaseDegraded || outcome.Reason != ReasonDeploymentStalled || !strings.Contains(outcome.Message, "timed out progressing") {
+		t.Fatalf("outcome=%+v", outcome)
+	}
+}
+
 func TestEDOTGatewayBuildsElasticsearchBoundary(t *testing.T) {
 	namespace := "telemetry"
 	spec := &neteye.NetEyeEDOTGatewaySpec{Replicas: 2, APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: "elastic-key", Key: "key"}, RootCASecretName: "elastic-ca"}
@@ -143,7 +208,7 @@ func TestEDOTGatewayBuildsElasticsearchBoundary(t *testing.T) {
 		t.Fatal("edot config-file ConfigMap is not mounted")
 	}
 	assertPipelineReferences(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"], true)
-	assertEDOTMapping(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"])
+	assertNoExporterMapping(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"])
 	assertEDOTPipelineTopology(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"])
 	assertPolicySelector(t, c, namespace, EDOTGatewayIngressPolicyName, edotGatewayAppLabel)
 	assertPolicySelector(t, c, namespace, EDOTGatewayEgressPolicyName, edotGatewayAppLabel)
@@ -473,6 +538,7 @@ func TestTelemetryDeploymentsTrustRootCAWithoutHostPath(t *testing.T) {
 		if !strings.Contains(config, "ca_file: "+rootCAMountPath+"/ca.crt") {
 			t.Errorf("config does not trust only the mounted root CA")
 		}
+		assertNoExporterMapping(t, config)
 	}
 	if findVolumeOK(gateway.Spec.Template.Spec.Volumes, resources.UserCABundleVolumeName) {
 		t.Error("gateway only talks to Elasticsearch and must not mount the user CA bundle")
@@ -788,15 +854,15 @@ func pipelineReferenceDefined(config map[string]any, section, reference string) 
 	}
 }
 
-func assertEDOTMapping(t *testing.T, document string) {
+func assertNoExporterMapping(t *testing.T, document string) {
 	t.Helper()
 	var config map[string]any
 	if err := yaml.Unmarshal([]byte(document), &config); err != nil {
 		t.Fatal(err)
 	}
-	mapping := config["exporters"].(map[string]any)["elasticsearch/otel"].(map[string]any)["mapping"].(map[string]any)
-	if mapping["mode"] != "otel" {
-		t.Fatalf("mapping=%v", mapping)
+	// The exporter defaults to otel mapping; collector-contrib 0.165 rejects mapping.mode.
+	if mapping, ok := config["exporters"].(map[string]any)["elasticsearch/otel"].(map[string]any)["mapping"]; ok {
+		t.Fatalf("mapping must not be set, got %v", mapping)
 	}
 }
 

@@ -16,23 +16,31 @@ import (
 )
 
 // EnsureConfigMap reconciles data and controller ownership without touching unrelated metadata.
-func EnsureConfigMap(ctx context.Context, c client.Client, namespace, name string, data map[string]string, owner metav1.OwnerReference) error {
+// It returns the resulting resourceVersion: the cache may not yet hold the write.
+func EnsureConfigMap(ctx context.Context, c client.Client, namespace, name string, data map[string]string, owner metav1.OwnerReference) (string, error) {
 	live := &corev1.ConfigMap{}
 	key := client.ObjectKey{Namespace: namespace, Name: name}
 	if err := c.Get(ctx, key, live); apierrors.IsNotFound(err) {
-		return c.Create(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, OwnerReferences: []metav1.OwnerReference{owner}}, Data: data})
+		created := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, OwnerReferences: []metav1.OwnerReference{owner}}, Data: data}
+		if err := c.Create(ctx, created); err != nil {
+			return "", err
+		}
+		return created.ResourceVersion, nil
 	} else if err != nil {
-		return err
+		return "", err
 	}
 	ownerChanged, err := setControllerOwnerReference(live, owner)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if reflect.DeepEqual(live.Data, data) && !ownerChanged {
-		return nil
+		return live.ResourceVersion, nil
 	}
 	live.Data = data
-	return c.Update(ctx, live)
+	if err := c.Update(ctx, live); err != nil {
+		return "", err
+	}
+	return live.ResourceVersion, nil
 }
 
 // EnsureDeployment reconciles the workload spec and controller ownership.
