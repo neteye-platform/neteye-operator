@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 )
 
 type componentID string
@@ -42,7 +44,10 @@ type componentResult struct {
 	// ServesDependants marks a progressing component that is already usable, with only non-essential work pending, so
 	// that its dependants do not wait for it.
 	ServesDependants bool
-	Err              error
+	// ResolvedImages are the images that the component deploys. A resource
+	// that publishes them in its component status reads them from here.
+	ResolvedImages []neteye.NetEyeResolvedImage
+	Err            error
 }
 
 func readyResult(id componentID, reason, message string) (componentResult, error) {

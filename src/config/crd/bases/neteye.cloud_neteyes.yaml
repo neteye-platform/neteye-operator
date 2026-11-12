@@ -64,8 +64,8 @@ spec:
               caBundle:
                 description: |-
                   CABundle selects the optional ConfigMap with extra PEM CA certificates
-                  that Keycloak and the OpenTelemetry Collector trust in addition to their
-                  built-in roots. The ConfigMap lives in the shared NetEye namespace and may
+                  that Keycloak, the OpenTelemetry Collector and the PermissionSync of each
+                  tenant trust in addition to their built-in roots. The ConfigMap lives in the shared NetEye namespace and may
                   be absent. The default is neteye-ca-bundle/ca-bundle.pem.
                 properties:
                   key:

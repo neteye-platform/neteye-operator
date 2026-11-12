@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -979,6 +980,31 @@ func TestAPIServerValidatesNetEyeTenantSchema(t *testing.T) {
 				t.Fatalf("error = %v, want it to contain %q", err, test.want)
 			}
 		})
+	}
+
+	withPermissionSync := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{
+		DisplayName: "Default",
+		PermissionSync: neteye.NetEyeTenantPermissionSyncSpec{
+			Realm:           "master",
+			Replicas:        ptr.To(int32(1)),
+			Provider:        &neteye.NetEyeTenantPermissionSyncProviderSpec{Endpoint: "https://node.example.com/neteye/api/v2/permission-provider/desired-state"},
+			GLPI:            &neteye.NetEyeTenantPermissionSyncGLPISpec{Endpoint: "https://node.example.com/glpi/apirest.php", CredentialsSecretRef: neteye.NetEyeTenantPermissionSyncGLPICredentials{Name: "permissionsync-glpi-credentials"}},
+			Targets:         []neteye.NetEyeTenantPermissionSyncTarget{{LogicalTarget: "glpi", Adapter: "glpi"}},
+			PodExtraEnvVars: []neteye.NetEyeEnvVar{{Name: "PERMISSIONSYNC_OBSERVABILITY__LOG_LEVEL", Value: "debug"}},
+		},
+	}}
+	if err := c.Create(ctx, withPermissionSync, client.DryRunAll); err != nil {
+		t.Fatalf("tenant with a complete permissionSync section rejected: %v", err)
+	}
+	unknownAdapter := withPermissionSync.DeepCopy()
+	unknownAdapter.Spec.PermissionSync.Targets[0].Adapter = "ldap"
+	if err := c.Create(ctx, unknownAdapter, client.DryRunAll); err == nil || !strings.Contains(err.Error(), "spec.permissionSync.targets[0].adapter") {
+		t.Errorf("error = %v, want the unknown adapter refused", err)
+	}
+	tooMany := withPermissionSync.DeepCopy()
+	tooMany.Spec.PermissionSync.Replicas = ptr.To(int32(0))
+	if err := c.Create(ctx, tooMany, client.DryRunAll); err == nil || !strings.Contains(err.Error(), "spec.permissionSync.replicas") {
+		t.Errorf("error = %v, want zero replicas refused", err)
 	}
 
 	// The length counts characters, not bytes: 63 two-byte characters fit.

@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -33,15 +34,15 @@ func SetupNetEyeTenantWebhookWithManager(mgr ctrl.Manager) error {
 // +kubebuilder:object:generate=false
 
 // NetEyeTenantValidator validates the NetEyeTenant rules that the CRD schema
-// cannot express: the namespace of a tenant, and a display name that is unique
-// among tenants. The CRD validates everything that depends on one field only.
+// cannot express: the namespace of a tenant, a display name that is unique
+// among tenants, and the rules of the PermissionSync configuration. The CRD validates everything that depends on one field only.
 type NetEyeTenantValidator struct {
 	reader client.Reader
 }
 
 // ValidateCreate validates NetEyeTenant resources on creation.
 func (v *NetEyeTenantValidator) ValidateCreate(ctx context.Context, obj *NetEyeTenant) (admission.Warnings, error) {
-	errors := ValidateTenantNamespace(obj)
+	errors := append(ValidateTenantNamespace(obj), ValidatePermissionSync(&obj.Spec.PermissionSync)...)
 	if len(errors) == 0 {
 		uniqueness, err := v.validateUniqueDisplayName(ctx, obj)
 		if err != nil {
@@ -53,18 +54,26 @@ func (v *NetEyeTenantValidator) ValidateCreate(ctx context.Context, obj *NetEyeT
 }
 
 // ValidateUpdate validates NetEyeTenant resources on update. The name and the
-// namespace of a resource never change, so only a new display name is checked.
-// Every other update is accepted, so that an existing conflict never blocks
-// unrelated changes such as the removal of a finalizer.
+// namespace of a resource never change, so only a new display name and a
+// changed permissionSync section are checked. Every other update is accepted,
+// so that an existing conflict never blocks unrelated changes such as the
+// removal of a finalizer.
 func (v *NetEyeTenantValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *NetEyeTenant) (admission.Warnings, error) {
-	if !newObj.DeletionTimestamp.IsZero() || sameDisplayName(oldObj.Spec.DisplayName, newObj.Spec.DisplayName) {
+	if !newObj.DeletionTimestamp.IsZero() {
 		return nil, nil
 	}
-	uniqueness, err := v.validateUniqueDisplayName(ctx, newObj)
-	if err != nil {
-		return nil, err
+	var errors field.ErrorList
+	if !equality.Semantic.DeepEqual(oldObj.Spec.PermissionSync, newObj.Spec.PermissionSync) {
+		errors = append(errors, ValidatePermissionSync(&newObj.Spec.PermissionSync)...)
 	}
-	return nil, tenantInvalid(newObj, uniqueness)
+	if !sameDisplayName(oldObj.Spec.DisplayName, newObj.Spec.DisplayName) {
+		uniqueness, err := v.validateUniqueDisplayName(ctx, newObj)
+		if err != nil {
+			return nil, err
+		}
+		errors = append(errors, uniqueness...)
+	}
+	return nil, tenantInvalid(newObj, errors)
 }
 
 // ValidateDelete allows NetEyeTenant deletion.

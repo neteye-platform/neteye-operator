@@ -392,6 +392,7 @@ spec:
           - keycloakrealms
           verbs:
           - create
+          - delete
           - get
           - list
           - patch
@@ -440,6 +441,8 @@ spec:
                   value: docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
                 - name: RELATED_IMAGE_EDOT_GATEWAY
                   value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1
+                - name: RELATED_IMAGE_PERMISSIONSYNC
+                  value: ghcr.io/neteye-platform/permissionsync:0.2.0@sha256:554bcf1803c2fe7ac52b8a081b4d0727d131647b43a716449f2063dd719a921c
                 image: ghcr.io/neteye-platform/neteye-operator:0.2.9
                 imagePullPolicy: Always
                 name: manager
@@ -528,6 +531,8 @@ spec:
     name: neteye-otel-collector
   - image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1
     name: neteye-edot-gateway
+  - image: ghcr.io/neteye-platform/permissionsync:0.2.0@sha256:554bcf1803c2fe7ac52b8a081b4d0727d131647b43a716449f2063dd719a921c
+    name: neteye-permissionsync
   version: 0.2.9
   webhookdefinitions:
   - admissionReviewVersions:

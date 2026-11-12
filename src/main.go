@@ -193,6 +193,7 @@ func main() {
 		Log:                        ctrl.Log.WithName("neteye-tenant-reconciler"),
 		Scheme:                     mgr.GetScheme(),
 		APIReader:                  mgr.GetAPIReader(),
+		AdminProviders:             adminProviders,
 		OperatorUsername:           operatorUsername,
 		FailureRequeueAfter:        failureRequeue,
 		ReconciliationRequeueAfter: reconciliationRequeue,
