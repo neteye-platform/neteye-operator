@@ -107,6 +107,49 @@ func TestOTelCollectorPrerequisitesAndInvalidSpecDoNotCreateWorkloads(t *testing
 	}
 }
 
+// staleConfigMapCache hides ConfigMaps from reads, as an informer cache does
+// right after the operator creates one.
+func staleConfigMapCache() interceptor.Funcs {
+	return interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		if _, ok := obj.(*corev1.ConfigMap); ok {
+			return apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, key.Name)
+		}
+		return c.Get(ctx, key, obj, opts...)
+	}}
+}
+
+func TestTelemetryConfigMapCreationToleratesStaleCache(t *testing.T) {
+	namespace := "telemetry"
+	assertConfigVersion := func(t *testing.T, c client.Client, deploymentName, configMapName string) {
+		t.Helper()
+		deployment := &appsv1.Deployment{}
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: deploymentName}, deployment); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := deployment.Spec.Template.Annotations["neteye.cloud/config-resource-version"], configMap(t, c, namespace, configMapName).ResourceVersion; got != want {
+			t.Fatalf("config-resource-version=%q, want %q", got, want)
+		}
+	}
+
+	t.Run("collector", func(t *testing.T) {
+		base := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
+		outcome := NewOTelCollectorComponent(interceptor.NewClient(base, staleConfigMapCache())).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner())
+		if outcome.Phase != PhaseProgressing {
+			t.Fatalf("outcome=%+v", outcome)
+		}
+		assertConfigVersion(t, base, DeploymentName, ConfigMapName)
+	})
+	t.Run("edot gateway", func(t *testing.T) {
+		spec := &neteye.NetEyeEDOTGatewaySpec{APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: "elastic-key", Key: "key"}, RootCASecretName: "elastic-ca"}
+		base := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-key"}, Data: map[string][]byte{"key": []byte("value")}}, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "elastic-ca"}, Data: map[string][]byte{"tls.crt": []byte("ca")}}).Build()
+		outcome := NewEDOTGatewayComponent(interceptor.NewClient(base, staleConfigMapCache())).Ensure(context.Background(), namespace, spec, []string{"https://198.51.100.23:9243"}, "image", false, owner())
+		if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonDeploymentNotAvailable {
+			t.Fatalf("outcome=%+v", outcome)
+		}
+		assertConfigVersion(t, base, EDOTGatewayDeploymentName, EDOTGatewayConfigMapName)
+	})
+}
+
 func TestEDOTGatewayBuildsElasticsearchBoundary(t *testing.T) {
 	namespace := "telemetry"
 	spec := &neteye.NetEyeEDOTGatewaySpec{Replicas: 2, APIKeySecret: &neteye.NetEyeSecretKeySelector{Name: "elastic-key", Key: "key"}, RootCASecretName: "elastic-ca"}

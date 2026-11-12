@@ -73,13 +73,11 @@ func (c *EDOTGatewayComponent) Ensure(ctx context.Context, namespace string, spe
 	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := resources.EnsureConfigMap(ctx, c.client, namespace, EDOTGatewayConfigMapName, map[string]string{"edot-gateway-config.yaml": edotGatewayConfig}, owner); err != nil {
-		return degradedOutcome(ReasonReconcileFailed, "", err)
-	}
-	versions, err := edotGatewayInputVersions(ctx, c.client, namespace, apiKeyVersion, rootCAVersion)
+	configVersion, err := resources.EnsureConfigMap(ctx, c.client, namespace, EDOTGatewayConfigMapName, map[string]string{"edot-gateway-config.yaml": edotGatewayConfig}, owner)
 	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
+	versions := edotGatewayInputVersions(configVersion, apiKeyVersion, rootCAVersion)
 	if err := resources.EnsureDeployment(ctx, c.client, edotGatewayDeployment(namespace, spec, image, string(encodedEndpoints), versions), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
@@ -248,12 +246,8 @@ func hostCIDR(ip string) string {
 	return parsed.String() + "/128"
 }
 
-func edotGatewayInputVersions(ctx context.Context, c client.Client, namespace, apiKeyVersion, rootCAVersion string) (map[string]string, error) {
-	configVersion, err := configMapResourceVersion(ctx, c, namespace, EDOTGatewayConfigMapName)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]string{"neteye.cloud/config-resource-version": configVersion, "neteye.cloud/api-key-resource-version": apiKeyVersion, "neteye.cloud/root-ca-resource-version": rootCAVersion}, nil
+func edotGatewayInputVersions(configVersion, apiKeyVersion, rootCAVersion string) map[string]string {
+	return map[string]string{"neteye.cloud/config-resource-version": configVersion, "neteye.cloud/api-key-resource-version": apiKeyVersion, "neteye.cloud/root-ca-resource-version": rootCAVersion}
 }
 
 const edotGatewayConfig = `receivers:
