@@ -1,17 +1,25 @@
-# Workflow: regenerate the OLM bundle of a pull request on demand.
+# Workflow: regenerate the generated files and the OLM bundle of a pull request.
 #
-# Comment `/regenerate-bundle` on a pull request (e.g. a Renovate operand image
-# update, where the committed bundle goes stale) to run `make bundle` on its
-# branch and push the result as a signed commit. The outcome is reported back
-# as a comment on the pull request.
+# Runs automatically on Renovate pull requests (branches renovate/*), where the
+# committed bundle goes stale when a bump changes the generated output (e.g. a
+# controller-gen or operand image update). It can also be requested on any
+# pull request by commenting `/regenerate-bundle`. Either way it runs
+# `make generate bundle` on the branch and pushes the result as a signed
+# commit. Comment-triggered runs always report back on the pull request;
+# automatic runs only comment when they push or fail.
 #
-# Only users with write access can trigger it and only for branches of this
+# Comment-triggered runs need write access and only run for branches of this
 # repository (never forks), since the workflow runs with the base repository
-# context and secrets.
+# context and secrets. Automatic runs are limited to the same branches.
 
 name: Regenerate Bundle
 
 on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
   issue_comment:
     types:
       - created
@@ -19,13 +27,17 @@ on:
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.issue.number }}
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
   regenerate-bundle:
     name: Regenerate and push the OLM bundle
-    if: ${{ github.event.issue.pull_request && startsWith(github.event.comment.body, '/regenerate-bundle') }}
+    if: >-
+      ${{
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/regenerate-bundle'))
+        || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'renovate/'))
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -34,19 +46,22 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.issue.number }}
+      PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
     steps:
       - name: Check the requester and resolve the pull request
         id: pr
         env:
+          EVENT_NAME: ${{ github.event_name }}
           ACTOR: ${{ github.event.comment.user.login }}
         run: |
           set -euo pipefail
 
-          permission="$(gh api "repos/${GH_REPO}/collaborators/${ACTOR}/permission" --jq .permission)"
-          if [[ ! "$permission" =~ ^(admin|maintain|write)$ ]]; then
-            echo "::error::${ACTOR} needs write access to regenerate the bundle (has: ${permission})"
-            exit 1
+          if [[ "$EVENT_NAME" == issue_comment ]]; then
+            permission="$(gh api "repos/${GH_REPO}/collaborators/${ACTOR}/permission" --jq .permission)"
+            if [[ ! "$permission" =~ ^(admin|maintain|write)$ ]]; then
+              echo "::error::${ACTOR} needs write access to regenerate the bundle (has: ${permission})"
+              exit 1
+            fi
           fi
 
           pr="$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}")"
@@ -78,10 +93,10 @@ jobs:
           go-version-file: src/go.mod
           cache-dependency-path: src/go.sum
 
-      - name: Regenerate the OLM bundle
+      - name: Regenerate the generated files and the OLM bundle
         env:
           GH_TOKEN: ""
-        run: make bundle
+        run: make generate bundle
 
       - name: Detect bundle changes
         id: changes
@@ -156,12 +171,18 @@ jobs:
       - name: Comment on the pull request
         if: ${{ always() && steps.pr.outcome == 'success' }}
         env:
+          EVENT_NAME: ${{ github.event_name }}
           CHANGED: ${{ steps.changes.outputs.changed }}
           COMMIT_SHA: ${{ steps.push.outputs.sha }}
           JOB_STATUS: ${{ job.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          # The pushed commit re-triggers this workflow; stay quiet when there
+          # is nothing to commit.
+          if [[ "$EVENT_NAME" == pull_request && "$JOB_STATUS" == success && "$CHANGED" != true ]]; then
+            exit 0
+          fi
           if [[ "$JOB_STATUS" != success ]]; then
             body="Regenerating the OLM bundle failed, see the [workflow run](${RUN_URL})."
           elif [[ "$CHANGED" != true ]]; then
