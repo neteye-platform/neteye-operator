@@ -3,6 +3,7 @@
   "extends": ["github>neteye-platform/repo-commons"],
   "description": "Commits by the bot that regenerates the OLM bundle (regenerate-bundle workflow) must not make Renovate treat its pull requests as manually edited",
   "gitIgnoredAuthors": ["265889471+neteye-steward[bot]@users.noreply.github.com"],
+  "postUpdateOptions": ["gomodTidy"],
   "packageRules": [
     {
       "description": "Do not pin the OperatorHub catalog digest",
