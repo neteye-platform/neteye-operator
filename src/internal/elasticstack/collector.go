@@ -389,7 +389,6 @@ exporters:
     endpoints: ${ELASTICSEARCH_ENDPOINTS}
     api_key: "${ELASTICSEARCH_API_KEY}"
     tls: {ca_file: /etc/neteye/root-ca/ca.crt}
-    mapping: {mode: otel}
 service:
   extensions: [oidc, basicauth/crosstenant, health_check]
   pipelines:

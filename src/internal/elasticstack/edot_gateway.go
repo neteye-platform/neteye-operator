@@ -271,7 +271,6 @@ exporters:
     endpoints: ${ELASTICSEARCH_ENDPOINTS}
     api_key: "${ELASTICSEARCH_API_KEY}"
     tls: {ca_file: /etc/neteye/root-ca/ca.crt}
-    mapping: {mode: otel}
 extensions:
   health_check: {endpoint: 0.0.0.0:13133}
 service:

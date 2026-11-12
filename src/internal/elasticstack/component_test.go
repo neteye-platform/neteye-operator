@@ -143,7 +143,7 @@ func TestEDOTGatewayBuildsElasticsearchBoundary(t *testing.T) {
 		t.Fatal("edot config-file ConfigMap is not mounted")
 	}
 	assertPipelineReferences(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"], true)
-	assertEDOTMapping(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"])
+	assertNoExporterMapping(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"])
 	assertEDOTPipelineTopology(t, configMap(t, c, namespace, EDOTGatewayConfigMapName).Data["edot-gateway-config.yaml"])
 	assertPolicySelector(t, c, namespace, EDOTGatewayIngressPolicyName, edotGatewayAppLabel)
 	assertPolicySelector(t, c, namespace, EDOTGatewayEgressPolicyName, edotGatewayAppLabel)
@@ -473,6 +473,7 @@ func TestTelemetryDeploymentsTrustRootCAWithoutHostPath(t *testing.T) {
 		if !strings.Contains(config, "ca_file: "+rootCAMountPath+"/ca.crt") {
 			t.Errorf("config does not trust only the mounted root CA")
 		}
+		assertNoExporterMapping(t, config)
 	}
 	if findVolumeOK(gateway.Spec.Template.Spec.Volumes, resources.UserCABundleVolumeName) {
 		t.Error("gateway only talks to Elasticsearch and must not mount the user CA bundle")
@@ -788,15 +789,15 @@ func pipelineReferenceDefined(config map[string]any, section, reference string) 
 	}
 }
 
-func assertEDOTMapping(t *testing.T, document string) {
+func assertNoExporterMapping(t *testing.T, document string) {
 	t.Helper()
 	var config map[string]any
 	if err := yaml.Unmarshal([]byte(document), &config); err != nil {
 		t.Fatal(err)
 	}
-	mapping := config["exporters"].(map[string]any)["elasticsearch/otel"].(map[string]any)["mapping"].(map[string]any)
-	if mapping["mode"] != "otel" {
-		t.Fatalf("mapping=%v", mapping)
+	// The exporter defaults to otel mapping; collector-contrib 0.165 rejects mapping.mode.
+	if mapping, ok := config["exporters"].(map[string]any)["elasticsearch/otel"].(map[string]any)["mapping"]; ok {
+		t.Fatalf("mapping must not be set, got %v", mapping)
 	}
 }
 
