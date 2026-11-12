@@ -20,7 +20,7 @@ on:
       - opened
       - synchronize
       - reopened
-  issue_comment:
+  issue_comment: # zizmor: ignore[dangerous-triggers]
     types:
       - created
 
