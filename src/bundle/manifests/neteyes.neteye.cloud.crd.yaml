@@ -241,10 +241,6 @@ spec:
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                     type: string
                 type: object
-                x-kubernetes-validations:
-                - message: name and className are required when managed is true
-                  rule: (has(self.managed) && !self.managed) || (has(self.name) &&
-                    has(self.className))
               identity:
                 description: Identity configures identity services such as Keycloak.
                 properties:
@@ -465,10 +461,6 @@ spec:
             - identity
             - version
             type: object
-            x-kubernetes-validations:
-            - message: internalCertificateIssuerRef is required when gateway.managed
-                is true
-              rule: (has(self.gateway.managed) && !self.gateway.managed) || has(self.internalCertificateIssuerRef)
           status:
             description: NetEyeStatus defines the observed state of NetEyeConfig.
             properties:

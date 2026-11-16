@@ -380,6 +380,35 @@ func withGatewayRootCASecret(config *NetEyeElasticStackSpec, value string) *NetE
 	return copied
 }
 
+func TestNetEyeValidatorRequiresGatewayFieldsOnlyWhenManaged(t *testing.T) {
+	managed, unmanaged := true, false
+	tests := []struct {
+		name    string
+		mutate  func(*NetEyeSpec)
+		wantErr bool
+	}{
+		{name: "managed by default with all fields", mutate: func(*NetEyeSpec) {}},
+		{name: "managed by default requires name", mutate: func(s *NetEyeSpec) { s.Gateway.Name = "" }, wantErr: true},
+		{name: "managed requires className", mutate: func(s *NetEyeSpec) { s.Gateway.Managed, s.Gateway.ClassName = &managed, "" }, wantErr: true},
+		{name: "managed requires issuer", mutate: func(s *NetEyeSpec) { s.InternalCertificateIssuerRef = "" }, wantErr: true},
+		{name: "unmanaged needs no gateway fields or issuer", mutate: func(s *NetEyeSpec) {
+			s.Gateway, s.InternalCertificateIssuerRef = NetEyeGatewaySpec{Managed: &unmanaged}, ""
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := netEyeWithVersion(CurrentNetEyeVersion)
+			tt.mutate(&obj.Spec)
+			if _, err := (&NetEyeValidator{}).ValidateCreate(context.Background(), obj); (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateCreate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			if _, err := (&NetEyeValidator{}).ValidateUpdate(context.Background(), obj, obj); (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateUpdate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestNetEyeValidatorRejectsSecondAuthority(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := AddToScheme(scheme); err != nil {
@@ -399,6 +428,10 @@ func TestNetEyeValidatorRejectsSecondAuthority(t *testing.T) {
 func netEyeWithVersion(version string) *NetEye {
 	return &NetEye{
 		ObjectMeta: metav1.ObjectMeta{Namespace: NetEyeNamespace},
-		Spec:       NetEyeSpec{Version: version},
+		Spec: NetEyeSpec{
+			Version:                      version,
+			Gateway:                      NetEyeGatewaySpec{Name: "neteye", ClassName: "cilium"},
+			InternalCertificateIssuerRef: "internal-issuer",
+		},
 	}
 }
