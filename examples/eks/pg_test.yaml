@@ -1,0 +1,47 @@
+# Warning: This file is used only for testing purposes. It is not intended for production use.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pg-test
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pg-test
+  namespace: pg-test
+  labels:
+    app: pg-test
+spec:
+  containers:
+    - name: postgres
+      image: docker.io/library/postgres:18
+      env:
+        - name: POSTGRES_USER
+          value: test
+        - name: POSTGRES_PASSWORD
+          value: test
+        - name: POSTGRES_DB
+          value: keycloak
+      ports:
+        - name: postgres
+          containerPort: 5432
+      volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql
+  volumes:
+    - name: data
+      emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg-test
+  namespace: pg-test
+spec:
+  selector:
+    app: pg-test
+  type:
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

@@ -1,0 +1,16 @@
+options:
+  certManager:
+    enabled: true
+  featureSet: standard
+
+# Namespaces
+namespaces:
+  olmv1:
+    name: olmv1-system
+  certManager:
+    name: cert-manager
+
+deployments:
+  templateSpec:
+    nodeSelector:
+      eks.amazonaws.com/nodeclass: standard
