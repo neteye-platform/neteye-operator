@@ -1,0 +1,46 @@
+# Workflow: check that the CRDs of a pull request upgrade safely from its base
+# branch, using crdify with the rules OLM v1 enforces when upgrading a bundle.
+# No inputs.
+
+name: CRD Upgrade Safety
+
+on:
+  pull_request:
+    branches:
+      - "**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  crd-upgrade-safety:
+    name: CRD upgrade safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Cache crdify
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src/bin
+          key: ${{ runner.os }}-crdify-${{ hashFiles('src/Makefile') }}
+
+      - name: Check CRD upgrade safety against the base branch
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: make crd-upgrade-check CRD_BASE_REF="$BASE_SHA"

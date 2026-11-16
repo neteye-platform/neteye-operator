@@ -148,6 +148,13 @@ separate `neteye-catalog` repository. OLM requires bundle-format
 channel metadata, so every bundle declares the `preview` channel metadata.
 This is not a release input and does not assign catalog membership.
 
+OLM refuses to upgrade a bundle whose CRDs change in ways it can't prove safe,
+such as an added CEL validation rule, a removed field, or a newly required
+field. `make crd-upgrade-check` runs [crdify](https://github.com/kubernetes-sigs/crdify)
+with OLM's rules (`src/hack/crdify.yaml`) against the CRDs at `CRD_BASE_REF`
+(default `origin/main`); CI runs it on every pull request against its base.
+Put cross-field rules in the validating webhook instead of CEL.
+
 ### OLM catalog
 
 The file-based OLM catalog and its catalog image build are maintained in the
