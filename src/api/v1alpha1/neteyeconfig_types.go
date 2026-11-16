@@ -410,7 +410,6 @@ type NetEyeOtelCollectorSpec struct {
 }
 
 // NetEyeGatewaySpec defines the Gateway API resources managed by NetEye.
-// +kubebuilder:validation:XValidation:rule="(has(self.managed) && !self.managed) || (has(self.name) && has(self.className))",message="name and className are required when managed is true"
 type NetEyeGatewaySpec struct {
 	// Managed makes the operator create the Gateway, its routes, and their TLS
 	// certificates. Disable it where the Gateway or ingress is managed outside
@@ -517,7 +516,6 @@ func IsLatestVersion(version string) bool {
 }
 
 // NetEyeSpec defines the desired state of NetEyeConfig.
-// +kubebuilder:validation:XValidation:rule="(has(self.gateway.managed) && !self.gateway.managed) || has(self.internalCertificateIssuerRef)",message="internalCertificateIssuerRef is required when gateway.managed is true"
 type NetEyeSpec struct {
 	// Version is the NetEye product version string, e.g. "4.51".
 	// It is used to resolve the correct component images (Keycloak, etc.).

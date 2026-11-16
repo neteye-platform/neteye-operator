@@ -381,48 +381,26 @@ func TestAPIServerAppliesKeycloakDatabaseDefaults(t *testing.T) {
 	}
 }
 
-func TestAPIServerRequiresGatewayFieldsOnlyWhenManaged(t *testing.T) {
+func TestAPIServerDefaultsGatewayToManaged(t *testing.T) {
 	c, _ := startEnvtest(t)
 	ctx := context.Background()
 	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: keycloak.WorkloadNamespace}}); err != nil {
 		t.Fatal(err)
 	}
-	base := neteye.NetEyeSpec{
-		Version:                      neteye.CurrentNetEyeVersion,
-		Gateway:                      neteye.NetEyeGatewaySpec{Name: "neteye", ClassName: "cilium"},
-		InternalCertificateIssuerRef: "internal-issuer",
-		Identity:                     neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", DBConnection: neteye.NetEyeDBConnectionSpec{Host: "mariadb.example.com"}},
+	ne := &neteye.NetEye{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform", Namespace: keycloak.WorkloadNamespace},
+		Spec: neteye.NetEyeSpec{
+			Version:                      neteye.CurrentNetEyeVersion,
+			Gateway:                      neteye.NetEyeGatewaySpec{Name: "neteye", ClassName: "cilium"},
+			InternalCertificateIssuerRef: "internal-issuer",
+			Identity:                     neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", DBConnection: neteye.NetEyeDBConnectionSpec{Host: "mariadb.example.com"}},
+		},
 	}
-	for _, test := range []struct {
-		name   string
-		mutate func(*neteye.NetEyeSpec)
-		valid  bool
-	}{
-		{"managed by default without name", func(s *neteye.NetEyeSpec) { s.Gateway.Name = "" }, false},
-		{"managed without className", func(s *neteye.NetEyeSpec) { s.Gateway.Managed, s.Gateway.ClassName = ptr.To(true), "" }, false},
-		{"managed without issuer", func(s *neteye.NetEyeSpec) { s.InternalCertificateIssuerRef = "" }, false},
-		{"unmanaged without gateway fields or issuer", func(s *neteye.NetEyeSpec) {
-			s.Gateway, s.InternalCertificateIssuerRef = neteye.NetEyeGatewaySpec{Managed: ptr.To(false)}, ""
-		}, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			ne := &neteye.NetEye{ObjectMeta: metav1.ObjectMeta{GenerateName: "platform-", Namespace: keycloak.WorkloadNamespace}, Spec: *base.DeepCopy()}
-			test.mutate(&ne.Spec)
-			err := c.Create(ctx, ne)
-			if test.valid && err != nil {
-				t.Errorf("create: %v", err)
-			}
-			if !test.valid && !apierrors.IsInvalid(err) {
-				t.Errorf("create: err = %v, want Invalid", err)
-			}
-		})
-	}
-	defaulted := &neteye.NetEye{ObjectMeta: metav1.ObjectMeta{Name: "defaulted", Namespace: keycloak.WorkloadNamespace}, Spec: *base.DeepCopy()}
-	if err := c.Create(ctx, defaulted); err != nil {
+	if err := c.Create(ctx, ne); err != nil {
 		t.Fatal(err)
 	}
-	if defaulted.Spec.Gateway.Managed == nil || !*defaulted.Spec.Gateway.Managed {
-		t.Errorf("gateway.managed default = %v, want true", defaulted.Spec.Gateway.Managed)
+	if ne.Spec.Gateway.Managed == nil || !*ne.Spec.Gateway.Managed {
+		t.Errorf("gateway.managed default = %v, want true", ne.Spec.Gateway.Managed)
 	}
 }
 

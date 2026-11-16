@@ -51,6 +51,9 @@ func (v *NetEyeValidator) ValidateCreate(ctx context.Context, obj *NetEye) (admi
 	if err := validateElasticStack(obj); err != nil {
 		return nil, err
 	}
+	if err := validateGateway(obj); err != nil {
+		return nil, err
+	}
 	if obj.Spec.Version == CurrentNetEyeVersion {
 		return databaseWarnings(obj), v.validateSingleAuthority(ctx, obj)
 	}
@@ -72,6 +75,9 @@ func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *Ne
 	if err := validateElasticStack(newObj); err != nil {
 		return nil, err
 	}
+	if err := validateGateway(newObj); err != nil {
+		return nil, err
+	}
 	oldVersion := oldObj.Spec.Version
 	newVersion := newObj.Spec.Version
 
@@ -86,6 +92,29 @@ func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *Ne
 		newObj,
 		fmt.Sprintf("NetEye version can only remain at %s or upgrade from %s to %s", CurrentNetEyeVersion, PreviousNetEyeVersion, CurrentNetEyeVersion),
 	)
+}
+
+// validateGateway requires the Gateway fields and the Issuer only while the
+// operator manages the Gateway.
+func validateGateway(neteye *NetEye) error {
+	if !neteye.Spec.Gateway.EffectiveManaged() {
+		return nil
+	}
+	path := field.NewPath("spec", "gateway")
+	var errors field.ErrorList
+	if neteye.Spec.Gateway.Name == "" {
+		errors = append(errors, field.Required(path.Child("name"), "must be set when gateway.managed is true"))
+	}
+	if neteye.Spec.Gateway.ClassName == "" {
+		errors = append(errors, field.Required(path.Child("className"), "must be set when gateway.managed is true"))
+	}
+	if neteye.Spec.InternalCertificateIssuerRef == "" {
+		errors = append(errors, field.Required(field.NewPath("spec", "internalCertificateIssuerRef"), "must be set when gateway.managed is true"))
+	}
+	if len(errors) > 0 {
+		return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, errors)
+	}
+	return nil
 }
 
 func validateIdentity(neteye *NetEye) error {
