@@ -6,12 +6,8 @@ package resources
 import (
 	"context"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -36,21 +32,7 @@ func EnsureNetworkPolicy(ctx context.Context, c client.Client, namespace, name s
 // deleteLegacyCiliumNetworkPolicy deletes the named CiliumNetworkPolicy when
 // owner controls it. A cluster without the Cilium CRD has nothing to delete.
 func deleteLegacyCiliumNetworkPolicy(ctx context.Context, c client.Client, namespace, name string, owner metav1.OwnerReference) error {
-	legacy := &unstructured.Unstructured{}
-	legacy.SetGroupVersionKind(LegacyCiliumNetworkPolicyGVK())
-	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, legacy); err != nil {
-		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
-			return nil
-		}
-		return err
-	}
-	if !controlledBy(legacy, owner) {
-		return nil
-	}
-	if err := c.Delete(ctx, legacy); err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-	return nil
+	return deleteOwned(ctx, c, LegacyCiliumNetworkPolicyGVK(), namespace, name, owner)
 }
 
 func defaultDenyNetworkPolicySpec() map[string]any {

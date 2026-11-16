@@ -6,7 +6,10 @@ package resources
 import (
 	"context"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -18,6 +21,12 @@ const (
 	RouteKindHTTP                = "HTTPRoute"
 	RouteKindGRPC                = "GRPCRoute"
 )
+
+// GatewayRef names the operator-managed Gateway that routes attach to.
+type GatewayRef struct {
+	Namespace string
+	Name      string
+}
 
 // GatewayListener describes one per-component HTTPS listener on the shared
 // Gateway, matched by SNI hostname and terminating TLS with its own Secret.
@@ -133,6 +142,30 @@ func EnsureHTTPToHTTPSRedirectRoute(ctx context.Context, client client.Client, n
 	}
 
 	return ensureHTTPRouteSpec(ctx, client, namespace, HTTPToHTTPSRedirectRouteName, desiredSpec, &owner)
+}
+
+// DeleteOwnedGateways deletes every Gateway in namespace that owner controls.
+// A cluster without the Gateway API has nothing to delete.
+func DeleteOwnedGateways(ctx context.Context, c client.Client, namespace string, owner metav1.OwnerReference) error {
+	gateways := &unstructured.UnstructuredList{}
+	gateways.SetGroupVersionKind(gatewayGVK().GroupVersion().WithKind("GatewayList"))
+	if err := c.List(ctx, gateways, client.InNamespace(namespace)); err != nil {
+		if meta.IsNoMatchError(err) {
+			return nil
+		}
+		return err
+	}
+	for i := range gateways.Items {
+		gateway := &gateways.Items[i]
+		if !controlledBy(gateway, owner) {
+			continue
+		}
+		if err := c.Delete(ctx, gateway); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		logf.FromContext(ctx).Info("Gateway deleted", "namespace", namespace, "gateway", gateway.GetName())
+	}
+	return nil
 }
 
 func gatewayGVK() schema.GroupVersionKind {

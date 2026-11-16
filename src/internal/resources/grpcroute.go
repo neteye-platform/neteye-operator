@@ -12,10 +12,19 @@ import (
 
 // EnsureGRPCRoute ensures a Gateway API GRPCRoute with a same-namespace Service backend.
 func EnsureGRPCRoute(ctx context.Context, c client.Client, namespace, name, gatewayNamespace, gatewayName, sectionName, hostname, serviceName string, port int64, owner *metav1.OwnerReference) error {
-	_, err := Apply(ctx, c, ObjectDefinition{GVK: schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "GRPCRoute"}, Name: name, Namespace: namespace, Owner: owner, Spec: map[string]any{
+	_, err := Apply(ctx, c, ObjectDefinition{GVK: grpcRouteGVK(), Name: name, Namespace: namespace, Owner: owner, Spec: map[string]any{
 		"parentRefs": []any{map[string]any{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": gatewayNamespace, "name": gatewayName, "sectionName": sectionName}},
 		"hostnames":  []any{hostname},
 		"rules":      []any{map[string]any{"backendRefs": []any{map[string]any{"name": serviceName, "port": port, "weight": int64(100)}}}},
 	}})
 	return err
+}
+
+// DeleteGRPCRoute deletes the named GRPCRoute when owner controls it.
+func DeleteGRPCRoute(ctx context.Context, c client.Client, namespace, name string, owner metav1.OwnerReference) error {
+	return deleteOwned(ctx, c, grpcRouteGVK(), namespace, name, owner)
+}
+
+func grpcRouteGVK() schema.GroupVersionKind {
+	return schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "GRPCRoute"}
 }

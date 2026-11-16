@@ -4,10 +4,15 @@
 package resources
 
 import (
+	"context"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -68,4 +73,24 @@ func controlledBy(object client.Object, owner metav1.OwnerReference) bool {
 		}
 	}
 	return false
+}
+
+// deleteOwned deletes the named object when owner controls it. A missing
+// object or an API the cluster doesn't serve leaves nothing to delete.
+func deleteOwned(ctx context.Context, c client.Client, gvk schema.GroupVersionKind, namespace, name string, owner metav1.OwnerReference) error {
+	object := &unstructured.Unstructured{}
+	object.SetGroupVersionKind(gvk)
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, object); err != nil {
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return nil
+		}
+		return err
+	}
+	if !controlledBy(object, owner) {
+		return nil
+	}
+	if err := c.Delete(ctx, object); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }

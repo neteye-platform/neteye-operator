@@ -6,6 +6,10 @@ metadata:
 spec:
   version: "4.51"
   gateway:
+    # Set managed to false where the Gateway and routes are managed outside
+    # the operator (e.g. on EKS); name, className, and
+    # internalCertificateIssuerRef are then not required.
+    managed: true
     name: neteye
     className: cilium
     annotations:

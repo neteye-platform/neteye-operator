@@ -43,7 +43,7 @@ spec:
               verbs: [create, get, list, update, watch]
             - apiGroups: [cert-manager.io]
               resources: [certificates]
-              verbs: [create, get, list, update, watch]
+              verbs: [create, delete, get, list, update, watch]
             - apiGroups: [cert-manager.io]
               resources: [issuers]
               verbs: [get, list, watch]

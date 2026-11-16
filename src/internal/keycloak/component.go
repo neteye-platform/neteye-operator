@@ -175,11 +175,17 @@ func clusterExtensionSpec() map[string]any {
 }
 
 // EnsureResources reconciles the identity component resources owned by the Keycloak
-// integration: its TLS Certificate, Keycloak instance, and HTTPRoute.
-func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, caBundle resources.CABundleRef, identity neteye.NetEyeIdentitySpec, gatewayNamespace, gatewayRef string, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
+// integration: its TLS Certificate, Keycloak instance, and HTTPRoute. A nil
+// gateway means the Gateway is managed outside the operator, so the
+// Certificate and HTTPRoute are deleted instead.
+func (c *Component) EnsureResources(ctx context.Context, namespace string, image string, caBundle resources.CABundleRef, identity neteye.NetEyeIdentitySpec, gateway *resources.GatewayRef, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) (bool, string, error) {
 	ctx = logf.IntoContext(ctx, c.log)
-	if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, RouteHostname, []string{RouteHostname}, issuerRef, &owner); err != nil {
-		return false, "", fmt.Errorf("ensure tls certificate: %w", err)
+	if gateway != nil {
+		if err := resources.EnsureCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName, RouteHostname, []string{RouteHostname}, issuerRef, &owner); err != nil {
+			return false, "", fmt.Errorf("ensure tls certificate: %w", err)
+		}
+	} else if err := c.deleteGatewayResources(ctx, namespace, owner); err != nil {
+		return false, "", err
 	}
 	if err := c.EnsureWorkloadNetworkPolicy(ctx, namespace, owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak workload network policy: %w", err)
@@ -190,15 +196,20 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	if err := c.EnsureHostManagementPolicy(ctx, namespace, owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak host management policy: %w", err)
 	}
-	certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
-	if err != nil {
-		return false, "", fmt.Errorf("check tls certificate readiness: %w", err)
-	}
-	if !certificateReady {
-		return false, certificateMessage, nil
+	if gateway != nil {
+		certificateReady, certificateMessage, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
+		if err != nil {
+			return false, "", fmt.Errorf("check tls certificate readiness: %w", err)
+		}
+		if !certificateReady {
+			return false, certificateMessage, nil
+		}
 	}
 	if err := c.EnsureInstance(ctx, namespace, image, caBundle, identity, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure keycloak instance: %w", err)
+	}
+	if gateway == nil {
+		return true, "Keycloak is Ready", nil
 	}
 
 	// HACK: We must check for keycloak Ready before creating the HTTPRoute, because the Keycloak Operator will not
@@ -215,10 +226,20 @@ func (c *Component) EnsureResources(ctx context.Context, namespace string, image
 	}
 	// END HACK
 
-	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayRef, GatewayListenerName, []string{RouteHostname}, ServiceName, HTTPPort, &owner); err != nil {
+	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gateway.Namespace, gateway.Name, GatewayListenerName, []string{RouteHostname}, ServiceName, HTTPPort, &owner); err != nil {
 		return false, "", fmt.Errorf("ensure http route: %w", err)
 	}
 	return true, "Keycloak is Ready", nil
+}
+
+func (c *Component) deleteGatewayResources(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
+	if err := resources.DeleteHTTPRoute(ctx, c.client, namespace, HTTPRouteName, owner); err != nil {
+		return fmt.Errorf("delete http route: %w", err)
+	}
+	if err := resources.DeleteCertificate(ctx, c.client, namespace, TLSCertificateName, owner); err != nil {
+		return fmt.Errorf("delete tls certificate: %w", err)
+	}
+	return nil
 }
 
 // IsReady reports whether the Keycloak Operator marked the Keycloak instance

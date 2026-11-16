@@ -410,27 +410,41 @@ type NetEyeOtelCollectorSpec struct {
 }
 
 // NetEyeGatewaySpec defines the Gateway API resources managed by NetEye.
+// +kubebuilder:validation:XValidation:rule="(has(self.managed) && !self.managed) || (has(self.name) && has(self.className))",message="name and className are required when managed is true"
 type NetEyeGatewaySpec struct {
+	// Managed makes the operator create the Gateway, its routes, and their TLS
+	// certificates. Disable it where the Gateway or ingress is managed outside
+	// the operator; the operator then deletes the ones it created.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=true
+	Managed *bool `json:"managed,omitempty"`
+
 	// Name is the Gateway name in the shared NetEye namespace. The operator
 	// creates the Gateway. An existing Gateway that this NetEye does not control
-	// is rejected and is not changed.
-	// +kubebuilder:validation:Required
+	// is rejected and is not changed. Required when managed is true.
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +kubebuilder:example="neteye"
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 
 	// ClassName is the GatewayClass used when the operator creates or reconciles
-	// the Gateway.
-	// +kubebuilder:validation:Required
+	// the Gateway. Required when managed is true.
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:example="cilium"
-	ClassName string `json:"className"`
+	ClassName string `json:"className,omitempty"`
 
 	// Annotations are written to spec.infrastructure.annotations on the Gateway.
 	// Use this for implementation-specific settings such as Cilium LB IPAM.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:example={"lbipam.cilium.io/ips":"192.0.2.10"}
 	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// EffectiveManaged reports whether the operator manages the Gateway,
+// defaulting to true for objects that bypassed admission defaulting.
+func (s *NetEyeGatewaySpec) EffectiveManaged() bool {
+	return s == nil || s.Managed == nil || *s.Managed
 }
 
 // netEyeVersionMap maps a NetEye version string to its component image set.
@@ -503,6 +517,7 @@ func IsLatestVersion(version string) bool {
 }
 
 // NetEyeSpec defines the desired state of NetEyeConfig.
+// +kubebuilder:validation:XValidation:rule="(has(self.gateway.managed) && !self.gateway.managed) || has(self.internalCertificateIssuerRef)",message="internalCertificateIssuerRef is required when gateway.managed is true"
 type NetEyeSpec struct {
 	// Version is the NetEye product version string, e.g. "4.51".
 	// It is used to resolve the correct component images (Keycloak, etc.).
@@ -513,17 +528,18 @@ type NetEyeSpec struct {
 	Version string `json:"version"`
 
 	// Gateway configures the Gateway API Gateway and default routes managed by
-	// NetEye.
+	// NetEye. Set gateway.managed to false to manage them outside the operator.
 	// +kubebuilder:validation:Required
 	Gateway NetEyeGatewaySpec `json:"gateway"`
 
 	// InternalCertificateIssuerRef is the cert-manager Issuer name used for TLS
 	// certificates consumed by common NetEye components. The Issuer must already
-	// exist in the shared NetEye namespace and is managed by the user.
-	// +kubebuilder:validation:Required
+	// exist in the shared NetEye namespace and is managed by the user. Required
+	// when gateway.managed is true.
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:example="neteye-internal-issuer"
-	InternalCertificateIssuerRef string `json:"internalCertificateIssuerRef"`
+	InternalCertificateIssuerRef string `json:"internalCertificateIssuerRef,omitempty"`
 
 	// Identity configures identity services such as Keycloak.
 	// +kubebuilder:validation:Required

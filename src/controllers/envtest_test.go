@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -377,6 +378,107 @@ func TestAPIServerAppliesKeycloakDatabaseDefaults(t *testing.T) {
 	unsupported.Spec.Identity.DBConnection.Vendor = "mysql"
 	if err := c.Create(ctx, unsupported); !apierrors.IsInvalid(err) {
 		t.Errorf("create NetEye with unsupported database vendor: err = %v, want Invalid", err)
+	}
+}
+
+func TestAPIServerRequiresGatewayFieldsOnlyWhenManaged(t *testing.T) {
+	c, _ := startEnvtest(t)
+	ctx := context.Background()
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: keycloak.WorkloadNamespace}}); err != nil {
+		t.Fatal(err)
+	}
+	base := neteye.NetEyeSpec{
+		Version:                      neteye.CurrentNetEyeVersion,
+		Gateway:                      neteye.NetEyeGatewaySpec{Name: "neteye", ClassName: "cilium"},
+		InternalCertificateIssuerRef: "internal-issuer",
+		Identity:                     neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", DBConnection: neteye.NetEyeDBConnectionSpec{Host: "mariadb.example.com"}},
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*neteye.NetEyeSpec)
+		valid  bool
+	}{
+		{"managed by default without name", func(s *neteye.NetEyeSpec) { s.Gateway.Name = "" }, false},
+		{"managed without className", func(s *neteye.NetEyeSpec) { s.Gateway.Managed, s.Gateway.ClassName = ptr.To(true), "" }, false},
+		{"managed without issuer", func(s *neteye.NetEyeSpec) { s.InternalCertificateIssuerRef = "" }, false},
+		{"unmanaged without gateway fields or issuer", func(s *neteye.NetEyeSpec) {
+			s.Gateway, s.InternalCertificateIssuerRef = neteye.NetEyeGatewaySpec{Managed: ptr.To(false)}, ""
+		}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ne := &neteye.NetEye{ObjectMeta: metav1.ObjectMeta{GenerateName: "platform-", Namespace: keycloak.WorkloadNamespace}, Spec: *base.DeepCopy()}
+			test.mutate(&ne.Spec)
+			err := c.Create(ctx, ne)
+			if test.valid && err != nil {
+				t.Errorf("create: %v", err)
+			}
+			if !test.valid && !apierrors.IsInvalid(err) {
+				t.Errorf("create: err = %v, want Invalid", err)
+			}
+		})
+	}
+	defaulted := &neteye.NetEye{ObjectMeta: metav1.ObjectMeta{Name: "defaulted", Namespace: keycloak.WorkloadNamespace}, Spec: *base.DeepCopy()}
+	if err := c.Create(ctx, defaulted); err != nil {
+		t.Fatal(err)
+	}
+	if defaulted.Spec.Gateway.Managed == nil || !*defaulted.Spec.Gateway.Managed {
+		t.Errorf("gateway.managed default = %v, want true", defaulted.Spec.Gateway.Managed)
+	}
+}
+
+func TestReconcileUnmanagedGatewayDeletesOwnedExposure(t *testing.T) {
+	c, _, ctx, ne, r := readyElasticStackTestPlatform(t, nil)
+	ns := keycloak.WorkloadNamespace
+	owned := []struct {
+		gvk  schema.GroupVersionKind
+		name string
+	}{
+		{gatewayGVK, ne.Spec.Gateway.Name},
+		{httpRouteGVK, resources.HTTPToHTTPSRedirectRouteName},
+		{httpRouteGVK, keycloak.HTTPRouteName},
+		{certificateGVK, keycloak.TLSCertificateName},
+	}
+	for _, resource := range owned {
+		requireExists(ctx, t, c, resource.gvk, ns, resource.name)
+	}
+	userGateway := newUnstructured(gatewayGVK, ns, "user-gateway")
+	userGateway.Object["spec"] = map[string]any{"gatewayClassName": "aws", "listeners": []any{map[string]any{"name": "http", "protocol": "HTTP", "port": int64(80)}}}
+	if err := c.Create(ctx, userGateway); err != nil {
+		t.Fatalf("create user Gateway: %v", err)
+	}
+
+	current := &neteye.NetEye{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.Gateway = neteye.NetEyeGatewaySpec{Managed: ptr.To(false)}
+	current.Spec.InternalCertificateIssuerRef = ""
+	if err := c.Update(ctx, current); err != nil {
+		t.Fatalf("disable gateway management: %v", err)
+	}
+	if err := c.Delete(ctx, newUnstructured(issuerGVK, ns, "internal-issuer")); err != nil {
+		t.Fatalf("delete issuer: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}); err != nil {
+		t.Fatalf("reconcile unmanaged gateway: %v", err)
+	}
+
+	for _, resource := range owned {
+		object := newUnstructured(resource.gvk, ns, resource.name)
+		if err := c.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
+			t.Errorf("%s %s still exists or lookup failed: %v", resource.gvk.Kind, resource.name, err)
+		}
+	}
+	requireExists(ctx, t, c, gatewayGVK, ns, "user-gateway")
+	requireExists(ctx, t, c, schema.GroupVersionKind{Group: "k8s.keycloak.org", Version: "v2beta1", Kind: "Keycloak"}, ns, keycloak.InstanceName)
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatal(err)
+	}
+	if identity := current.Status.ServicesStatus.Identity; identity == nil || identity.Status != neteye.ServiceStateReady {
+		t.Errorf("identity status = %+v, want Ready", identity)
+	}
+	if current.Status.Phase == neteye.PhaseFailed {
+		t.Errorf("phase = %q: %s", current.Status.Phase, current.Status.Message)
 	}
 }
 
