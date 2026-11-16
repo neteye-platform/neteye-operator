@@ -11,6 +11,8 @@ GOLANGCI_LINT_VERSION ?= v2.15.0
 KUSTOMIZE_VERSION ?= v5.8.3
 # renovate: datasource=github-releases depName=operator-framework/operator-sdk
 OPERATOR_SDK_VERSION ?= v1.42.3
+# renovate: datasource=github-releases depName=kubernetes-sigs/crdify
+CRDIFY_VERSION ?= v0.6.0
 VERSION ?= 0.2.10
 PACKAGE_NAME ?= neteye-operator
 LD_FLAGS ?= -X main.version=$(VERSION)
@@ -22,12 +24,15 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 OPERATOR_SDK ?= $(LOCALBIN)/operator-sdk
 GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
+CRDIFY ?= $(LOCALBIN)/crdify
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 # A release branch, not a tag: Renovate cannot resolve it.
 ENVTEST_VERSION ?= release-0.25
 # renovate: datasource=github-releases depName=kubernetes-sigs/controller-tools extractVersion=^envtest-v(?<version>.+)$
 ENVTEST_K8S_VERSION ?= 1.37.0
 CRD_BASES ?= config/crd/bases
+# CRDs are checked for a safe upgrade from this git ref.
+CRD_BASE_REF ?= origin/main
 
 .PHONY: all
 all: build
@@ -47,6 +52,21 @@ kustomize-manifests: manifests kustomize operator-sdk ## Generate the Operator S
 .PHONY: verify-generated
 verify-generated: generate bundle bundle-validate ## Regenerate all code and OLM output, then validate the result.
 	git diff --exit-code
+
+.PHONY: crd-upgrade-check
+crd-upgrade-check: crdify ## Check the CRDs upgrade safely from CRD_BASE_REF under OLM's rules.
+	@status=0; old="$$(mktemp)"; trap 'rm -f "$$old"' EXIT; \
+	for crd in $(CRD_BASES)/*.yaml; do \
+		if ! git show "$(CRD_BASE_REF):./$$crd" > "$$old" 2>/dev/null; then \
+			echo "$$crd: not in $(CRD_BASE_REF), skipped"; continue; \
+		fi; \
+		if $(CRDIFY) --config hack/crdify.yaml "file://$$old" "file://$$crd"; then \
+			echo "$$crd: ok"; \
+		else \
+			echo "::error file=src/$$crd::CRD upgrade from $(CRD_BASE_REF) would be rejected by OLM"; status=1; \
+		fi; \
+	done; \
+	exit $$status
 
 .PHONY: fmt
 fmt: ## Run gofmt against Go code.
@@ -122,6 +142,13 @@ golangci-lint: $(GOLANGCI_LINT) ## Install golangci-lint locally if needed.
 $(GOLANGCI_LINT):
 	mkdir -p $(LOCALBIN)
 	GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+.PHONY: crdify
+crdify: $(CRDIFY) ## Install crdify locally if needed.
+
+$(CRDIFY):
+	mkdir -p $(LOCALBIN)
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/crdify@$(CRDIFY_VERSION)
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if needed.

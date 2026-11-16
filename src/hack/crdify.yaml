@@ -1,0 +1,12 @@
+# crdify settings matching OLM v1's CRD upgrade safety preflight
+# (operator-controller internal/operator-controller/rukpak/preflights/crdupgradesafety).
+# Keep in sync with that defaultConfig when bumping crdify.
+conversion: Ignore
+unhandledEnforcement: Error
+validations:
+  - name: description
+    enforcement: None
+  - name: enum
+    enforcement: Error
+    configuration:
+      additionPolicy: Allow
