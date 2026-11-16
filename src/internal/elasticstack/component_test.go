@@ -33,7 +33,7 @@ import (
 func TestOTelCollectorBuildsIsolatedIngressResources(t *testing.T) {
 	namespace := "telemetry"
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
-	outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{Replicas: 2}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "collector-image", testCABundle, issuerRef(), owner())
+	outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{Replicas: 2}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "collector-image", testCABundle, issuerRef(), owner())
 	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonCertificateNotReady || !strings.Contains(outcome.Message, "TLS Certificate") {
 		t.Fatalf("outcome=%+v", outcome)
 	}
@@ -96,7 +96,7 @@ func TestOTelCollectorPrerequisitesAndInvalidSpecDoNotCreateWorkloads(t *testing
 			if test.name == "invalid identity hostname" {
 				identity = "https://identity.example.com"
 			}
-			outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, test.spec, []string{"https://192.0.2.10:9200"}, identity, namespace, "gateway", "image", testCABundle, issuerRef(), owner())
+			outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, test.spec, []string{"https://192.0.2.10:9200"}, identity, gatewayRef(namespace), "image", testCABundle, issuerRef(), owner())
 			if outcome.Phase != PhaseDegraded || outcome.Reason == "" || outcome.Message == "" {
 				t.Fatalf("outcome=%+v", outcome)
 			}
@@ -133,7 +133,7 @@ func TestTelemetryConfigMapCreationToleratesStaleCache(t *testing.T) {
 
 	t.Run("collector", func(t *testing.T) {
 		base := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
-		outcome := NewOTelCollectorComponent(interceptor.NewClient(base, staleConfigMapCache())).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner())
+		outcome := NewOTelCollectorComponent(interceptor.NewClient(base, staleConfigMapCache())).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "image", testCABundle, issuerRef(), owner())
 		if outcome.Phase != PhaseProgressing {
 			t.Fatalf("outcome=%+v", outcome)
 		}
@@ -279,7 +279,7 @@ func TestInputResourceVersionsChangeDeploymentTemplate(t *testing.T) {
 	namespace := "telemetry"
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
 	component := NewOTelCollectorComponent(c)
-	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	before := deploymentAnnotations(t, c, namespace, DeploymentName)
@@ -292,7 +292,7 @@ func TestInputResourceVersionsChangeDeploymentTemplate(t *testing.T) {
 	if err := c.Update(context.Background(), secret); err != nil {
 		t.Fatal(err)
 	}
-	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	after := deploymentAnnotations(t, c, namespace, DeploymentName)
@@ -346,11 +346,11 @@ func TestChangingOIDCHostnameChangesCollectorPodTemplate(t *testing.T) {
 	namespace := "telemetry"
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
 	component := NewOTelCollectorComponent(c)
-	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	first := deploymentEnvValue(t, c, namespace, DeploymentName, "OIDC_ISSUER")
-	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.other.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.other.example.com", gatewayRef(namespace), "image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	second := deploymentEnvValue(t, c, namespace, DeploymentName, "OIDC_ISSUER")
@@ -392,7 +392,7 @@ func TestLegacyVariablesConfigMapsArePrunedOnlyWhenOwned(t *testing.T) {
 			legacy := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: VariablesConfigMapName, OwnerReferences: test.owners}, Data: map[string]string{"OIDC_ISSUER": "stale"}}
 			objects := append(collectorPrerequisites(namespace), legacy)
 			c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(objects...).Build()
-			if outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+			if outcome := NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
 				t.Fatalf("outcome=%+v", outcome)
 			}
 			if test.pruned {
@@ -565,7 +565,7 @@ func TestCollectorRollsOnUserCABundleChange(t *testing.T) {
 	namespace := "telemetry"
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
 	ensure := func() map[string]string {
-		NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner())
+		NewOTelCollectorComponent(c).Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "image", testCABundle, issuerRef(), owner())
 		deployment := &appsv1.Deployment{}
 		if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: DeploymentName}, deployment); err != nil {
 			t.Fatal(err)
@@ -647,22 +647,59 @@ func TestCollectorWaitsForRouteReadiness(t *testing.T) {
 	namespace := "telemetry"
 	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
 	component := NewOTelCollectorComponent(c)
-	outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner())
+	outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "image", testCABundle, issuerRef(), owner())
 	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonCertificateNotReady {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	markCertificateReady(t, c, namespace, GRPCTLSCertName)
 	markCertificateReady(t, c, namespace, CrossTenantTLSCertName)
-	outcome = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner())
+	outcome = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "image", testCABundle, issuerRef(), owner())
 	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonRouteNotReady {
 		t.Fatalf("outcome=%+v", outcome)
 	}
 	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, 0)
 	markRouteParentConditions(t, c, namespace, HTTPRouteName, "HTTPRoute", CrossTenantListenerName, "gateway", true, true, 0)
 	markReadyDeployment(t, c, namespace, DeploymentName)
-	outcome = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "image", testCABundle, issuerRef(), owner())
+	outcome = component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "image", testCABundle, issuerRef(), owner())
 	if outcome.Phase != PhaseReady {
 		t.Fatalf("outcome=%+v", outcome)
+	}
+}
+
+func TestCollectorWithUnmanagedGatewayDeletesItsExposure(t *testing.T) {
+	namespace := "telemetry"
+	c := fake.NewClientBuilder().WithScheme(componentScheme(t)).WithObjects(collectorPrerequisites(namespace)...).Build()
+	component := NewOTelCollectorComponent(c)
+	if outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+		t.Fatalf("managed outcome=%+v", outcome)
+	}
+	exposure := []managedResource{
+		{schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "GRPCRoute"}, GRPCRouteName},
+		{schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}, HTTPRouteName},
+		{schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}, GRPCTLSCertName},
+		{schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}, CrossTenantTLSCertName},
+	}
+	for _, resource := range exposure {
+		object := &unstructured.Unstructured{}
+		object.SetGroupVersionKind(resource.gvk)
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: resource.name}, object); err != nil {
+			t.Fatalf("managed gateway: %s %s: %v", resource.gvk.Kind, resource.name, err)
+		}
+	}
+	markReadyDeployment(t, c, namespace, DeploymentName)
+	outcome := component.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", nil, "image", testCABundle, issuerRef(), owner())
+	if outcome.Phase != PhaseReady {
+		t.Fatalf("unmanaged outcome=%+v", outcome)
+	}
+	for _, resource := range exposure {
+		object := &unstructured.Unstructured{}
+		object.SetGroupVersionKind(resource.gvk)
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: resource.name}, object); !apierrors.IsNotFound(err) {
+			t.Errorf("unmanaged gateway: %s %s still exists or lookup failed: %v", resource.gvk.Kind, resource.name, err)
+		}
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: ServiceName}, &corev1.Service{}); err != nil {
+		t.Errorf("collector Service must remain for a user-managed route: %v", err)
 	}
 }
 
@@ -759,7 +796,7 @@ func TestComponentsReportReadinessAndDeleteOnlyOwnedResources(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&appsv1.Deployment{}).WithObjects(unique...).Build()
 	collector := NewOTelCollectorComponent(c)
 	gateway := NewEDOTGatewayComponent(c)
-	if outcome := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "collector-image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
+	if outcome := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "collector-image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseProgressing {
 		t.Fatalf("collector outcome=%+v", outcome)
 	}
 	if outcome := gateway.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{}, []string{"https://192.0.2.1"}, "gateway-image", false, owner()); outcome.Phase != PhaseProgressing {
@@ -771,7 +808,7 @@ func TestComponentsReportReadinessAndDeleteOnlyOwnedResources(t *testing.T) {
 	markCertificateReady(t, c, namespace, CrossTenantTLSCertName)
 	markRouteParentConditions(t, c, namespace, GRPCRouteName, "GRPCRoute", GRPCListenerName, "gateway", true, true, 0)
 	markRouteParentConditions(t, c, namespace, HTTPRouteName, "HTTPRoute", CrossTenantListenerName, "gateway", true, true, 0)
-	if outcome := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", namespace, "gateway", "collector-image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseReady {
+	if outcome := collector.Ensure(context.Background(), namespace, &neteye.NetEyeOtelCollectorSpec{}, []string{"https://192.0.2.10:9200"}, "identity.example.com", gatewayRef(namespace), "collector-image", testCABundle, issuerRef(), owner()); outcome.Phase != PhaseReady {
 		t.Fatalf("collector outcome=%+v", outcome)
 	}
 	if outcome := gateway.Ensure(context.Background(), namespace, &neteye.NetEyeEDOTGatewaySpec{}, []string{"https://192.0.2.1"}, "gateway-image", false, owner()); outcome.Phase != PhaseReady {
@@ -1052,6 +1089,9 @@ func owner() metav1.OwnerReference {
 	return metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "platform", UID: "owner", Controller: boolPtr(true)}
 }
 func boolPtr(value bool) *bool { return &value }
+func gatewayRef(namespace string) *resources.GatewayRef {
+	return &resources.GatewayRef{Namespace: namespace, Name: "gateway"}
+}
 func issuerRef() resources.CertificateIssuerRef {
 	return resources.CertificateIssuerRef{Name: "internal-issuer"}
 }

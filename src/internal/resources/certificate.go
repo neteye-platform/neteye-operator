@@ -76,6 +76,12 @@ func IsCertificateReady(ctx context.Context, client client.Client, namespace str
 	return ReadyConditionMessage(certificate, "TLS Certificate")
 }
 
+// DeleteCertificate deletes the named Certificate when owner controls it. The
+// issued Secret is left to cert-manager.
+func DeleteCertificate(ctx context.Context, c client.Client, namespace, name string, owner metav1.OwnerReference) error {
+	return deleteOwned(ctx, c, certificateGVK(), namespace, name, owner)
+}
+
 func certificateGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{
 		Group:   "cert-manager.io",

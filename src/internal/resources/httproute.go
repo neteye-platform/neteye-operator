@@ -65,6 +65,11 @@ func ensureHTTPRouteSpec(ctx context.Context, client client.Client, namespace st
 	return nil
 }
 
+// DeleteHTTPRoute deletes the named HTTPRoute when owner controls it.
+func DeleteHTTPRoute(ctx context.Context, c client.Client, namespace, name string, owner metav1.OwnerReference) error {
+	return deleteOwned(ctx, c, httpRouteGVK(), namespace, name, owner)
+}
+
 func httpRouteGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{
 		Group:   "gateway.networking.k8s.io",

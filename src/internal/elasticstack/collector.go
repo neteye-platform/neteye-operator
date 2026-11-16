@@ -41,7 +41,7 @@ func NewOTelCollectorComponent(c client.Client) *OTelCollectorComponent {
 	return &OTelCollectorComponent{client: c}
 }
 
-func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeOtelCollectorSpec, elasticsearchEndpoints []string, identityHostname, gatewayNamespace, gatewayName, image string, caBundle resources.CABundleRef, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) Outcome {
+func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, spec *neteye.NetEyeOtelCollectorSpec, elasticsearchEndpoints []string, identityHostname string, gateway *resources.GatewayRef, image string, caBundle resources.CABundleRef, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) Outcome {
 	if spec == nil {
 		return degradedOutcome(ReasonInvalidConfiguration, "otel collector configuration is required", nil)
 	}
@@ -96,40 +96,79 @@ func (c *OTelCollectorComponent) Ensure(ctx context.Context, namespace string, s
 	if err := resources.EnsureService(ctx, c.client, collectorService(namespace), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	if err := resources.EnsureCertificate(ctx, c.client, namespace, GRPCTLSCertName, GRPCTLSSecretName, GRPCRouteHostname, []string{GRPCRouteHostname}, issuerRef, &owner); err != nil {
-		return degradedOutcome(ReasonReconcileFailed, "", err)
+	if gateway != nil {
+		err = c.ensureGatewayResources(ctx, namespace, *gateway, issuerRef, owner)
+	} else {
+		err = c.deleteGatewayResources(ctx, namespace, owner)
 	}
-	if err := resources.EnsureCertificate(ctx, c.client, namespace, CrossTenantTLSCertName, CrossTenantTLSSecretName, CrossTenantRouteHostname, []string{CrossTenantRouteHostname}, issuerRef, &owner); err != nil {
-		return degradedOutcome(ReasonReconcileFailed, "", err)
-	}
-	if err := resources.EnsureGRPCRoute(ctx, c.client, namespace, GRPCRouteName, gatewayNamespace, gatewayName, GRPCListenerName, GRPCRouteHostname, ServiceName, 4317, &owner); err != nil {
-		return degradedOutcome(ReasonReconcileFailed, "", err)
-	}
-	if err := resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gatewayNamespace, gatewayName, CrossTenantListenerName, []string{CrossTenantRouteHostname}, ServiceName, 4318, &owner); err != nil {
+	if err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
 	if err := c.ensurePolicies(ctx, namespace, targets, owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", err)
 	}
-	for _, name := range []string{GRPCTLSCertName, CrossTenantTLSCertName} {
-		ready, message, err := resources.IsCertificateReady(ctx, c.client, namespace, name)
-		if err != nil || !ready {
-			if err != nil {
-				return degradedOutcome(ReasonReconcileFailed, message, err)
-			}
-			return progressingOutcome(ReasonCertificateNotReady, message)
-		}
-	}
-	for _, route := range []struct{ name, kind, section string }{{GRPCRouteName, "GRPCRoute", GRPCListenerName}, {HTTPRouteName, "HTTPRoute", CrossTenantListenerName}} {
-		ready, message, err := routeReady(ctx, c.client, namespace, route.name, route.kind, expectedParent{group: "gateway.networking.k8s.io", kind: "Gateway", namespace: gatewayNamespace, name: gatewayName, section: route.section})
-		if err != nil || !ready {
-			if err != nil {
-				return degradedOutcome(ReasonReconcileFailed, message, err)
-			}
-			return progressingOutcome(ReasonRouteNotReady, message)
+	if gateway != nil {
+		if outcome, done := c.gatewayResourcesReady(ctx, namespace, *gateway); done {
+			return outcome
 		}
 	}
 	return deploymentOutcome(ctx, c.client, namespace, DeploymentName, "OpenTelemetry Collector is ready")
+}
+
+// ensureGatewayResources reconciles the TLS Certificates and routes exposing
+// the collector on the operator-managed Gateway.
+func (c *OTelCollectorComponent) ensureGatewayResources(ctx context.Context, namespace string, gateway resources.GatewayRef, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) error {
+	if err := resources.EnsureCertificate(ctx, c.client, namespace, GRPCTLSCertName, GRPCTLSSecretName, GRPCRouteHostname, []string{GRPCRouteHostname}, issuerRef, &owner); err != nil {
+		return err
+	}
+	if err := resources.EnsureCertificate(ctx, c.client, namespace, CrossTenantTLSCertName, CrossTenantTLSSecretName, CrossTenantRouteHostname, []string{CrossTenantRouteHostname}, issuerRef, &owner); err != nil {
+		return err
+	}
+	if err := resources.EnsureGRPCRoute(ctx, c.client, namespace, GRPCRouteName, gateway.Namespace, gateway.Name, GRPCListenerName, GRPCRouteHostname, ServiceName, 4317, &owner); err != nil {
+		return err
+	}
+	return resources.EnsureHTTPRoute(ctx, c.client, namespace, HTTPRouteName, gateway.Namespace, gateway.Name, CrossTenantListenerName, []string{CrossTenantRouteHostname}, ServiceName, 4318, &owner)
+}
+
+// gatewayResourcesReady waits for the collector's Certificates and for the
+// Gateway to accept its routes.
+func (c *OTelCollectorComponent) gatewayResourcesReady(ctx context.Context, namespace string, gateway resources.GatewayRef) (Outcome, bool) {
+	for _, name := range []string{GRPCTLSCertName, CrossTenantTLSCertName} {
+		ready, message, err := resources.IsCertificateReady(ctx, c.client, namespace, name)
+		if err != nil {
+			return degradedOutcome(ReasonReconcileFailed, message, err), true
+		}
+		if !ready {
+			return progressingOutcome(ReasonCertificateNotReady, message), true
+		}
+	}
+	for _, route := range []struct{ name, kind, section string }{{GRPCRouteName, "GRPCRoute", GRPCListenerName}, {HTTPRouteName, "HTTPRoute", CrossTenantListenerName}} {
+		ready, message, err := routeReady(ctx, c.client, namespace, route.name, route.kind, expectedParent{group: "gateway.networking.k8s.io", kind: "Gateway", namespace: gateway.Namespace, name: gateway.Name, section: route.section})
+		if err != nil {
+			return degradedOutcome(ReasonReconcileFailed, message, err), true
+		}
+		if !ready {
+			return progressingOutcome(ReasonRouteNotReady, message), true
+		}
+	}
+	return Outcome{}, false
+}
+
+// deleteGatewayResources removes the collector's Gateway exposure when the
+// Gateway is managed outside the operator.
+func (c *OTelCollectorComponent) deleteGatewayResources(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
+	if err := resources.DeleteGRPCRoute(ctx, c.client, namespace, GRPCRouteName, owner); err != nil {
+		return err
+	}
+	if err := resources.DeleteHTTPRoute(ctx, c.client, namespace, HTTPRouteName, owner); err != nil {
+		return err
+	}
+	for _, name := range []string{GRPCTLSCertName, CrossTenantTLSCertName} {
+		if err := resources.DeleteCertificate(ctx, c.client, namespace, name, owner); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Delete removes only collector-owned objects. It never deletes EDOT resources

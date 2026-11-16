@@ -17,6 +17,27 @@ Reconciliation is version-aware — a validating webhook guards the declared
 product `version` and its allowed upgrade transitions — and reports progress
 through the resource `status`.
 
+### Gateway exposure
+
+By default the operator creates a Gateway API `Gateway` from `spec.gateway`,
+an HTTP-to-HTTPS redirect route, and the routes and cert-manager TLS
+certificates that expose Keycloak and, when enabled, the OpenTelemetry
+Collector. Where exposure is handled outside the operator, for example on EKS,
+set `spec.gateway.managed: false`:
+
+```yaml
+spec:
+  gateway:
+    managed: false
+```
+
+The operator then creates none of these and deletes the ones it created
+earlier; Gateways and routes it does not control are left untouched.
+`gateway.name`, `gateway.className`, and `internalCertificateIssuerRef` are
+only required while the Gateway is managed. Route traffic yourself to the
+`neteye-kc-service` Service (port 8080) and the `otel-collector-service` Service
+(4317 for gRPC, 4318 for HTTP) in the `neteye-tenant-shared` namespace.
+
 ### Procedure gates
 
 Parts of NetEye still run on the legacy infrastructure and are installed and

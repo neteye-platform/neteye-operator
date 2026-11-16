@@ -70,8 +70,8 @@ type NetEyeReconciler struct {
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyeproceduregates,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch
-// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes;grpcroutes,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=configmaps;services,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
@@ -272,7 +272,7 @@ func (r *NetEyeReconciler) reconcileOTelCollector(ctx context.Context, ne *netey
 	if ne.Spec.ElasticStack.Telemetry != nil {
 		spec = ne.Spec.ElasticStack.Telemetry.OTelCollector
 	}
-	outcome := r.OTelCollectorComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, ne.Spec.Identity.Hostname, ns, ne.Spec.Gateway.Name, image, caBundleRefFor(ne), issuerRefFor(ne), owner)
+	outcome := r.OTelCollectorComponent.Ensure(ctx, ns, spec, ne.Spec.ElasticStack.ElasticsearchEndpoints, ne.Spec.Identity.Hostname, gatewayRefFor(ne), image, caBundleRefFor(ne), issuerRefFor(ne), owner)
 	ne.Status.ServicesStatus.ElasticStack.OTelCollector = elasticStackServiceStatus(phaseToServiceState(outcome.Phase), outcome.Message, image)
 	return mapTelemetryOutcome(otelCollectorComponentID, outcome, r.waitForProgressingRequeue(), r.failureRequeue())
 }
@@ -421,6 +421,14 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 	gateway := ne.Spec.Gateway
 	issuerRef := issuerRefFor(ne)
 	owner := ownerReferenceFor(ne)
+	if !gateway.EffectiveManaged() {
+		if err := deleteGateway(ctx, r.Client, owner); err != nil {
+			log.Error(err, "failed to delete gateway resources", "namespace", keycloak.WorkloadNamespace, "gatewayName", gateway.Name, "requeueAfter", r.failureRequeue())
+			setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to delete gateway resources in namespace %q: %v", keycloak.WorkloadNamespace, err))
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("delete gateway: %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
 	if err := resources.EnsureIssuerExists(ctx, r.Client, keycloak.WorkloadNamespace, issuerRef); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.V(1).Info("required cert-manager Issuer is missing", "namespace", keycloak.WorkloadNamespace, "issuer", issuerRef.Name, "requeueAfter", r.failureRequeue())
@@ -444,6 +452,24 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 	return ctrl.Result{}, nil
 }
 
+// deleteGateway removes the redirect route and every Gateway this NetEye
+// controls, whatever spec.gateway.name now says.
+func deleteGateway(ctx context.Context, c client.Client, owner metav1.OwnerReference) error {
+	if err := resources.DeleteHTTPRoute(ctx, c, keycloak.WorkloadNamespace, resources.HTTPToHTTPSRedirectRouteName, owner); err != nil {
+		return err
+	}
+	return resources.DeleteOwnedGateways(ctx, c, keycloak.WorkloadNamespace, owner)
+}
+
+// gatewayRefFor returns the operator-managed Gateway routes attach to, or nil
+// when the Gateway is managed outside the operator.
+func gatewayRefFor(ne *neteye.NetEye) *resources.GatewayRef {
+	if !ne.Spec.Gateway.EffectiveManaged() {
+		return nil
+	}
+	return &resources.GatewayRef{Namespace: keycloak.WorkloadNamespace, Name: ne.Spec.Gateway.Name}
+}
+
 // gatewayListeners returns the per-component HTTPS listeners exposed on the
 // shared Gateway. The identity listener is always present; the Elastic Stack
 // listeners are only added when the feature module is enabled.
@@ -465,7 +491,7 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 	owner := ownerReferenceFor(ne)
 	log.Info("Started Keycloak reconciliation", "namespace", ne.Namespace, "name", owner.Name)
 	issuerRef := issuerRefFor(ne)
-	if err := resources.EnsureIssuerExists(ctx, r.Client, keycloak.WorkloadNamespace, issuerRef); err != nil {
+	if err := r.ensureIssuerExists(ctx, ne, issuerRef); err != nil {
 		if apierrors.IsNotFound(err) {
 			message := fmt.Sprintf("cert-manager Issuer '%q' was not found in namespace %q; create it before creating or reconciling this NetEye resource", issuerRef.Name, keycloak.WorkloadNamespace)
 			ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, message, image)
@@ -475,7 +501,7 @@ func (r *NetEyeReconciler) reconcileKeycloak(ctx context.Context, ne *neteye.Net
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, message, image)
 		return degradedResult(identityComponentID, "IssuerCheckFailed", message, r.failureRequeue(), err)
 	}
-	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, caBundleRefFor(ne), ne.Spec.Identity, keycloak.WorkloadNamespace, ne.Spec.Gateway.Name, issuerRef, owner)
+	keycloakResourcesReady, keycloakResourcesMessage, err := r.KeycloakComponent.EnsureResources(ctx, keycloak.WorkloadNamespace, image, caBundleRefFor(ne), ne.Spec.Identity, gatewayRefFor(ne), issuerRef, owner)
 	if err != nil {
 		log.Error(err, "failed to ensure keycloak resources", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		ne.Status.ServicesStatus.Identity = identityStatus(neteye.ServiceStateFailed, fmt.Sprintf("failed to ensure keycloak resources in namespace %q: %v", keycloak.WorkloadNamespace, err), image)
@@ -638,6 +664,15 @@ func (r *NetEyeReconciler) ensureClusterAuthority(ctx context.Context, ne *netey
 		}
 	}
 	return nil
+}
+
+// ensureIssuerExists checks the Issuer only when the operator issues the
+// Gateway's TLS certificates.
+func (r *NetEyeReconciler) ensureIssuerExists(ctx context.Context, ne *neteye.NetEye, ref resources.CertificateIssuerRef) error {
+	if !ne.Spec.Gateway.EffectiveManaged() {
+		return nil
+	}
+	return resources.EnsureIssuerExists(ctx, r.Client, keycloak.WorkloadNamespace, ref)
 }
 
 func issuerRefFor(ne *neteye.NetEye) resources.CertificateIssuerRef {
