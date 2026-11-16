@@ -12,9 +12,21 @@ metadata:
   labels:
     app: pg-test
 spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: postgres
       image: docker.io/library/postgres:18
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
       env:
         - name: POSTGRES_USER
           value: test
@@ -28,8 +40,16 @@ spec:
       volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql
+        - name: run
+          mountPath: /var/run/postgresql
+        - name: tmp
+          mountPath: /tmp
   volumes:
     - name: data
+      emptyDir: {}
+    - name: run
+      emptyDir: {}
+    - name: tmp
       emptyDir: {}
 ---
 apiVersion: v1
