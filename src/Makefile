@@ -13,7 +13,7 @@ KUSTOMIZE_VERSION ?= v5.8.3
 OPERATOR_SDK_VERSION ?= v1.42.3
 # renovate: datasource=github-releases depName=kubernetes-sigs/crdify
 CRDIFY_VERSION ?= v0.6.0
-VERSION ?= 0.2.10
+VERSION ?= 0.3.0
 PACKAGE_NAME ?= neteye-operator
 LD_FLAGS ?= -X main.version=$(VERSION)
 
