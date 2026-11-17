@@ -113,6 +113,40 @@ spec:
                 required:
                 - name
                 type: object
+              database:
+                description: Database says where the PostgreSQL of the tenant lives.
+                properties:
+                  hostname:
+                    description: Hostname is the host of the external PostgreSQL.
+                      Only for type external.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  port:
+                    description: Port is the port of the external PostgreSQL. Only
+                      for type external.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  type:
+                    description: |-
+                      Type is local for a CloudNativePG cluster of the tenant, or external for a
+                      PostgreSQL that someone else runs.
+                    enum:
+                    - local
+                    - external
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: hostname and port must not be set when type is local
+                  rule: self.type != 'local' || (!has(self.hostname) && !has(self.port))
+                - message: hostname is required when type is external
+                  rule: self.type != 'external' || has(self.hostname)
+                - message: type is immutable
+                  rule: self.type == oldSelf.type
               displayName:
                 description: |-
                   DisplayName is the name of the tenant that people see and use. It can
@@ -136,6 +170,165 @@ spec:
                   rule: '!self.matches(''[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]'')'
                 - message: must contain at least one letter or digit
                   rule: self.matches('[^\\P{L}\\x{115F}\\x{1160}\\x{3164}\\x{FFA0}]|\\p{N}')
+              fleetServer:
+                description: |-
+                  FleetServer is the Classis fleet server of the tenant. When it is not
+                  set, the tenant has none. It needs database.
+                properties:
+                  adminUsersSecretName:
+                    description: |-
+                      AdminUsersSecretName names a Secret whose basic-users key holds the file
+                      of the operator plane users, with their Argon2id password hashes.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  blobs:
+                    description: Blobs is the S3 bucket that holds the package artifacts.
+                    properties:
+                      bucket:
+                        maxLength: 63
+                        minLength: 3
+                        type: string
+                      credentialsSecretName:
+                        description: |-
+                          CredentialsSecretName names a Secret with the access-key-id and
+                          secret-access-key keys.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      endpoint:
+                        description: |-
+                          Endpoint is the https URL of the S3 service. When a private CA signs its
+                          certificate, the tenant's spec.caBundle holds that CA.
+                        maxLength: 512
+                        pattern: ^https://.+
+                        type: string
+                      prefix:
+                        description: |-
+                          Prefix is the key prefix the server owns. At startup the server deletes
+                          the objects under it that no package names, so no other writer may share
+                          it.
+                        maxLength: 512
+                        type: string
+                      region:
+                        default: us-east-1
+                        maxLength: 63
+                        type: string
+                    required:
+                    - bucket
+                    - credentialsSecretName
+                    - endpoint
+                    type: object
+                  database:
+                    description: |-
+                      Database tunes the database of the server. Where it lives is the
+                      tenant's spec.database.
+                    properties:
+                      external:
+                        description: |-
+                          External names the database and the credentials on an external
+                          PostgreSQL. Required when spec.database.type is external.
+                        properties:
+                          credentialsSecretName:
+                            description: |-
+                              CredentialsSecretName names a Secret with the password key, and the ca.crt
+                              key of the CA that signs the server certificate.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          dbname:
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                          user:
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                        required:
+                        - credentialsSecretName
+                        - dbname
+                        - user
+                        type: object
+                      internal:
+                        description: Internal tunes the CloudNativePG cluster of a
+                          local database.
+                        properties:
+                          imageName:
+                            default: ghcr.io/cloudnative-pg/postgresql:18
+                            description: ImageName is the PostgreSQL image of the
+                              cluster.
+                            maxLength: 512
+                            type: string
+                          instances:
+                            default: 2
+                            description: |-
+                              Instances is the number of PostgreSQL instances. The instances never
+                              share a node (required pod anti-affinity on the node name): with two
+                              instances on a cluster that has a single worker node, the second instance
+                              stays Pending, so set it to 1 there.
+                            format: int32
+                            maximum: 5
+                            minimum: 1
+                            type: integer
+                          storageClassName:
+                            description: |-
+                              StorageClassName is the storage class of the volumes. When empty, the
+                              default class is used.
+                            maxLength: 253
+                            type: string
+                          storageSize:
+                            default: 5Gi
+                            description: StorageSize is the size of the volume of
+                              each instance.
+                            maxLength: 32
+                            type: string
+                        type: object
+                    type: object
+                  enabled:
+                    default: true
+                    description: |-
+                      Enabled runs the server. When false, the operator removes the Deployment
+                      and leaves the database, the Service and the policies in place.
+                    type: boolean
+                  image:
+                    description: Image is the container image of the Classis server.
+                    maxLength: 512
+                    minLength: 1
+                    type: string
+                  logFormat:
+                    default: json
+                    description: |-
+                      LogFormat is the format of the server log: json for a log collector, text
+                      for a person.
+                    enum:
+                    - json
+                    - text
+                    type: string
+                  logLevel:
+                    default: info
+                    description: LogLevel is the RUST_LOG filter of the server.
+                    maxLength: 256
+                    type: string
+                  network:
+                    description: Network narrows the network policies of the server.
+                    properties:
+                      adminIngressCIDRs:
+                        description: |-
+                          AdminIngressCIDRs, when set, are the only sources of the operator plane
+                          (4321). When empty, any source reaches it: a native policy cannot select
+                          the nodes of the PCS proxy, so the proxy, TLS and the Basic credentials
+                          of the plane limit who gets in.
+                        items:
+                          type: string
+                        maxItems: 32
+                        type: array
+                    type: object
+                required:
+                - adminUsersSecretName
+                - blobs
+                - enabled
+                - image
+                type: object
               useProcedureGates:
                 default: true
                 description: |-
@@ -159,6 +352,17 @@ spec:
             - displayName
             - version
             type: object
+            x-kubernetes-validations:
+            - message: fleetServer needs database
+              rule: '!has(self.fleetServer) || has(self.database)'
+            - message: fleetServer.database.external is required when database.type
+                is external
+              rule: '!has(self.fleetServer) || !has(self.database) || self.database.type
+                != ''external'' || (has(self.fleetServer.database) && has(self.fleetServer.database.external))'
+            - message: fleetServer.database.external must not be set when database.type
+                is local
+              rule: '!has(self.fleetServer) || !has(self.database) || self.database.type
+                != ''local'' || !has(self.fleetServer.database) || !has(self.fleetServer.database.external)'
           status:
             description: |-
               NetEyeTenantStatus defines the observed state of a NetEye tenant. It has the
