@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -59,8 +60,9 @@ type NetEyeTenantReconciler struct {
 	OperatorUsername string
 
 	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
-	FailureRequeueAfter        time.Duration
-	ReconciliationRequeueAfter time.Duration
+	FailureRequeueAfter            time.Duration
+	ReconciliationRequeueAfter     time.Duration
+	WaitForProgressingRequeueAfter time.Duration
 
 	// releasePlans overrides defaultTenantReleasePlans in tests.
 	releasePlans map[string]tenantReleasePlan
@@ -75,6 +77,11 @@ type NetEyeTenantReconciler struct {
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;create;update;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups="",resources=configmaps;services,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get;list;watch;create;update
 
 // Reconcile reconciles a NetEyeTenant resource with the desired cluster state.
@@ -155,13 +162,17 @@ func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *ne
 		return failed(fmt.Sprintf("display name %q is already used by tenant %s; choose another display name", tenant.Spec.DisplayName, holder))
 	}
 
-	graph, err := newLifecycleGraph([]lifecycleNode{{ID: tenantNamespaceComponentID}})
+	fleetNodes, fleetOperations := r.fleetServerComponents(ctx, tenant)
+	graph, err := newLifecycleGraph(append([]lifecycleNode{{ID: tenantNamespaceComponentID}}, fleetNodes...))
 	if err != nil {
 		setTenantPhase(tenant, neteye.PhaseFailed, err.Error())
 		return ctrl.Result{}, fmt.Errorf("construct tenant component lifecycle graph: %w", err)
 	}
 	operations := map[componentID]componentOperation{
 		tenantNamespaceComponentID: func() (componentResult, error) { return r.reconcileNamespace(ctx, tenant) },
+	}
+	for id, operation := range fleetOperations {
+		operations[id] = operation
 	}
 	if procedure != lifecycleSteady && tenant.Spec.EffectiveUseProcedureGates() {
 		present, err := listProcedureGates(ctx, r.Client, tenant.Namespace, version)
@@ -254,7 +265,7 @@ func (r *NetEyeTenantReconciler) reconcileNamespace(ctx context.Context, tenant 
 	case state == tenantNamespacePolicyConflict:
 		return degradedResult(tenantNamespaceComponentID, "NamespacePolicyConflict", message, r.failureRequeue(), fmt.Errorf("%s", message))
 	case state == tenantNamespacePolicyMissing:
-		return progressingResult(tenantNamespaceComponentID, "WaitingForNamespacePolicy", message, r.failureRequeue())
+		return progressingResult(tenantNamespaceComponentID, "WaitingForNamespacePolicy", message, r.waitForProgressingRequeue())
 	}
 	return readyResult(tenantNamespaceComponentID, "Available", "Tenant namespace is ready")
 }
@@ -420,6 +431,16 @@ func (r *NetEyeTenantReconciler) failureRequeue() time.Duration {
 	return DefaultFailureRequeueAfter
 }
 
+// waitForProgressingRequeue is how soon a component that waits for something
+// else, such as a database or a certificate, is looked at again. It is the
+// interval NetEyeReconciler uses for its own waiting components.
+func (r *NetEyeTenantReconciler) waitForProgressingRequeue() time.Duration {
+	if r.WaitForProgressingRequeueAfter > 0 {
+		return r.WaitForProgressingRequeueAfter
+	}
+	return DefaultWaitForProgressingRequeueAfter
+}
+
 func (r *NetEyeTenantReconciler) reconciliationRequeue() time.Duration {
 	if r.ReconciliationRequeueAfter > 0 {
 		return r.ReconciliationRequeueAfter
@@ -449,6 +470,7 @@ func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&neteye.NetEyeTenant{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Owns(networkPolicy).
+		Owns(&appsv1.Deployment{}).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(tenantForNamespace)).
 		Watches(&neteye.NetEyeProcedureGate{}, handler.EnqueueRequestsFromMapFunc(tenantForProcedureGate)).
 		Watches(&neteye.NetEye{}, handler.EnqueueRequestsFromMapFunc(r.allTenants), builder.WithPredicates(netEyeCurrentVersionChanged)).
