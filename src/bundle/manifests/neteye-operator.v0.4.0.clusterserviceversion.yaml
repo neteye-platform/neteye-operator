@@ -258,6 +258,16 @@ spec:
           - delete
           - get
         - apiGroups:
+          - postgresql.cnpg.io
+          resources:
+          - clusters
+          verbs:
+          - create
+          - get
+          - list
+          - update
+          - watch
+        - apiGroups:
           - neteye.cloud
           resources:
           - neteyes

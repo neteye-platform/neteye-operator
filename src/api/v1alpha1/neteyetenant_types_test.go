@@ -6,6 +6,7 @@ package v1alpha1
 import (
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -91,5 +92,19 @@ func TestNetEyeTenantAlyvixEnabledAndEffectiveRDPPorts(t *testing.T) {
 	ports[0] = 1
 	if configured.RDP.Ports[0] != 3390 {
 		t.Error("EffectiveRDPPorts returns the spec slice")
+	}
+}
+
+// TestGeneratedCRDKeepsTheTenantDatabaseTypeImmutable keeps the rule that
+// forbids moving the records between a local and an external database.
+func TestGeneratedCRDKeepsTheTenantDatabaseTypeImmutable(t *testing.T) {
+	data, err := os.ReadFile("../../config/crd/bases/neteye.cloud_neteyetenants.yaml")
+	if err != nil {
+		t.Fatalf("read generated NetEyeTenant CRD: %v", err)
+	}
+	for _, want := range []string{"self.type == oldSelf.type", "hostname is required when type is external", "hostname and port must not be set when type is local", "fleetServer needs database"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("generated CRD has no rule %q", want)
+		}
 	}
 }

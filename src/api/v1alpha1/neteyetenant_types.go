@@ -37,6 +37,9 @@ const (
 )
 
 // NetEyeTenantSpec defines the desired state of a NetEye tenant.
+// +kubebuilder:validation:XValidation:rule="!has(self.fleetServer) || has(self.database)",message="fleetServer needs database"
+// +kubebuilder:validation:XValidation:rule="!has(self.fleetServer) || !has(self.database) || self.database.type != 'external' || (has(self.fleetServer.database) && has(self.fleetServer.database.external))",message="fleetServer.database.external is required when database.type is external"
+// +kubebuilder:validation:XValidation:rule="!has(self.fleetServer) || !has(self.database) || self.database.type != 'local' || !has(self.fleetServer.database) || !has(self.fleetServer.database.external)",message="fleetServer.database.external must not be set when database.type is local"
 type NetEyeTenantSpec struct {
 	// Version is the NetEye product version string of the tenant, e.g. "4.51".
 	// The rules are the same as for the version of the NetEye resource: a new
@@ -86,6 +89,15 @@ type NetEyeTenantSpec struct {
 	// come from the release data of the NetEye resource.
 	// +kubebuilder:validation:Optional
 	Alyvix *NetEyeAlyvixSpec `json:"alyvix,omitempty"`
+
+	// Database says where the PostgreSQL of the tenant lives.
+	// +kubebuilder:validation:Optional
+	Database *TenantDatabaseSpec `json:"database,omitempty"`
+
+	// FleetServer is the Classis fleet server of the tenant. When it is not
+	// set, the tenant has none. It needs database.
+	// +kubebuilder:validation:Optional
+	FleetServer *NetEyeFleetServerSpec `json:"fleetServer,omitempty"`
 }
 
 // NetEyeAlyvixSpec configures the Alyvix feature module of a tenant. While it
