@@ -64,7 +64,7 @@ func fleetServerSecrets(names ...string) []client.Object {
 }
 
 func TestFleetServerDeploymentIsHardenedAndStateless(t *testing.T) {
-	d := fleetServerDeployment(fleetServerTenant(neteye.TenantDatabaseLocal), "sum")
+	d := fleetServerDeployment(fleetServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets")
 	if d.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType || *d.Spec.Replicas != 1 {
 		t.Errorf("strategy = %v replicas = %d, want Recreate with one replica", d.Spec.Strategy.Type, *d.Spec.Replicas)
 	}
@@ -92,6 +92,33 @@ func TestFleetServerDeploymentIsHardenedAndStateless(t *testing.T) {
 		}
 		if volume.Secret != nil && *volume.Secret.DefaultMode != 0o440 {
 			t.Errorf("secret volume %q mode = %o, want 440", volume.Name, *volume.Secret.DefaultMode)
+		}
+	}
+}
+
+// The Server reads its environment under CLASSIS_SERVER__ since the product
+// was renamed; the old FLEET_SERVER__ prefix is ignored by it.
+func TestFleetServerDeploymentUsesTheClassisNames(t *testing.T) {
+	d := fleetServerDeployment(fleetServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets")
+	container := d.Spec.Template.Spec.Containers[0]
+	var accessKey bool
+	for _, env := range container.Env {
+		if strings.HasPrefix(env.Name, "FLEET_SERVER") {
+			t.Errorf("environment variable %q uses the old prefix", env.Name)
+		}
+		if env.Name == "CLASSIS_SERVER__BLOBS__S3__ACCESS_KEY_ID" {
+			accessKey = true
+		}
+	}
+	if !accessKey {
+		t.Errorf("no CLASSIS_SERVER__BLOBS__S3__ACCESS_KEY_ID in %v", container.Env)
+	}
+	if len(container.Args) != 2 || container.Args[0] != "--config" || container.Args[1] != "/etc/classis/config/server.toml" {
+		t.Errorf("args = %v, want --config on the mounted server.toml", container.Args)
+	}
+	for _, name := range []string{string(fleetServerComponentID), string(fleetServerDatabaseComponentID), fleetServerConfigChecksumAnnotation} {
+		if strings.Contains(name, "fleet") {
+			t.Errorf("%q still carries the old product name", name)
 		}
 	}
 }
@@ -349,7 +376,7 @@ func TestFleetServerConfigHasNoTLSAndNoAgentsSection(t *testing.T) {
 // The probes ask over plain HTTP, and the startup probe outlasts the 180 s the
 // server retries PostgreSQL and S3 at startup.
 func TestFleetServerStartupProbeOutlastsTheServerRetries(t *testing.T) {
-	probe := fleetServerDeployment(fleetServerTenant(neteye.TenantDatabaseLocal), "sum").Spec.Template.Spec.Containers[0].StartupProbe
+	probe := fleetServerDeployment(fleetServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets").Spec.Template.Spec.Containers[0].StartupProbe
 	if total := probe.PeriodSeconds * probe.FailureThreshold; total < 200 {
 		t.Errorf("startup probe allows %d s, want at least 200", total)
 	}
@@ -360,7 +387,7 @@ func TestFleetServerStartupProbeOutlastsTheServerRetries(t *testing.T) {
 
 // No Secret volume belongs to the agents, and none is left over from the TLS days.
 func TestFleetServerMountsNoAgentKeyNorTLS(t *testing.T) {
-	pod := fleetServerDeployment(fleetServerTenant(neteye.TenantDatabaseLocal), "sum").Spec.Template.Spec
+	pod := fleetServerDeployment(fleetServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets").Spec.Template.Spec
 	for _, volume := range pod.Volumes {
 		switch volume.Name {
 		case "agent-token-key", "tls", "client-ca":
@@ -391,11 +418,11 @@ func TestFleetServerWaitingComponentsAreRequeuedQuickly(t *testing.T) {
 func TestFleetServerTrustsTheCABundleOfTheTenant(t *testing.T) {
 	tenant := fleetServerTenant(neteye.TenantDatabaseLocal)
 	tenant.Spec.CABundle = &neteye.ConfigMapKeyReference{Name: "tenant-ca-bundle", Key: "ca.pem"}
-	if config := fleetServerConfig(tenant); !strings.Contains(config, `ca_file = "/etc/classis-server/ca-bundle/ca.pem"`) {
+	if config := fleetServerConfig(tenant); !strings.Contains(config, `ca_file = "/etc/classis/ca-bundle/ca.pem"`) {
 		t.Errorf("config has no S3 ca_file:\n%s", config)
 	}
 	found := false
-	for _, volume := range fleetServerDeployment(tenant, "sum").Spec.Template.Spec.Volumes {
+	for _, volume := range fleetServerDeployment(tenant, "sum", "secrets").Spec.Template.Spec.Volumes {
 		found = found || (volume.ConfigMap != nil && volume.ConfigMap.Name == "tenant-ca-bundle")
 	}
 	if !found {

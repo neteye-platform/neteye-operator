@@ -31,8 +31,8 @@ import (
 )
 
 const (
-	fleetServerDatabaseComponentID componentID = "fleet-server-database"
-	fleetServerComponentID         componentID = "fleet-server"
+	fleetServerDatabaseComponentID componentID = "classis-server-database"
+	fleetServerComponentID         componentID = "classis-server"
 
 	// fleetServerName names the Deployment, the Service, the ConfigMap and the
 	// policies of the server, and is the host label of its DNS name.
@@ -48,7 +48,7 @@ const (
 
 	// fleetServerEnvPrefix prefixes the environment variables that override the
 	// configuration file.
-	fleetServerEnvPrefix = "FLEET_SERVER__"
+	fleetServerEnvPrefix = "CLASSIS_SERVER__"
 
 	// cnpgSystemNamespace is where the CloudNativePG operator runs. Its pods
 	// reach the status port of every instance.
@@ -58,7 +58,7 @@ const (
 	// pod only (fsGroup): the server refuses a secret file readable by others.
 	fleetServerSecretMode int32 = 0o440
 
-	fleetServerConfigChecksumAnnotation = "neteye.cloud/fleet-server-config-checksum"
+	fleetServerConfigChecksumAnnotation = "neteye.cloud/classis-server-config-checksum"
 	fleetServerConfigFile               = "server.toml"
 )
 
@@ -141,7 +141,7 @@ func fleetServerConfig(tenant *neteye.NetEyeTenant) string {
 	return b.String()
 }
 
-func fleetServerMount(volume string) string { return "/etc/classis-server/" + volume }
+func fleetServerMount(volume string) string { return "/etc/classis/" + volume }
 
 func checksum(data string) string {
 	sum := sha256.Sum256([]byte(data))
@@ -157,7 +157,7 @@ func secretVolume(name, secretName string) corev1.Volume {
 // pod stops before the new one starts. The root filesystem is read-only and the
 // only writable volume is an emptyDir for /tmp: the server keeps its records in
 // PostgreSQL and its artifacts in S3.
-func fleetServerDeployment(tenant *neteye.NetEyeTenant, configChecksum string) *appsv1.Deployment {
+func fleetServerDeployment(tenant *neteye.NetEyeTenant, configChecksum, secretsChecksum string) *appsv1.Deployment {
 	spec := tenant.Spec.FleetServer
 	database := fleetServerDatabase(tenant)
 	labels := fleetServerSelector()
@@ -165,13 +165,13 @@ func fleetServerDeployment(tenant *neteye.NetEyeTenant, configChecksum string) *
 	volumes := []corev1.Volume{
 		{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: fleetServerName}}}},
 		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		secretVolume("admin-users", spec.AdminUsersSecretName),
+		secretVolume("admin-users", fleetServerAdminUsersSecret(spec)),
 		secretVolume("db-password", database.PasswordSecret),
 		secretVolume("db-ca", database.CASecret),
 		secretVolume("s3-credentials", spec.Blobs.CredentialsSecretName),
 	}
 	mounts := []corev1.VolumeMount{
-		{Name: "config", MountPath: "/etc/classis-server/config", ReadOnly: true},
+		{Name: "config", MountPath: "/etc/classis/config", ReadOnly: true},
 		{Name: "tmp", MountPath: "/tmp"},
 	}
 	for _, name := range []string{"admin-users", "db-password", "db-ca", "s3-credentials"} {
@@ -199,7 +199,7 @@ func fleetServerDeployment(tenant *neteye.NetEyeTenant, configChecksum string) *
 			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{fleetServerConfigChecksumAnnotation: configChecksum}},
+				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{fleetServerConfigChecksumAnnotation: configChecksum, fleetServerSecretsChecksumAnnotation: secretsChecksum}},
 				Spec: corev1.PodSpec{
 					AutomountServiceAccountToken:  ptr.To(false),
 					TerminationGracePeriodSeconds: ptr.To(int64(30)),
@@ -213,7 +213,7 @@ func fleetServerDeployment(tenant *neteye.NetEyeTenant, configChecksum string) *
 					Containers: []corev1.Container{{
 						Name:  fleetServerName,
 						Image: spec.Image,
-						Args:  []string{"--config", "/etc/classis-server/config/" + fleetServerConfigFile},
+						Args:  []string{"--config", "/etc/classis/config/" + fleetServerConfigFile},
 						Ports: []corev1.ContainerPort{
 							{Name: "agent", ContainerPort: fleetServerAgentPort},
 							{Name: "admin", ContainerPort: fleetServerAdminPort},
@@ -502,6 +502,9 @@ func (r *NetEyeTenantReconciler) reconcileFleetServer(ctx context.Context, tenan
 		return readyResult(fleetServerComponentID, "Disabled", "The fleet server is disabled")
 	}
 	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
+	if err := r.ensureGeneratedAdminSecrets(ctx, tenant); err != nil {
+		return degradedResult(fleetServerComponentID, "AdminSecretFailed", err.Error(), r.failureRequeue(), err)
+	}
 	if missing, err := r.missingFleetServerSecrets(ctx, tenant); err != nil {
 		return degradedResult(fleetServerComponentID, "SecretCheckFailed", err.Error(), r.failureRequeue(), err)
 	} else if len(missing) > 0 {
@@ -509,7 +512,7 @@ func (r *NetEyeTenantReconciler) reconcileFleetServer(ctx context.Context, tenan
 	}
 
 	config := fleetServerConfig(tenant)
-	if err := resources.EnsureConfigMap(ctx, r.Client, tenant.Namespace, fleetServerName, map[string]string{fleetServerConfigFile: config}, owner); err != nil {
+	if _, err := resources.EnsureConfigMap(ctx, r.Client, tenant.Namespace, fleetServerName, map[string]string{fleetServerConfigFile: config}, owner); err != nil {
 		return degradedResult(fleetServerComponentID, "ConfigFailed", err.Error(), r.failureRequeue(), err)
 	}
 	if err := resources.EnsureService(ctx, r.Client, fleetServerService(tenant), owner); err != nil {
@@ -518,7 +521,11 @@ func (r *NetEyeTenantReconciler) reconcileFleetServer(ctx context.Context, tenan
 	if err := resources.EnsureNetworkPolicy(ctx, r.Client, tenant.Namespace, fleetServerName, fleetServerNetworkPolicySpec(tenant), owner); err != nil {
 		return degradedResult(fleetServerComponentID, "NetworkPolicyFailed", err.Error(), r.failureRequeue(), err)
 	}
-	if err := resources.EnsureDeployment(ctx, r.Client, fleetServerDeployment(tenant, checksum(config)), owner); err != nil {
+	secretsChecksum, err := r.fleetServerSecretsChecksum(ctx, tenant)
+	if err != nil {
+		return degradedResult(fleetServerComponentID, "SecretCheckFailed", err.Error(), r.failureRequeue(), err)
+	}
+	if err := resources.EnsureDeployment(ctx, r.Client, fleetServerDeployment(tenant, checksum(config), secretsChecksum), owner); err != nil {
 		return degradedResult(fleetServerComponentID, "DeploymentFailed", err.Error(), r.failureRequeue(), err)
 	}
 	ready, message, err := resources.IsDeploymentReady(ctx, r.Client, tenant.Namespace, fleetServerName)
@@ -536,7 +543,7 @@ func (r *NetEyeTenantReconciler) reconcileFleetServer(ctx context.Context, tenan
 func (r *NetEyeTenantReconciler) missingFleetServerSecrets(ctx context.Context, tenant *neteye.NetEyeTenant) ([]string, error) {
 	spec := tenant.Spec.FleetServer
 	names := map[string]struct{}{}
-	for _, name := range []string{spec.AdminUsersSecretName, spec.Blobs.CredentialsSecretName} {
+	for _, name := range []string{fleetServerAdminUsersSecret(spec), spec.Blobs.CredentialsSecretName} {
 		if name != "" {
 			names[name] = struct{}{}
 		}
