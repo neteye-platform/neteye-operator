@@ -101,6 +101,8 @@ type NetEyeTenantReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates;issuers,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=postgresql.cnpg.io,resources=clusters,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get;list;watch;create;update
 
 // Reconcile reconciles a NetEyeTenant resource with the desired cluster state.
@@ -181,7 +183,8 @@ func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *ne
 		return failed(fmt.Sprintf("display name %q is already used by tenant %s; choose another display name", tenant.Spec.DisplayName, holder))
 	}
 
-	graph, err := newLifecycleGraph(tenantLifecycleNodes(tenant))
+	fleetNodes, fleetOperations := r.fleetServerComponents(ctx, tenant)
+	graph, err := newLifecycleGraph(append(tenantLifecycleNodes(tenant), fleetNodes...))
 	if err != nil {
 		setTenantPhase(tenant, neteye.PhaseFailed, err.Error())
 		return ctrl.Result{}, fmt.Errorf("construct tenant component lifecycle graph: %w", err)
@@ -190,6 +193,9 @@ func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *ne
 		tenantNamespaceComponentID: func() (componentResult, error) { return r.reconcileNamespace(ctx, tenant) },
 		tenantGatewayComponentID:   func() (componentResult, error) { return r.reconcileGateway(ctx, tenant) },
 		tenantAlyvixRDPComponentID: func() (componentResult, error) { return r.reconcileAlyvixRDP(ctx, tenant) },
+	}
+	for id, operation := range fleetOperations {
+		operations[id] = operation
 	}
 	if procedure != lifecycleSteady && tenant.Spec.EffectiveUseProcedureGates() {
 		present, err := listProcedureGates(ctx, r.Client, tenant.Namespace, version)
