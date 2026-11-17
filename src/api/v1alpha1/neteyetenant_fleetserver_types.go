@@ -102,11 +102,16 @@ type NetEyeFleetServerSpec struct {
 	Blobs FleetServerBlobsSpec `json:"blobs"`
 
 	// AdminUsersSecretName names a Secret whose basic-users key holds the file
-	// of the operator plane users, with their Argon2id password hashes.
-	// +kubebuilder:validation:Required
+	// of the operator plane users, with their Argon2id password hashes. When it
+	// is empty the operator generates one administrator, `admin`: the Secret
+	// `classis-server-admin` holds its `username` and `password`, and the Secret
+	// `classis-server-admin-users` holds the hash the server reads. Both are
+	// created once, never overwritten and never rotated, and they survive the
+	// deletion of the tenant resource.
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	AdminUsersSecretName string `json:"adminUsersSecretName"`
+	AdminUsersSecretName string `json:"adminUsersSecretName,omitempty"`
 
 	// LogLevel is the RUST_LOG filter of the server.
 	// +kubebuilder:default=info
