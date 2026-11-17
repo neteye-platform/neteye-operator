@@ -1,0 +1,5 @@
+misconfigurations:
+  - id: KSV-0125
+    paths:
+      - "**/pg_test.yaml"
+    statement: Test-only database using the official Docker Hub postgres image.

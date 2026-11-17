@@ -1,0 +1,66 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eks-auto-alb
+spec:
+  controllerName: eks.amazonaws.com/gateway-alb
+---
+apiVersion: gateway.k8s.aws/v1
+kind: LoadBalancerConfiguration
+metadata:
+  name: public-alb
+  namespace: neteye-tenant-shared
+spec:
+  scheme: internet-facing
+  listenerConfigurations:
+    - protocolPort: HTTPS:443
+      defaultCertificate: arn:aws:acm:<MY_REGION>:<MY_ACCOUNT_ID>:certificate/<MY_CERTIFICATE_ID>
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: neteye-public
+  namespace: neteye-tenant-shared
+spec:
+  gatewayClassName: eks-auto-alb
+  infrastructure:
+    parametersRef:
+      group: gateway.k8s.aws
+      kind: LoadBalancerConfiguration
+      name: public-alb
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: keycloak
+      hostname: <MY_HOSTNAME>
+      protocol: HTTPS
+      port: 443
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: redirect-http-to-https-public
+  namespace: neteye-tenant-shared
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: neteye-public
+      sectionName: http
+  rules:
+    - filters:
+        - requestRedirect:
+            scheme: https
+            statusCode: 301
+          type: RequestRedirect
+      matches:
+        - path:
+            type: PathPrefix
+            value: /

@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: neteye-tenant-shared
+---
+kind: Issuer
+apiVersion: cert-manager.io/v1
+metadata:
+  name: neteye-internal-issuer
+  namespace: neteye-tenant-shared
+spec:
+  selfSigned: {}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-db-credentials
+  namespace: neteye-tenant-shared
+type: Opaque
+stringData:
+  username: <MY_DB_USERNAME>
+  password: <MY_DB_PASSWORD>
+---
+apiVersion: neteye.cloud/v1alpha1
+kind: NetEye
+metadata:
+  name: neteye
+  namespace: neteye-tenant-shared
+spec:
+  version: "4.51"
+
+  gateway:
+    managed: false
+
+  internalCertificateIssuerRef: neteye-internal-issuer
+
+  identity:
+    hostname: <MY_HOSTNAME>
+    replicas: 1
+    podExtraEnvVars:
+      - name: QUARKUS_DATASOURCE_JDBC_NEW_CONNECTION_SQL
+        value: ""
+    dbConnection:
+      host: <MY_DB_HOST>
+      port: 5432
+      vendor: postgres
+  elasticStack:
+    enabled: false
+  useProcedureGates: false
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak-public
+  namespace: neteye-tenant-shared
+spec:
+  parentRefs:
+    - name: neteye-public
+      sectionName: keycloak
+  rules:
+    - backendRefs:
+        - name: neteye-kc-service
+          port: 8080
