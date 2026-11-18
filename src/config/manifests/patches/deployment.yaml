@@ -126,7 +126,7 @@ spec:
                     env:
                       - {
                         name: RELATED_IMAGE_KEYCLOAK,
-                        value: ghcr.io/neteye-platform/neteye-keycloak:1.0.9@sha256:ed3467265ec0fe5ae1b0a82b13f9a0316290be00ef01ce477e5906899db6756f,
+                        value: ghcr.io/neteye-platform/neteye-keycloak:1.0.10@sha256:686311bbb1b8f557d09cd04c5c0d2a1cabf85c2dd9a68e97075d77f238f4b47c,
                       }
                       - {
                         name: RELATED_IMAGE_OTEL_COLLECTOR,
