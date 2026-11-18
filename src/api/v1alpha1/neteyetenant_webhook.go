@@ -34,9 +34,9 @@ func SetupNetEyeTenantWebhookWithManager(mgr ctrl.Manager) error {
 
 // NetEyeTenantValidator validates the NetEyeTenant rules that the CRD schema
 // cannot express: the version transitions, the namespace of a tenant, a
-// display name that is unique among tenants, and the database of the Classis
-// Server, which depends on two fields of the spec. The CRD validates
-// everything that depends on one field only.
+// display name that is unique among tenants, and the database and the object
+// store of the Classis Server, which depend on several fields of the spec. The
+// CRD validates everything that depends on one field only.
 type NetEyeTenantValidator struct {
 	reader client.Reader
 }
@@ -47,7 +47,7 @@ func (v *NetEyeTenantValidator) ValidateCreate(ctx context.Context, obj *NetEyeT
 	if err := validateVersionOnCreate(obj.Spec.Version); err != nil {
 		errors = append(errors, err)
 	}
-	errors = append(errors, ValidateClassisServerDatabase(obj)...)
+	errors = append(errors, ValidateClassisServer(obj)...)
 	if len(errors) == 0 {
 		checks, err := v.validateNotNewerThanNetEye(ctx, obj)
 		if err != nil {
@@ -71,7 +71,7 @@ func (v *NetEyeTenantValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 	if !newObj.DeletionTimestamp.IsZero() {
 		return nil, nil
 	}
-	errors := ValidateClassisServerDatabase(newObj)
+	errors := ValidateClassisServer(newObj)
 	if err := validateVersionOnUpdate(oldObj.Spec.Version, newObj.Spec.Version); err != nil {
 		errors = append(errors, err)
 	} else if oldObj.Spec.Version != newObj.Spec.Version {
@@ -91,27 +91,42 @@ func (v *NetEyeTenantValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 	return nil, tenantInvalid(newObj, errors)
 }
 
-// ValidateClassisServerDatabase enforces that a Classis Server has a database, that
-// an external database names the database of the server, and that a local
-// database names none.
-func ValidateClassisServerDatabase(tenant *NetEyeTenant) field.ErrorList {
+// ValidateClassisServer enforces that a Classis Server has the database and
+// the object store of the tenant, and that its credentials come from where the
+// database provider says: the operator generates them for a local database,
+// and an external database names them.
+func ValidateClassisServer(tenant *NetEyeTenant) field.ErrorList {
 	server := tenant.Spec.ClassisServer
 	if server == nil {
 		return nil
 	}
+	var errors field.ErrorList
+	if tenant.Spec.ObjectStorage == nil {
+		errors = append(errors, field.Required(field.NewPath("spec", "objectStorage"), "classisServer needs objectStorage"))
+	}
 	database := tenant.Spec.Database
 	if database == nil {
-		return field.ErrorList{field.Required(field.NewPath("spec", "database"), "classisServer needs database")}
+		return append(errors, field.Required(field.NewPath("spec", "database"), "classisServer needs database"))
 	}
-	external := server.Database != nil && server.Database.External != nil
-	path := field.NewPath("spec", "classisServer", "database", "external")
-	switch {
-	case database.Type == TenantDatabaseExternal && !external:
-		return field.ErrorList{field.Required(path, "required when spec.database.type is external")}
-	case database.Type == TenantDatabaseLocal && external:
-		return field.ErrorList{field.Forbidden(path, "must not be set when spec.database.type is local")}
+	connection := server.DBConnection
+	path := field.NewPath("spec", "classisServer", "dbConnection")
+	switch database.Provider {
+	case TenantStorageExternal:
+		if connection == nil || connection.UsernameSecret == nil {
+			errors = append(errors, field.Required(path.Child("usernameSecret"), "required when spec.database.provider is external"))
+		}
+		if connection == nil || connection.PasswordSecret == nil {
+			errors = append(errors, field.Required(path.Child("passwordSecret"), "required when spec.database.provider is external"))
+		}
+	case TenantStorageLocal:
+		if connection != nil && connection.UsernameSecret != nil {
+			errors = append(errors, field.Forbidden(path.Child("usernameSecret"), "must not be set when spec.database.provider is local: the operator generates the credentials"))
+		}
+		if connection != nil && connection.PasswordSecret != nil {
+			errors = append(errors, field.Forbidden(path.Child("passwordSecret"), "must not be set when spec.database.provider is local: the operator generates the credentials"))
+		}
 	}
-	return nil
+	return errors
 }
 
 // ValidateDelete allows NetEyeTenant deletion.

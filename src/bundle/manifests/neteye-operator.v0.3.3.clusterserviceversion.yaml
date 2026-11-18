@@ -261,11 +261,32 @@ spec:
           - postgresql.cnpg.io
           resources:
           - clusters
+          - databases
+          - databaseroles
           verbs:
           - create
           - get
           - list
           - update
+          - watch
+        - apiGroups:
+          - batch
+          resources:
+          - jobs
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - persistentvolumeclaims
+          verbs:
+          - create
+          - get
+          - list
           - watch
         - apiGroups:
           - neteye.cloud
@@ -459,6 +480,14 @@ spec:
                   value: docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40
                 - name: RELATED_IMAGE_GUACD
                   value: docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f
+                - name: RELATED_IMAGE_CLASSIS_SERVER
+                  value: ghcr.io/neteye-platform/classis-server:0.7.0
+                - name: RELATED_IMAGE_POSTGRESQL
+                  value: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie@sha256:37fdeea29a4d3ed14570f719488ba55bd21e8975eaea864be5ce74d25a9a13de
+                - name: RELATED_IMAGE_RUSTFS
+                  value: docker.io/rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a
+                - name: RELATED_IMAGE_S3_CLIENT
+                  value: docker.io/amazon/aws-cli:2.41.0@sha256:c5d442efed03350a3c3d7a42b23f42a8e7b76acf5dbb4b021f2641bcd36680ea
                 image: ghcr.io/neteye-platform/neteye-operator:0.3.3
                 imagePullPolicy: Always
                 name: manager
@@ -552,6 +581,14 @@ spec:
     name: neteye-guacamole
   - image: docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f
     name: neteye-guacd
+  - image: ghcr.io/neteye-platform/classis-server:0.7.0
+    name: neteye-classis-server
+  - image: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie@sha256:37fdeea29a4d3ed14570f719488ba55bd21e8975eaea864be5ce74d25a9a13de
+    name: neteye-postgresql
+  - image: docker.io/rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a
+    name: neteye-rustfs
+  - image: docker.io/amazon/aws-cli:2.41.0@sha256:c5d442efed03350a3c3d7a42b23f42a8e7b76acf5dbb4b021f2641bcd36680ea
+    name: neteye-s3-client
   version: 0.3.3
   webhookdefinitions:
   - admissionReviewVersions:
