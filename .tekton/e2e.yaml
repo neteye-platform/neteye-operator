@@ -10,7 +10,7 @@
 #     si-rd-tekton-pipelines are deployed)
 #
 # Triggers the "install", "update" and "upgrade" e2e pipelines as three
-# independent tasks (they run in parallel since none declares runAfter).
+# independent tasks, run in parallel once verify-revision has passed.
 # Each task shares the same taskSpec (via YAML anchor/alias) and only differs
 # in the literal "neteye-update-upgrade" value it passes in; the shared script
 # retries its own PipelineRun up to max_attempts times, stopping as soon as
@@ -41,6 +41,8 @@ spec:
       value: rd-neteye-pipeline
     - name: neteye-version
       value: latest
+    - name: revision
+      value: "{{ revision }}"
   pipelineSpec:
     params:
       - name: operator-nightly-version
@@ -53,8 +55,46 @@ spec:
       - name: neteye-version
         type: string
         default: latest
+      - name: revision
+        type: string
     tasks:
+      # PAC resolves "main" when the webhook arrives, which can be newer than
+      # the commit the nightly images were built from. The release tags the
+      # commit this check reports on, so they must match.
+      - name: verify-revision
+        params:
+          - name: operator-nightly-version
+            value: $(params.operator-nightly-version)
+          - name: revision
+            value: $(params.revision)
+        taskSpec:
+          params:
+            - name: operator-nightly-version
+              type: string
+            - name: revision
+              type: string
+          steps:
+            - name: verify
+              image: ghcr.io/witglobal/oc-cli-tools:1.1.0@sha256:404155df46f632761680eb70f3473746c4eecb6c55c89dd6b39adf8276ee85a8
+              env:
+                - name: OPERATOR_NIGHTLY_VERSION
+                  value: $(params.operator-nightly-version)
+                - name: REVISION
+                  value: $(params.revision)
+              script: |
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [[ ! "$REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+                  echo "Invalid revision: '$REVISION'" >&2
+                  exit 1
+                fi
+                if [[ "$OPERATOR_NIGHTLY_VERSION" != *"-nightly-${REVISION:0:12}" ]]; then
+                  echo "Nightly '$OPERATOR_NIGHTLY_VERSION' was not built from $REVISION (main moved during the nightly build)" >&2
+                  exit 1
+                fi
+                echo "Nightly '$OPERATOR_NIGHTLY_VERSION' matches $REVISION"
       - name: install
+        runAfter: [verify-revision]
         params:
           - name: operator-nightly-version
             value: $(params.operator-nightly-version)
@@ -187,6 +227,7 @@ spec:
                   sleep 3
                 done
       - name: update
+        runAfter: [verify-revision]
         params:
           - name: operator-nightly-version
             value: $(params.operator-nightly-version)
@@ -200,6 +241,7 @@ spec:
             value: update
         taskSpec: *e2eTaskSpec
       - name: upgrade
+        runAfter: [verify-revision]
         params:
           - name: operator-nightly-version
             value: $(params.operator-nightly-version)

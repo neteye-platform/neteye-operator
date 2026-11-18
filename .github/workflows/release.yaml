@@ -39,7 +39,8 @@ jobs:
       pull-requests: read
     outputs:
       baseline-tag: ${{ steps.baseline.outputs.tag }}
-      release: ${{ steps.releasable.outputs.release }}
+      release: ${{ steps.commit.outputs.tested == 'true' && steps.releasable.outputs.release || 'false' }}
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,11 +61,29 @@ jobs:
           fi
           echo "tag=$last_tag" >> "$GITHUB_OUTPUT"
 
+      # An automatic release may only tag the commit its E2E check ran against;
+      # if main has moved on, the next nightly tests and releases it.
+      - name: Resolve release commit
+        id: commit
+        env:
+          TESTED_SHA: ${{ github.event.check_run.head_sha }}
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"
+          echo "sha=$head" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_EVENT_NAME" == check_run && "$TESTED_SHA" != "$head" ]]; then
+            echo "::warning::E2E passed for $TESTED_SHA but main is at $head; skipping release."
+            echo "tested=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tested=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # Automatic (E2E-triggered) releases need at least one merged PR that is
       # not labelled only "ci" and/or "documentation"; unlabelled PRs count.
       # Manual and NetEye releases always proceed.
       - name: Check merged PRs for releasable changes
         id: releasable
+        if: ${{ steps.commit.outputs.tested == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
@@ -110,10 +129,12 @@ jobs:
           permission-pull-requests: write
           permission-checks: read
 
+      # pinned to the commit vetted by plan; the bump commit is created with it
+      # as expectedHeadOid, so a concurrent push to main fails the release
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ needs.plan.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
