@@ -25,7 +25,7 @@ import (
 // classisServerTenantWithoutUsers is a tenant whose spec names no users Secret, so
 // the operator generates the administrator.
 func classisServerTenantWithoutUsers() *neteye.NetEyeTenant {
-	tenant := classisServerTenant(neteye.TenantDatabaseExternal)
+	tenant := classisServerTenant(neteye.TenantStorageExternal)
 	tenant.Spec.ClassisServer.AdminUsersSecretName = ""
 	return tenant
 }
@@ -90,7 +90,7 @@ func TestRandomPasswordIsLongAlphanumericAndFresh(t *testing.T) {
 // the clear credentials in one Secret, the hash in the other, which the pod mounts.
 // The next reconciliation changes neither.
 func TestClassisServerGeneratesItsAdministratorOnce(t *testing.T) {
-	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenantWithoutUsers()}, classisServerSecrets("s3", "db")...)
+	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenantWithoutUsers(), netEyeResource()}, classisServerSecrets("s3", "db", "db-ca")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 
@@ -142,7 +142,7 @@ func TestClassisServerGeneratesItsAdministratorOnce(t *testing.T) {
 func TestClassisServerKeepsAnExistingAdministrator(t *testing.T) {
 	chosen := "chosen-by-a-person-0123456789ab"
 	existing := secretWithData(classisServerAdminSecretName, map[string]string{classisServerAdminUserKey: classisServerAdminUsername, classisServerAdminPassKey: chosen})
-	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenantWithoutUsers(), existing}, classisServerSecrets("s3", "db")...)
+	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenantWithoutUsers(), existing, netEyeResource()}, classisServerSecrets("s3", "db", "db-ca")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 
@@ -165,16 +165,15 @@ func TestClassisServerKeepsAnExistingAdministrator(t *testing.T) {
 // component says which Secret to delete, and the file keeps its content.
 func TestClassisServerDoesNotOverwriteUsersWithoutTheirPassword(t *testing.T) {
 	users := secretWithData("classis-server-admin-users", map[string]string{"basic-users": "admin = \"keep-me\"\n"})
-	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenantWithoutUsers(), users}, classisServerSecrets("s3", "db")...)
+	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenantWithoutUsers(), users, netEyeResource()}, classisServerSecrets("s3", "db", "db-ca")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 
 	if got := getSecret(t, c, "classis-server-admin-users"); string(got.Data["basic-users"]) != "admin = \"keep-me\"\n" {
 		t.Errorf("the users file was overwritten: %q", got.Data["basic-users"])
 	}
-	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(classisServerComponentID)]
-	if component.Reason != "AdminSecretFailed" || !strings.Contains(component.Message, "classis-server-admin-users") {
-		t.Errorf("component = %#v, want AdminSecretFailed naming the Secret to delete", component)
+	if state, message := tenantComponentState(t, c, classisServerComponentID); state != "failed" || !strings.Contains(message, "classis-server-admin-users") {
+		t.Errorf("server is %q: %q, want failed naming the Secret to delete", state, message)
 	}
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: "classis-server-admin"}, &corev1.Secret{}); err == nil {
 		t.Error("a new password was generated next to a users file it does not match")
@@ -184,7 +183,7 @@ func TestClassisServerDoesNotOverwriteUsersWithoutTheirPassword(t *testing.T) {
 // A spec that names its users Secret keeps the behavior of before: the operator
 // generates nothing and mounts that Secret.
 func TestClassisServerWithItsOwnUsersSecretGeneratesNothing(t *testing.T) {
-	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenant(neteye.TenantDatabaseExternal)}, classisServerSecrets("admin", "s3", "db")...)
+	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenant(neteye.TenantStorageExternal), netEyeResource()}, externalSecrets()...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 	for _, name := range []string{"classis-server-admin", "classis-server-admin-users"} {
@@ -221,13 +220,14 @@ func secretsVersionsOf(t *testing.T, c client.Client) string {
 // A reconciliation without a write changes nothing. The template names resource
 // versions, never a digest of the data of a Secret.
 func TestClassisServerRestartsWhenAMountedSecretChanges(t *testing.T) {
-	tenant := classisServerTenant(neteye.TenantDatabaseExternal)
-	tenant.Spec.CABundle = &neteye.ConfigMapKeyReference{Name: "bundle", Key: "ca.pem"}
+	tenant := classisServerTenant(neteye.TenantStorageExternal)
+	tenant.Spec.CABundle = &neteye.NetEyeConfigMapKeySelector{Name: "bundle", Key: "ca.pem"}
 	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: "bundle"}, Data: map[string]string{"ca.pem": "one"}}
-	objects := []client.Object{plainNamespace(testTenant), tenant, bundle,
+	objects := []client.Object{plainNamespace(testTenant), tenant, bundle, netEyeResource(),
 		secretWithData("admin", map[string]string{"basic-users": "admin = \"a\"\n"}),
 		secretWithData("s3", map[string]string{"access-key-id": "id", "secret-access-key": "secret"}),
-		secretWithData("db", map[string]string{"password": "p"})}
+		secretWithData("db", map[string]string{"username": "classis", "password": "p"}),
+		secretWithData("db-ca", map[string]string{"ca.crt": "ca"})}
 	r, c := newTenantReconciler(t, objects...)
 	ctx := context.Background()
 	reconcileTenant(t, r)
@@ -238,7 +238,7 @@ func TestClassisServerRestartsWhenAMountedSecretChanges(t *testing.T) {
 	if got := secretsVersionsOf(t, c); got != first {
 		t.Errorf("the versions changed although nothing was written: %q, then %q", first, got)
 	}
-	for _, secret := range []string{"admin", "s3", "db"} {
+	for _, secret := range []string{"admin", "s3", "db", "db-ca"} {
 		if !strings.Contains(first, "secret/"+secret+"=") {
 			t.Errorf("the versions %q do not name the Secret %q", first, secret)
 		}
@@ -249,6 +249,13 @@ func TestClassisServerRestartsWhenAMountedSecretChanges(t *testing.T) {
 			s3 := getSecret(t, c, "s3")
 			s3.Data["secret-access-key"] = []byte("rotated")
 			if err := c.Update(ctx, s3); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"the database password": func() {
+			db := getSecret(t, c, "db")
+			db.Data["password"] = []byte("rotated")
+			if err := c.Update(ctx, db); err != nil {
 				t.Fatal(err)
 			}
 		},
