@@ -17,10 +17,16 @@ import (
 )
 
 func testTenant(name, namespace, displayName string) *NetEyeTenant {
-	return &NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: NetEyeTenantSpec{DisplayName: displayName}}
+	return &NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: NetEyeTenantSpec{Version: CurrentNetEyeVersion, DisplayName: displayName}}
 }
 
-func tenantValidator(t *testing.T, existing ...*NetEyeTenant) *NetEyeTenantValidator {
+func tenantWithVersion(version string) *NetEyeTenant {
+	tenant := testTenant("neteye-tenant-2bh46bfv", "neteye-tenant-2bh46bfv", "Default")
+	tenant.Spec.Version = version
+	return tenant
+}
+
+func tenantValidator(t *testing.T, existing ...client.Object) *NetEyeTenantValidator {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := AddToScheme(scheme); err != nil {
@@ -133,5 +139,113 @@ func TestNetEyeTenantValidatorChecksUniquenessOnlyForANewDisplayName(t *testing.
 	deleting.DeletionTimestamp = &now
 	if _, err := v.ValidateUpdate(context.Background(), third, deleting); err != nil {
 		t.Errorf("update of a tenant being deleted rejected: %v", err)
+	}
+}
+
+func TestNetEyeTenantValidatorUsesTheVersionRulesOfNetEye(t *testing.T) {
+	v := tenantValidator(t)
+	for version, wantErr := range map[string]bool{CurrentNetEyeVersion: false, PreviousNetEyeVersion: true, "99.99": true} {
+		if _, err := v.ValidateCreate(context.Background(), tenantWithVersion(version)); (err != nil) != wantErr {
+			t.Errorf("create with version %q: error = %v, wantErr %t", version, err, wantErr)
+		}
+	}
+	for _, tt := range []struct {
+		oldVersion, newVersion string
+		wantErr                bool
+	}{
+		{CurrentNetEyeVersion, CurrentNetEyeVersion, false},
+		{PreviousNetEyeVersion, CurrentNetEyeVersion, false},
+		{PreviousNetEyeVersion, PreviousNetEyeVersion, true},
+		{CurrentNetEyeVersion, PreviousNetEyeVersion, true},
+		{"4.48", CurrentNetEyeVersion, true},
+	} {
+		if _, err := v.ValidateUpdate(context.Background(), tenantWithVersion(tt.oldVersion), tenantWithVersion(tt.newVersion)); (err != nil) != tt.wantErr {
+			t.Errorf("update from %q to %q: error = %v, wantErr %t", tt.oldVersion, tt.newVersion, err, tt.wantErr)
+		}
+	}
+	// The finalizer of a tenant at the previous version can still go.
+	deleting := tenantWithVersion(PreviousNetEyeVersion)
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+	if _, err := v.ValidateUpdate(context.Background(), tenantWithVersion(PreviousNetEyeVersion), deleting); err != nil {
+		t.Errorf("update of a tenant being deleted rejected: %v", err)
+	}
+}
+
+func TestNetEyeTenantValidatorRefusesAVersionNewerThanNetEye(t *testing.T) {
+	previous := netEyeWithVersion(PreviousNetEyeVersion)
+	previous.Name = "neteye"
+	v := tenantValidator(t, previous)
+	if _, err := v.ValidateCreate(context.Background(), tenantWithVersion(CurrentNetEyeVersion)); err == nil || !strings.Contains(err.Error(), "upgrade it to") {
+		t.Errorf("create of a tenant newer than NetEye: error = %v", err)
+	}
+	if _, err := v.ValidateUpdate(context.Background(), tenantWithVersion(PreviousNetEyeVersion), tenantWithVersion(CurrentNetEyeVersion)); err == nil || !strings.Contains(err.Error(), "upgrade it to") {
+		t.Errorf("upgrade of a tenant before NetEye: error = %v", err)
+	}
+	// An update that keeps the version is not an upgrade.
+	if _, err := v.ValidateUpdate(context.Background(), tenantWithVersion(CurrentNetEyeVersion), tenantWithVersion(CurrentNetEyeVersion)); err != nil {
+		t.Errorf("update that keeps the version rejected: %v", err)
+	}
+
+	current := netEyeWithVersion(CurrentNetEyeVersion)
+	current.Name = "neteye"
+	if _, err := tenantValidator(t, current).ValidateUpdate(context.Background(), tenantWithVersion(PreviousNetEyeVersion), tenantWithVersion(CurrentNetEyeVersion)); err != nil {
+		t.Errorf("upgrade of a tenant after NetEye rejected: %v", err)
+	}
+}
+
+func TestNetEyeValidatorRefusesAnUpgradeWhileATenantHasNotCompletedItsVersion(t *testing.T) {
+	done := testTenant("neteye-tenant-aaaaaaaa", "neteye-tenant-aaaaaaaa", "Done")
+	done.Spec.Version = PreviousNetEyeVersion
+	done.Status.CurrentVersion = PreviousNetEyeVersion
+	installing := testTenant("neteye-tenant-bbbbbbbb", "neteye-tenant-bbbbbbbb", "Installing")
+	installing.Spec.Version = PreviousNetEyeVersion
+	deleting := testTenant("neteye-tenant-cccccccc", "neteye-tenant-cccccccc", "Deleting")
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+	deleting.Finalizers = []string{"neteye.cloud/neteye-tenant"}
+
+	upgrade := func(objects ...client.Object) error {
+		scheme := runtime.NewScheme()
+		if err := AddToScheme(scheme); err != nil {
+			t.Fatal(err)
+		}
+		v := &NetEyeValidator{reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()}
+		_, err := v.ValidateUpdate(context.Background(), netEyeWithVersion(PreviousNetEyeVersion), netEyeWithVersion(CurrentNetEyeVersion))
+		return err
+	}
+	err := upgrade(done, installing, deleting)
+	if err == nil || !strings.Contains(err.Error(), `neteye-tenant-bbbbbbbb (current version "")`) || strings.Contains(err.Error(), "neteye-tenant-cccccccc") {
+		t.Errorf("upgrade with a tenant that has not completed NetEye %s: error = %v", PreviousNetEyeVersion, err)
+	}
+	if err := upgrade(done, deleting); err != nil {
+		t.Errorf("upgrade with every tenant at NetEye %s rejected: %v", PreviousNetEyeVersion, err)
+	}
+	// An update that keeps the version is not an upgrade.
+	scheme := runtime.NewScheme()
+	if err := AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	v := &NetEyeValidator{reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(installing).Build()}
+	if _, err := v.ValidateUpdate(context.Background(), netEyeWithVersion(CurrentNetEyeVersion), netEyeWithVersion(CurrentNetEyeVersion)); err != nil {
+		t.Errorf("update that keeps the version rejected: %v", err)
+	}
+}
+
+func TestNetEyeTenantSpecDefaults(t *testing.T) {
+	spec := &NetEyeTenantSpec{}
+	if !spec.EffectiveUseProcedureGates() {
+		t.Error("procedure gates are off without useProcedureGates, want on")
+	}
+	if got := spec.EffectiveCABundle(); got != (NetEyeConfigMapKeySelector{Name: DefaultCABundleConfigMapName, Key: DefaultCABundleKey}) {
+		t.Errorf("CA bundle = %#v, want the default", got)
+	}
+	spec.UseProcedureGates = new(bool)
+	spec.CABundle = &NetEyeConfigMapKeySelector{Name: "tenant-ca"}
+	if spec.EffectiveUseProcedureGates() {
+		t.Error("procedure gates are on with useProcedureGates false")
+	}
+	if got := spec.EffectiveCABundle(); got != (NetEyeConfigMapKeySelector{Name: "tenant-ca", Key: DefaultCABundleKey}) {
+		t.Errorf("CA bundle = %#v, want the name that was set and the default key", got)
 	}
 }

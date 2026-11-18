@@ -7,11 +7,11 @@ import (
 	"context"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,7 +41,7 @@ func tenantScheme(t *testing.T) *runtime.Scheme {
 }
 
 func tenantResource() *neteye.NetEyeTenant {
-	return &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant, UID: "tenant-uid", Generation: 1}, Spec: neteye.NetEyeTenantSpec{DisplayName: "Default"}}
+	return &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant, UID: "tenant-uid", Generation: 1}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: "Default"}}
 }
 
 // plainNamespace is a namespace as the installer creates it: without the tenant
@@ -133,13 +133,13 @@ func defaultDenyPolicy(t *testing.T, c client.Client, namespace string) *unstruc
 	return policy
 }
 
-func conditionOf(t *testing.T, tenant *neteye.NetEyeTenant, conditionType string) *metav1.Condition {
+// assertTenantPhase checks the phase of the tenant and that its message
+// contains want.
+func assertTenantPhase(t *testing.T, tenant *neteye.NetEyeTenant, phase neteye.NetEyePhase, want string) {
 	t.Helper()
-	condition := meta.FindStatusCondition(tenant.Status.Conditions, conditionType)
-	if condition == nil {
-		t.Fatalf("condition %s missing: %#v", conditionType, tenant.Status.Conditions)
+	if tenant.Status.Phase != phase || !strings.Contains(tenant.Status.Message, want) {
+		t.Errorf("phase = %q, message = %q; want %q with a message that contains %q", tenant.Status.Phase, tenant.Status.Message, phase, want)
 	}
-	return condition
 }
 
 func TestNetEyeTenantPreparesItsNamespace(t *testing.T) {
@@ -164,18 +164,9 @@ func TestNetEyeTenantPreparesItsNamespace(t *testing.T) {
 	if !slices.Contains(tenant.Finalizers, NetEyeTenantFinalizer) {
 		t.Error("tenant finalizer missing")
 	}
-	if ready := conditionOf(t, tenant, neteye.ConditionReady); ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != tenant.Generation {
-		t.Errorf("Ready = %#v", ready)
-	}
-	if progressing := conditionOf(t, tenant, neteye.ConditionProgressing); progressing.Status != metav1.ConditionFalse {
-		t.Errorf("Progressing = %#v", progressing)
-	}
-	if degraded := conditionOf(t, tenant, neteye.ConditionDegraded); degraded.Status != metav1.ConditionFalse {
-		t.Errorf("Degraded = %#v", degraded)
-	}
-	component := tenant.Status.Components[string(tenantNamespaceComponentID)]
-	if component.Status != neteye.ComponentStateReady || component.ObservedGeneration != tenant.Generation {
-		t.Errorf("namespace component = %#v", component)
+	assertTenantPhase(t, tenant, neteye.PhaseReady, "All components are ready")
+	if tenant.Status.ObservedGeneration != tenant.Generation || tenant.Status.CurrentVersion != neteye.CurrentNetEyeVersion {
+		t.Errorf("status = %#v, want the current generation and the completed version", tenant.Status)
 	}
 }
 
@@ -204,14 +195,9 @@ func TestNetEyeTenantRefusesToAdoptAForeignNetworkPolicy(t *testing.T) {
 	reconcileTenant(t, r)
 
 	tenant := getTenant(t, c, testTenant, testTenant)
-	if component := tenant.Status.Components[string(tenantNamespaceComponentID)]; component.Status != neteye.ComponentStateDegraded || component.Reason != "NetworkPolicyFailed" {
-		t.Errorf("namespace component = %#v", component)
-	}
-	if ready := conditionOf(t, tenant, neteye.ConditionReady); ready.Status != metav1.ConditionFalse || ready.Reason != neteye.ReasonComponentsDegraded {
-		t.Errorf("Ready = %#v", ready)
-	}
-	if degraded := conditionOf(t, tenant, neteye.ConditionDegraded); degraded.Status != metav1.ConditionTrue {
-		t.Errorf("Degraded = %#v", degraded)
+	assertTenantPhase(t, tenant, neteye.PhaseFailed, "namespace: failed to apply the default-deny network policy")
+	if tenant.Status.CurrentVersion != "" {
+		t.Errorf("current version = %q, want none while the install fails", tenant.Status.CurrentVersion)
 	}
 	if spec, _, _ := unstructured.NestedMap(defaultDenyPolicy(t, c, testTenant).Object, "spec"); !reflect.DeepEqual(spec, foreign.Object["spec"]) {
 		t.Errorf("a network policy the tenant does not own was changed: %v", spec)
@@ -239,13 +225,7 @@ func TestNetEyeTenantWaitsForTheNamespaceAdmissionPolicy(t *testing.T) {
 			r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), tenantResource())...)
 			reconcileTenant(t, r)
 
-			tenant := getTenant(t, c, testTenant, testTenant)
-			if component := tenant.Status.Components[string(tenantNamespaceComponentID)]; component.Status != neteye.ComponentStateProgressing || component.Reason != "WaitingForNamespacePolicy" {
-				t.Errorf("namespace component = %#v", component)
-			}
-			if ready := conditionOf(t, tenant, neteye.ConditionReady); ready.Status != metav1.ConditionFalse {
-				t.Errorf("Ready = %#v, want false while the tenant metadata is not protected", ready)
-			}
+			assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseInstalling, "that protects the tenant metadata")
 		})
 	}
 }
@@ -255,10 +235,7 @@ func TestNetEyeTenantWithoutTheOperatorUsernameIsNotReady(t *testing.T) {
 	r.OperatorUsername = ""
 	reconcileTenant(t, r)
 
-	tenant := getTenant(t, c, testTenant, testTenant)
-	if component := tenant.Status.Components[string(tenantNamespaceComponentID)]; component.Status != neteye.ComponentStateProgressing || component.Reason != "WaitingForNamespacePolicy" {
-		t.Errorf("namespace component = %#v", component)
-	}
+	assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseInstalling, "the operator username is unknown")
 }
 
 func TestNetEyeTenantReportsAForeignNamespaceAdmissionPolicy(t *testing.T) {
@@ -273,13 +250,7 @@ func TestNetEyeTenantReportsAForeignNamespaceAdmissionPolicy(t *testing.T) {
 			r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), tenantResource())...)
 			reconcileTenant(t, r)
 
-			tenant := getTenant(t, c, testTenant, testTenant)
-			if component := tenant.Status.Components[string(tenantNamespaceComponentID)]; component.Status != neteye.ComponentStateDegraded || component.Reason != "NamespacePolicyConflict" {
-				t.Errorf("namespace component = %#v", component)
-			}
-			if degraded := conditionOf(t, tenant, neteye.ConditionDegraded); degraded.Status != metav1.ConditionTrue {
-				t.Errorf("Degraded = %#v", degraded)
-			}
+			assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseFailed, "is not controlled by")
 		})
 	}
 }
@@ -293,9 +264,7 @@ func TestNetEyeTenantAcceptsDefaultsThatTheAPIServerAdds(t *testing.T) {
 	policy.Object["spec"] = spec
 	r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), tenantResource())...)
 	reconcileTenant(t, r)
-	if ready := conditionOf(t, getTenant(t, c, testTenant, testTenant), neteye.ConditionReady); ready.Status != metav1.ConditionTrue {
-		t.Errorf("Ready = %#v, want true when the API server only adds fields", ready)
-	}
+	assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseReady, "")
 }
 
 func TestNetEyeTenantReportsAPolicyOfAnEarlierCRD(t *testing.T) {
@@ -305,24 +274,24 @@ func TestNetEyeTenantReportsAPolicyOfAnEarlierCRD(t *testing.T) {
 	objects[0].SetUID("new-crd-uid")
 	r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), tenantResource())...)
 	reconcileTenant(t, r)
-	if component := getTenant(t, c, testTenant, testTenant).Status.Components[string(tenantNamespaceComponentID)]; component.Reason != "NamespacePolicyConflict" {
-		t.Errorf("namespace component = %#v", component)
-	}
+	assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseFailed, "is not controlled by")
 }
 
 func TestNetEyeTenantReportsAMissingNamespace(t *testing.T) {
 	r, c := newTenantReconciler(t, tenantResource())
 	reconcileTenant(t, r)
-	if component := getTenant(t, c, testTenant, testTenant).Status.Components[string(tenantNamespaceComponentID)]; component.Status != neteye.ComponentStateDegraded || component.Reason != "NamespaceMetadataFailed" {
-		t.Errorf("namespace component = %#v", component)
-	}
+	assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseFailed, "namespace: get namespace")
 }
 
 func TestNetEyeTenantThatBypassedAdmissionChangesNothing(t *testing.T) {
-	for name, tenant := range map[string]*neteye.NetEyeTenant{
-		"other namespace": {ObjectMeta: metav1.ObjectMeta{Namespace: neteye.NetEyeNamespace, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{DisplayName: "Default"}},
-		"invalid name":    {ObjectMeta: metav1.ObjectMeta{Namespace: "acme", Name: "acme"}, Spec: neteye.NetEyeTenantSpec{DisplayName: "Default"}},
+	for name, test := range map[string]struct {
+		tenant *neteye.NetEyeTenant
+		want   string
+	}{
+		"other namespace": {&neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: neteye.NetEyeNamespace, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: "Default"}}, "must equal metadata.name"},
+		"invalid name":    {&neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: "acme", Name: "acme"}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: "Default"}}, "does not match"},
 	} {
+		tenant := test.tenant
 		t.Run(name, func(t *testing.T) {
 			r, c := newTenantReconciler(t, plainNamespace(tenant.Namespace), tenant)
 			reconcileTenantRequest(t, r, tenant.Namespace, tenant.Name)
@@ -334,9 +303,7 @@ func TestNetEyeTenantThatBypassedAdmissionChangesNothing(t *testing.T) {
 			if len(stored.Finalizers) != 0 {
 				t.Errorf("finalizers = %v", stored.Finalizers)
 			}
-			if component := stored.Status.Components[string(tenantNamespaceComponentID)]; component.Status != neteye.ComponentStateDegraded || component.Reason != "InvalidTenant" {
-				t.Errorf("namespace component = %#v", component)
-			}
+			assertTenantPhase(t, stored, neteye.PhaseFailed, test.want)
 		})
 	}
 }
@@ -384,7 +351,7 @@ func TestNetEyeTenantDeletionOfAnInvalidTenantChangesNoNamespace(t *testing.T) {
 	namespace := plainNamespace(testTenant)
 	namespace.Labels = map[string]string{neteye.TenantLabel: testTenant}
 	namespace.Annotations = map[string]string{neteye.TenantDisplayNameAnnotation: "Default"}
-	invalid := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: "neteye-tenant-aaaaaaaa", Finalizers: []string{NetEyeTenantFinalizer}}, Spec: neteye.NetEyeTenantSpec{DisplayName: "Other"}}
+	invalid := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: "neteye-tenant-aaaaaaaa", Finalizers: []string{NetEyeTenantFinalizer}}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: "Other"}}
 	r, c := newTenantReconciler(t, namespace, invalid)
 	if err := c.Delete(context.Background(), invalid); err != nil {
 		t.Fatal(err)
@@ -455,22 +422,24 @@ func TestTenantForNamespaceMapsOnlyTenantNamespaces(t *testing.T) {
 	}
 }
 
-func TestSetTenantConditionsIsStableAcrossComponentOrder(t *testing.T) {
-	status := neteye.NetEyeTenantStatus{Components: map[string]neteye.NetEyeComponentStatus{
-		"zeta":  {Status: neteye.ComponentStateProgressing},
-		"alpha": {Status: neteye.ComponentStateBlocked},
-		"beta":  {Status: neteye.ComponentStateDegraded},
-		"gamma": {Status: neteye.ComponentStateReady},
-	}}
+func TestTenantComponentPhaseIsStableAcrossComponentOrder(t *testing.T) {
+	results := map[componentID]componentResult{
+		"zeta":  {State: componentStateProgressing, Message: "z"},
+		"alpha": {State: componentStateBlocked, Message: "a"},
+		"beta":  {State: componentStateDegraded, Message: "b"},
+		"delta": {State: componentStateDegraded, Message: "d"},
+		"gamma": {State: componentStateReady, Message: "g"},
+	}
 	for range 20 {
-		setTenantConditions(&status, 3)
-		ready := meta.FindStatusCondition(status.Conditions, neteye.ConditionReady)
-		if ready.Status != metav1.ConditionFalse || ready.Reason != neteye.ReasonComponentsDegraded || ready.Message != "Degraded components: beta" {
-			t.Fatalf("Ready = %#v", ready)
+		if phase, message := tenantComponentPhase(results); phase != neteye.PhaseFailed || message != "Failed components: beta: b; delta: d" {
+			t.Fatalf("phase = %q, message = %q", phase, message)
 		}
-		progressing := meta.FindStatusCondition(status.Conditions, neteye.ConditionProgressing)
-		if progressing.Status != metav1.ConditionTrue || progressing.Message != "Converging components: alpha, zeta" {
-			t.Fatalf("Progressing = %#v", progressing)
+	}
+	delete(results, "beta")
+	delete(results, "delta")
+	for range 20 {
+		if phase, message := tenantComponentPhase(results); phase != neteye.PhaseNotReady || message != "Waiting for components: alpha: a; zeta: z" {
+			t.Fatalf("phase = %q, message = %q", phase, message)
 		}
 	}
 }

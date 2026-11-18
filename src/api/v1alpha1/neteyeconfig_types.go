@@ -36,7 +36,7 @@ type NetEyeSecretKeySelector struct {
 }
 
 // NetEyeConfigMapKeySelector identifies one key inside a ConfigMap in the
-// shared NetEye namespace.
+// namespace of the resource that uses it.
 type NetEyeConfigMapKeySelector struct {
 	// Name is the name of the ConfigMap containing the referenced value.
 	// +kubebuilder:validation:Required
@@ -573,15 +573,22 @@ func (s *NetEyeSpec) EffectiveUseProcedureGates() bool {
 // EffectiveCABundle returns the CA bundle ConfigMap selector, applying the
 // defaults for objects that bypassed admission defaulting.
 func (s *NetEyeSpec) EffectiveCABundle() NetEyeConfigMapKeySelector {
+	if s == nil {
+		return effectiveCABundle(nil)
+	}
+	return effectiveCABundle(s.CABundle)
+}
+
+func effectiveCABundle(configured *NetEyeConfigMapKeySelector) NetEyeConfigMapKeySelector {
 	selector := NetEyeConfigMapKeySelector{Name: DefaultCABundleConfigMapName, Key: DefaultCABundleKey}
-	if s == nil || s.CABundle == nil {
+	if configured == nil {
 		return selector
 	}
-	if s.CABundle.Name != "" {
-		selector.Name = s.CABundle.Name
+	if configured.Name != "" {
+		selector.Name = configured.Name
 	}
-	if s.CABundle.Key != "" {
-		selector.Key = s.CABundle.Key
+	if configured.Key != "" {
+		selector.Key = configured.Key
 	}
 	return selector
 }
