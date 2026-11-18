@@ -6,12 +6,11 @@ package controllers
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"math/big"
 	"sort"
+	"strings"
 
 	"golang.org/x/crypto/argon2"
 	corev1 "k8s.io/api/core/v1"
@@ -19,28 +18,29 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 )
 
 const (
-	// fleetServerAdminUsersSecretName holds the file of the operator plane users
+	// classisServerAdminUsersSecretName holds the file of the operator plane users
 	// when the operator generates it. A spec that names its own Secret never
 	// reads or writes this one.
-	fleetServerAdminUsersSecretName = "classis-server-admin-users"
-	// fleetServerAdminSecretName holds the clear credentials of the generated
+	classisServerAdminUsersSecretName = "classis-server-admin-users"
+	// classisServerAdminSecretName holds the clear credentials of the generated
 	// administrator, for the people and the tools that call the operator plane.
-	fleetServerAdminSecretName = "classis-server-admin"
-	// fleetServerAdminUsername is the generated administrator.
-	fleetServerAdminUsername = "admin"
+	classisServerAdminSecretName = "classis-server-admin"
+	// classisServerAdminUsername is the generated administrator.
+	classisServerAdminUsername = "admin"
 
-	fleetServerAdminUsersKey = "basic-users"
-	fleetServerAdminUserKey  = "username"
-	fleetServerAdminPassKey  = "password"
+	classisServerAdminUsersKey = "basic-users"
+	classisServerAdminUserKey  = "username"
+	classisServerAdminPassKey  = "password"
 
-	// fleetServerAdminPasswordLength is the length of the generated password.
-	fleetServerAdminPasswordLength = 32
-	fleetServerPasswordAlphabet    = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	// classisServerAdminPasswordLength is the length of the generated password.
+	classisServerAdminPasswordLength = 32
+	classisServerPasswordAlphabet    = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
 	// The Argon2id cost the server requires of a Basic entry at the least:
 	// OWASP's minimum, a salt of 16 bytes and an output of 32 bytes (the
@@ -51,16 +51,16 @@ const (
 	argon2SaltLength         = 16
 	argon2KeyLength   uint32 = 32
 
-	fleetServerSecretsChecksumAnnotation = "neteye.cloud/secrets-checksum"
+	classisServerSecretsVersionsAnnotation = "neteye.cloud/secrets-resource-versions"
 )
 
-// fleetServerAdminUsersSecret is the Secret the pod mounts as the users file:
+// classisServerAdminUsersSecret is the Secret the pod mounts as the users file:
 // the one the spec names, else the one the operator generates.
-func fleetServerAdminUsersSecret(spec *neteye.NetEyeFleetServerSpec) string {
+func classisServerAdminUsersSecret(spec *neteye.NetEyeClassisServerSpec) string {
 	if spec.AdminUsersSecretName != "" {
 		return spec.AdminUsersSecretName
 	}
-	return fleetServerAdminUsersSecretName
+	return classisServerAdminUsersSecretName
 }
 
 // argon2idPHC hashes password into the PHC string the server reads: Argon2id,
@@ -76,13 +76,13 @@ func argon2idPHC(password string, salt []byte) string {
 // without the modulo bias.
 func randomPassword(length int) (string, error) {
 	out := make([]byte, length)
-	limit := big.NewInt(int64(len(fleetServerPasswordAlphabet)))
+	limit := big.NewInt(int64(len(classisServerPasswordAlphabet)))
 	for i := range out {
 		n, err := rand.Int(rand.Reader, limit)
 		if err != nil {
 			return "", fmt.Errorf("draw a password character: %w", err)
 		}
-		out[i] = fleetServerPasswordAlphabet[n.Int64()]
+		out[i] = classisServerPasswordAlphabet[n.Int64()]
 	}
 	return string(out), nil
 }
@@ -97,16 +97,16 @@ func randomPassword(length int) (string, error) {
 // (the users file holds a hash, not the password): it is an error that names
 // the Secret to delete.
 func (r *NetEyeTenantReconciler) ensureGeneratedAdminSecrets(ctx context.Context, tenant *neteye.NetEyeTenant) error {
-	spec := tenant.Spec.FleetServer
+	spec := tenant.Spec.ClassisServer
 	if spec.AdminUsersSecretName != "" {
 		return nil
 	}
 	namespace := tenant.Namespace
-	admin, err := r.getSecretIfPresent(ctx, namespace, fleetServerAdminSecretName)
+	admin, err := r.getSecretIfPresent(ctx, namespace, classisServerAdminSecretName)
 	if err != nil {
 		return err
 	}
-	users, err := r.getSecretIfPresent(ctx, namespace, fleetServerAdminUsersSecretName)
+	users, err := r.getSecretIfPresent(ctx, namespace, classisServerAdminUsersSecretName)
 	if err != nil {
 		return err
 	}
@@ -114,44 +114,44 @@ func (r *NetEyeTenantReconciler) ensureGeneratedAdminSecrets(ctx context.Context
 	case admin != nil && users != nil:
 		return nil
 	case admin == nil && users != nil:
-		return fmt.Errorf("the Secret %q exists without %q, so its password is unknown: delete %q to have both generated again", fleetServerAdminUsersSecretName, fleetServerAdminSecretName, fleetServerAdminUsersSecretName)
+		return fmt.Errorf("the Secret %q exists without %q, so its password is unknown: delete %q to have both generated again", classisServerAdminUsersSecretName, classisServerAdminSecretName, classisServerAdminUsersSecretName)
 	}
 
 	var password string
 	if admin != nil {
-		password = string(admin.Data[fleetServerAdminPassKey])
+		password = string(admin.Data[classisServerAdminPassKey])
 		if password == "" {
-			return fmt.Errorf("the Secret %q has no %q key: delete it to have it generated again", fleetServerAdminSecretName, fleetServerAdminPassKey)
+			return fmt.Errorf("the Secret %q has no %q key: delete it to have it generated again", classisServerAdminSecretName, classisServerAdminPassKey)
 		}
 	} else {
-		if password, err = randomPassword(fleetServerAdminPasswordLength); err != nil {
+		if password, err = randomPassword(classisServerAdminPasswordLength); err != nil {
 			return err
 		}
-		secret := fleetServerSecret(namespace, fleetServerAdminSecretName, map[string]string{fleetServerAdminUserKey: fleetServerAdminUsername, fleetServerAdminPassKey: password})
+		secret := classisServerSecret(namespace, classisServerAdminSecretName, map[string]string{classisServerAdminUserKey: classisServerAdminUsername, classisServerAdminPassKey: password})
 		if err := r.Create(ctx, secret); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
-				return fmt.Errorf("create the Secret %q: %w", fleetServerAdminSecretName, err)
+				return fmt.Errorf("create the Secret %q: %w", classisServerAdminSecretName, err)
 			}
 			// Another reconciliation was faster: its password is the one to hash.
 			return nil
 		}
-		ctrl.LoggerFrom(ctx).Info("generated the administrator of the Classis Server", "secret", fleetServerAdminSecretName, "namespace", namespace)
+		ctrl.LoggerFrom(ctx).Info("generated the administrator of the Classis Server", "secret", classisServerAdminSecretName, "namespace", namespace)
 	}
 
 	salt := make([]byte, argon2SaltLength)
 	if _, err := rand.Read(salt); err != nil {
 		return fmt.Errorf("draw a salt: %w", err)
 	}
-	line := fmt.Sprintf("%s = %q\n", fleetServerAdminUsername, argon2idPHC(password, salt))
-	if err := r.Create(ctx, fleetServerSecret(namespace, fleetServerAdminUsersSecretName, map[string]string{fleetServerAdminUsersKey: line})); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create the Secret %q: %w", fleetServerAdminUsersSecretName, err)
+	line := fmt.Sprintf("%s = %q\n", classisServerAdminUsername, argon2idPHC(password, salt))
+	if err := r.Create(ctx, classisServerSecret(namespace, classisServerAdminUsersSecretName, map[string]string{classisServerAdminUsersKey: line})); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create the Secret %q: %w", classisServerAdminUsersSecretName, err)
 	}
 	return nil
 }
 
-func fleetServerSecret(namespace, name string, data map[string]string) *corev1.Secret {
+func classisServerSecret(namespace, name string, data map[string]string) *corev1.Secret {
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, Labels: fleetServerSelector()},
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, Labels: classisServerSelector()},
 		Type:       corev1.SecretTypeOpaque,
 		Data:       make(map[string][]byte, len(data)),
 	}
@@ -172,17 +172,19 @@ func (r *NetEyeTenantReconciler) getSecretIfPresent(ctx context.Context, namespa
 	return secret, nil
 }
 
-// fleetServerSecretsChecksum digests the data of everything the pod mounts
-// besides its configuration: the users file, the database password and CA, the
-// S3 credentials and the CA bundle. The pod template carries it, so changing
-// one of them rolls the pod: the server reads those files at startup only. It
-// digests the data, not the resource version, so a write that changes nothing
-// restarts nothing. A source that does not exist counts as absent.
-func (r *NetEyeTenantReconciler) fleetServerSecretsChecksum(ctx context.Context, tenant *neteye.NetEyeTenant) (string, error) {
-	spec := tenant.Spec.FleetServer
-	database := fleetServerDatabase(tenant)
+// classisServerSecretsVersions lists the resource version of everything the pod
+// mounts besides its configuration: the users file, the database password and
+// CA, the S3 credentials and the CA bundle. The pod template carries the list,
+// so changing one of them rolls the pod: the server reads those files at
+// startup only. It names resource versions rather than digesting the data, as
+// the collector does, so that no hash of a secret reaches the pod template; a
+// write that changes only the metadata of a Secret rolls the pod too. A source
+// that does not exist is listed as absent.
+func (r *NetEyeTenantReconciler) classisServerSecretsVersions(ctx context.Context, tenant *neteye.NetEyeTenant) (string, error) {
+	spec := tenant.Spec.ClassisServer
+	database := classisServerDatabase(tenant)
 	secretNames := map[string]struct{}{}
-	for _, name := range []string{fleetServerAdminUsersSecret(spec), database.PasswordSecret, database.CASecret, spec.Blobs.CredentialsSecretName} {
+	for _, name := range []string{classisServerAdminUsersSecret(spec), database.PasswordSecret, database.CASecret, spec.Blobs.CredentialsSecretName} {
 		if name != "" {
 			secretNames[name] = struct{}{}
 		}
@@ -193,21 +195,13 @@ func (r *NetEyeTenantReconciler) fleetServerSecretsChecksum(ctx context.Context,
 	}
 	sort.Strings(names)
 
-	sum := sha256.New()
-	// A hash never fails to write: the errors of the writes are of no interest.
-	put := func(format string, args ...any) { _, _ = fmt.Fprintf(sum, format, args...) }
-	write := func(kind, name string, data map[string][]byte) {
-		put("%s/%s\n", kind, name)
-		keys := make([]string, 0, len(data))
-		for key := range data {
-			keys = append(keys, key)
+	versions := make([]string, 0, len(names)+1)
+	version := func(kind, name string, object client.Object) {
+		if object == nil {
+			versions = append(versions, kind+"/"+name+"=absent")
+			return
 		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			put("%d:%s=%d:", len(key), key, len(data[key]))
-			_, _ = sum.Write(data[key])
-			_, _ = sum.Write([]byte{'\n'})
-		}
+		versions = append(versions, kind+"/"+name+"="+object.GetResourceVersion())
 	}
 	for _, name := range names {
 		secret, err := r.getSecretIfPresent(ctx, tenant.Namespace, name)
@@ -215,29 +209,22 @@ func (r *NetEyeTenantReconciler) fleetServerSecretsChecksum(ctx context.Context,
 			return "", err
 		}
 		if secret == nil {
-			put("secret/%s: absent\n", name)
+			version("secret", name, nil)
 			continue
 		}
-		write("secret", name, secret.Data)
+		version("secret", name, secret)
 	}
 	if ca := tenant.Spec.CABundle; ca != nil {
 		configMap := &corev1.ConfigMap{}
 		err := r.Get(ctx, types.NamespacedName{Namespace: tenant.Namespace, Name: ca.Name}, configMap)
 		switch {
 		case apierrors.IsNotFound(err):
-			put("configmap/%s: absent\n", ca.Name)
+			version("configmap", ca.Name, nil)
 		case err != nil:
 			return "", fmt.Errorf("get ConfigMap %q: %w", ca.Name, err)
 		default:
-			data := map[string][]byte{}
-			for key, value := range configMap.Data {
-				data[key] = []byte(value)
-			}
-			for key, value := range configMap.BinaryData {
-				data[key] = value
-			}
-			write("configmap", ca.Name, data)
+			version("configmap", ca.Name, configMap)
 		}
 	}
-	return hex.EncodeToString(sum.Sum(nil)), nil
+	return strings.Join(versions, ","), nil
 }

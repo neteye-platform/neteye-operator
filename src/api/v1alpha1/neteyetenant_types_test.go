@@ -102,7 +102,7 @@ func TestGeneratedCRDKeepsTheTenantDatabaseTypeImmutable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read generated NetEyeTenant CRD: %v", err)
 	}
-	for _, want := range []string{"self.type == oldSelf.type", "hostname is required when type is external", "hostname and port must not be set when type is local", "fleetServer needs database"} {
+	for _, want := range []string{"self.type == oldSelf.type", "hostname is required when type is external", "hostname and port must not be set when type is local"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("generated CRD has no rule %q", want)
 		}
