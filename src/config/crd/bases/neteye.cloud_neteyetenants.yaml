@@ -61,6 +61,37 @@ spec:
           spec:
             description: NetEyeTenantSpec defines the desired state of a NetEye tenant.
             properties:
+              alyvix:
+                description: |-
+                  Alyvix enables the Alyvix feature module for the tenant. The images
+                  come from the release data of the NetEye resource.
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled enables the Alyvix feature module for the
+                      tenant.
+                    type: boolean
+                  rdp:
+                    description: RDP configures the RDP access to the Alyvix sessions.
+                    properties:
+                      ports:
+                        description: |-
+                          Ports lists the TCP ports of the RDP service on the Alyvix nodes. The
+                          proxy daemon may open connections to these ports on any address. The
+                          default is 3389.
+                        items:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        maxItems: 16
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-type: set
+                    type: object
+                required:
+                - enabled
+                type: object
               caBundle:
                 description: |-
                   CABundle selects the optional ConfigMap with extra PEM CA certificates

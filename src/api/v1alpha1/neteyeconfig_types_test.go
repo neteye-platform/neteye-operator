@@ -555,28 +555,3 @@ func TestComponentsForVersionPinsTheGuacamoleImagesByDigest(t *testing.T) {
 		}
 	}
 }
-
-func TestAlyvixRDPEnabledAndEffectivePorts(t *testing.T) {
-	var spec *NetEyeSpec
-	if spec.AlyvixRDPEnabled() {
-		t.Error("a nil spec enables the RDP access")
-	}
-	for name, alyvix := range map[string]*NetEyeAlyvixSpec{"no alyvix": nil, "no rdp": {}, "disabled": {RDP: &NetEyeAlyvixRDPSpec{}}} {
-		if (&NetEyeSpec{Alyvix: alyvix}).AlyvixRDPEnabled() {
-			t.Errorf("%s: RDP access enabled", name)
-		}
-	}
-	enabled := &NetEyeSpec{Alyvix: &NetEyeAlyvixSpec{RDP: &NetEyeAlyvixRDPSpec{Enabled: true}}}
-	if !enabled.AlyvixRDPEnabled() {
-		t.Error("RDP access not enabled")
-	}
-	if got := enabled.Alyvix.RDP.EffectivePorts(); len(got) != 1 || got[0] != 3389 {
-		t.Errorf("default ports = %v, want [3389]", got)
-	}
-	configured := &NetEyeAlyvixRDPSpec{Ports: []int32{3390}}
-	ports := configured.EffectivePorts()
-	ports[0] = 1
-	if configured.Ports[0] != 3390 {
-		t.Error("EffectivePorts returns the spec slice")
-	}
-}

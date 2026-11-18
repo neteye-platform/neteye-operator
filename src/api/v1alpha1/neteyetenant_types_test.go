@@ -68,3 +68,28 @@ func TestTenantNamePatternAcceptsOnlyTheInstallerFormat(t *testing.T) {
 		}
 	}
 }
+
+func TestNetEyeTenantAlyvixEnabledAndEffectiveRDPPorts(t *testing.T) {
+	var spec *NetEyeTenantSpec
+	if spec.AlyvixEnabled() {
+		t.Error("a nil spec enables Alyvix")
+	}
+	for name, alyvix := range map[string]*NetEyeAlyvixSpec{"no alyvix": nil, "disabled": {}, "disabled with RDP ports": {RDP: &NetEyeAlyvixRDPSpec{Ports: []int32{3390}}}} {
+		if (&NetEyeTenantSpec{Alyvix: alyvix}).AlyvixEnabled() {
+			t.Errorf("%s: Alyvix enabled", name)
+		}
+	}
+	enabled := &NetEyeTenantSpec{Alyvix: &NetEyeAlyvixSpec{Enabled: true}}
+	if !enabled.AlyvixEnabled() {
+		t.Error("Alyvix not enabled")
+	}
+	if got := enabled.Alyvix.EffectiveRDPPorts(); len(got) != 1 || got[0] != DefaultAlyvixRDPPort {
+		t.Errorf("default ports = %v, want [3389]", got)
+	}
+	configured := &NetEyeAlyvixSpec{Enabled: true, RDP: &NetEyeAlyvixRDPSpec{Ports: []int32{3390}}}
+	ports := configured.EffectiveRDPPorts()
+	ports[0] = 1
+	if configured.RDP.Ports[0] != 3390 {
+		t.Error("EffectiveRDPPorts returns the spec slice")
+	}
+}

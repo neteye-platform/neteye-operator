@@ -43,8 +43,8 @@ const (
 	tenantNamespaceComponentID componentID = "namespace"
 
 	// tenantAlyvixRDPComponentID is the RDP access to the Alyvix sessions of
-	// the tenant: Apache Guacamole and guacd. The NetEye resource enables it
-	// for every tenant.
+	// the tenant: Apache Guacamole and guacd. It runs while the tenant enables
+	// the Alyvix feature module.
 	tenantAlyvixRDPComponentID componentID = "alyvix-rdp"
 )
 
@@ -281,21 +281,25 @@ func (r *NetEyeTenantReconciler) reconcileNamespace(ctx context.Context, tenant 
 }
 
 // reconcileAlyvixRDP deploys the RDP access to the Alyvix sessions in the
-// tenant namespace while the NetEye resource enables it, and removes it
-// otherwise. The images come from the NetEye version of that resource.
+// tenant namespace while the tenant enables the Alyvix feature module, and
+// removes it otherwise. The images come from the NetEye version of the NetEye
+// resource, which also names the Gateway.
 func (r *NetEyeTenantReconciler) reconcileAlyvixRDP(ctx context.Context, tenant *neteye.NetEyeTenant) (componentResult, error) {
 	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
-	ne, err := r.netEye(ctx)
-	if err != nil {
-		return degradedResult(tenantAlyvixRDPComponentID, "NetEyeUnavailable", fmt.Sprintf("failed to read the NetEye resource: %v", err), r.failureRequeue(), err)
-	}
-	if ne == nil || !ne.Spec.AlyvixRDPEnabled() || r.RDPComponent == nil {
+	if !tenant.Spec.AlyvixEnabled() || r.RDPComponent == nil {
 		if r.RDPComponent != nil {
 			if err := r.RDPComponent.Delete(ctx, tenant.Namespace, owner); err != nil {
 				return degradedResult(tenantAlyvixRDPComponentID, "DeleteFailed", fmt.Sprintf("failed to remove the RDP access: %v", err), r.failureRequeue(), err)
 			}
 		}
-		return readyResult(tenantAlyvixRDPComponentID, "Disabled", "The RDP access to the Alyvix sessions is not enabled in the NetEye resource")
+		return readyResult(tenantAlyvixRDPComponentID, "Disabled", "The Alyvix feature module is not enabled for the tenant")
+	}
+	ne, err := r.netEye(ctx)
+	if err != nil {
+		return degradedResult(tenantAlyvixRDPComponentID, "NetEyeUnavailable", fmt.Sprintf("failed to read the NetEye resource: %v", err), r.failureRequeue(), err)
+	}
+	if ne == nil {
+		return progressingResult(tenantAlyvixRDPComponentID, "WaitingForNetEye", fmt.Sprintf("waiting for the NetEye resource in namespace %q, which selects the images and the Gateway", neteye.NetEyeNamespace), r.progressingRequeue())
 	}
 	components, ok := neteye.ComponentsForVersion(ne.Spec.Version)
 	if !ok {
@@ -310,7 +314,7 @@ func (r *NetEyeTenantReconciler) reconcileAlyvixRDP(ctx context.Context, tenant 
 		Namespace:      tenant.Namespace,
 		GuacamoleImage: components.GuacamoleImage,
 		GuacdImage:     components.GuacdImage,
-		Ports:          ne.Spec.Alyvix.RDP.EffectivePorts(),
+		Ports:          tenant.Spec.Alyvix.EffectiveRDPPorts(),
 		Gateway:        gateway,
 	}, owner)
 	switch outcome.Phase {
@@ -518,8 +522,8 @@ func (r *NetEyeTenantReconciler) reconciliationRequeue() time.Duration {
 // procedure gates in the tenant namespaces, so an install or an upgrade
 // continues as soon as a gate it waits for exists. A NetEye resource that
 // completes a version reconciles every tenant, because their upgrades wait for
-// it, and so does a change of its spec, which enables the RDP access of every
-// tenant and selects its images and Gateway. Routes are not watched, so a
+// it, and so does a change of its spec, which selects the images and the
+// Gateway of the tenant components. Routes are not watched, so a
 // cluster without the Gateway API can still start the controller; their status
 // is read again at the next requeue.
 // It also watches the admission policy that protects the tenant metadata and

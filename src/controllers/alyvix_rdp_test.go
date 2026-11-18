@@ -17,6 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/alyvix"
@@ -24,9 +26,9 @@ import (
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
 )
 
-// alyvixNetEye is the NetEye resource that the installer renders when the
-// Alyvix feature module is installed.
-func alyvixNetEye(enabled bool) *neteye.NetEye {
+// rdpNetEye is the NetEye resource that selects the images and the Gateway of
+// the RDP access.
+func rdpNetEye() *neteye.NetEye {
 	return &neteye.NetEye{
 		ObjectMeta: metav1.ObjectMeta{Name: "neteye", Namespace: neteye.NetEyeNamespace},
 		Spec: neteye.NetEyeSpec{
@@ -42,9 +44,16 @@ func alyvixNetEye(enabled bool) *neteye.NetEye {
 					PasswordSecret: &neteye.NetEyeSecretKeySelector{Name: "kc-db", Key: "password"},
 				},
 			},
-			Alyvix: &neteye.NetEyeAlyvixSpec{RDP: &neteye.NetEyeAlyvixRDPSpec{Enabled: enabled}},
 		},
 	}
+}
+
+// alyvixTenant is a tenant that enables or disables the Alyvix feature module.
+func alyvixTenant(name string, enabled bool) *neteye.NetEyeTenant {
+	tenant := tenantResource()
+	tenant.Name, tenant.Namespace, tenant.UID = name, name, types.UID(name+"-uid")
+	tenant.Spec.Alyvix = &neteye.NetEyeAlyvixSpec{Enabled: enabled}
+	return tenant
 }
 
 func newTenantReconcilerWithRDP(t *testing.T, objects ...client.Object) (*NetEyeTenantReconciler, client.Client) {
@@ -66,12 +75,13 @@ func rdpResult(t *testing.T, r *NetEyeTenantReconciler, c client.Client, tenant 
 	return result
 }
 
-func TestNetEyeTenantDeploysTheRDPAccessWhenTheNetEyeResourceEnablesIt(t *testing.T) {
-	r, c := newTenantReconcilerWithRDP(t, plainNamespace(testTenant), tenantResource(), alyvixNetEye(true))
+func TestNetEyeTenantDeploysTheRDPAccessWhenTheTenantEnablesAlyvix(t *testing.T) {
+	r, c := newTenantReconcilerWithRDP(t, plainNamespace(testTenant), alyvixTenant(testTenant, true), rdpNetEye())
 	reconcileTenant(t, r)
 
 	// The install of the tenant waits for the RDP access.
-	assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseInstalling, "alyvix-rdp: ")
+	tenant := getTenant(t, c, testTenant, testTenant)
+	assertTenantPhase(t, tenant, neteye.PhaseInstalling, "alyvix-rdp: ")
 	if result := rdpResult(t, r, c, testTenant); result.State != componentStateProgressing || result.Reason != alyvix.ReasonDeploymentNotAvailable {
 		t.Fatalf("alyvix-rdp component = %#v, want progressing until the Deployments are ready", result)
 	}
@@ -81,7 +91,7 @@ func TestNetEyeTenantDeploysTheRDPAccessWhenTheNetEyeResourceEnablesIt(t *testin
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.GuacamoleName}, deployment); err != nil {
 		t.Fatalf("guacamole Deployment: %v", err)
 	}
-	if owners := deployment.GetOwnerReferences(); len(owners) != 1 || owners[0].Kind != "NetEyeTenant" || owners[0].UID != "tenant-uid" {
+	if owners := deployment.GetOwnerReferences(); len(owners) != 1 || owners[0].Kind != "NetEyeTenant" || owners[0].UID != tenant.UID {
 		t.Errorf("guacamole Deployment owners = %#v, want the tenant", owners)
 	}
 	if got := deployment.Spec.Template.Spec.Containers[0].Image; got != images.GuacamoleImage {
@@ -105,14 +115,13 @@ func TestNetEyeTenantDeploysTheRDPAccessWhenTheNetEyeResourceEnablesIt(t *testin
 	}
 }
 
-func TestNetEyeTenantReportsTheRDPAccessDisabledWithoutTheNetEyeSwitch(t *testing.T) {
-	for name, objects := range map[string][]client.Object{
-		"no NetEye resource":     nil,
-		"RDP access disabled":    {alyvixNetEye(false)},
-		"Alyvix section missing": {func() client.Object { ne := alyvixNetEye(false); ne.Spec.Alyvix = nil; return ne }()},
+func TestNetEyeTenantReportsTheRDPAccessDisabledWithoutAlyvix(t *testing.T) {
+	for name, tenant := range map[string]*neteye.NetEyeTenant{
+		"no alyvix section": tenantResource(),
+		"alyvix disabled":   alyvixTenant(testTenant, false),
 	} {
 		t.Run(name, func(t *testing.T) {
-			r, c := newTenantReconcilerWithRDP(t, append([]client.Object{plainNamespace(testTenant), tenantResource()}, objects...)...)
+			r, c := newTenantReconcilerWithRDP(t, plainNamespace(testTenant), tenant, rdpNetEye())
 			reconcileTenant(t, r)
 
 			if result := rdpResult(t, r, c, testTenant); result.State != componentStateReady || result.Reason != "Disabled" {
@@ -127,8 +136,25 @@ func TestNetEyeTenantReportsTheRDPAccessDisabledWithoutTheNetEyeSwitch(t *testin
 	}
 }
 
+func TestNetEyeTenantsEnableAlyvixIndependently(t *testing.T) {
+	const other = "neteye-tenant-3cj57cgw"
+	r, c := newTenantReconcilerWithRDP(t, plainNamespace(testTenant), plainNamespace(other), alyvixTenant(testTenant, true), alyvixTenant(other, false), rdpNetEye())
+	reconcileTenantRequest(t, r, testTenant, testTenant)
+	reconcileTenantRequest(t, r, other, other)
+
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.GuacamoleName}, &appsv1.Deployment{}); err != nil {
+		t.Errorf("guacamole Deployment of the tenant with Alyvix: %v", err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: other, Name: alyvix.GuacamoleName}, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Errorf("guacamole Deployment of the tenant without Alyvix: err = %v, want not found", err)
+	}
+	if result := rdpResult(t, r, c, other); result.Reason != "Disabled" {
+		t.Errorf("alyvix-rdp component of the tenant without Alyvix = %#v, want disabled", result)
+	}
+}
+
 func TestNetEyeTenantRemovesTheRDPAccessAndKeepsItsKeyWhenDisabled(t *testing.T) {
-	r, c := newTenantReconcilerWithRDP(t, plainNamespace(testTenant), tenantResource(), alyvixNetEye(true))
+	r, c := newTenantReconcilerWithRDP(t, plainNamespace(testTenant), alyvixTenant(testTenant, true), rdpNetEye())
 	reconcileTenant(t, r)
 	secret := &corev1.Secret{}
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.JSONAuthSecretName}, secret); err != nil {
@@ -136,12 +162,9 @@ func TestNetEyeTenantRemovesTheRDPAccessAndKeepsItsKeyWhenDisabled(t *testing.T)
 	}
 	key := string(secret.Data[alyvix.JSONAuthSecretKey])
 
-	ne := &neteye.NetEye{}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: neteye.NetEyeNamespace, Name: "neteye"}, ne); err != nil {
-		t.Fatal(err)
-	}
-	ne.Spec.Alyvix = nil
-	if err := c.Update(context.Background(), ne); err != nil {
+	tenant := getTenant(t, c, testTenant, testTenant)
+	tenant.Spec.Alyvix.Enabled = false
+	if err := c.Update(context.Background(), tenant); err != nil {
 		t.Fatal(err)
 	}
 	reconcileTenant(t, r)
@@ -161,9 +184,39 @@ func TestNetEyeTenantRemovesTheRDPAccessAndKeepsItsKeyWhenDisabled(t *testing.T)
 	}
 }
 
+func TestNetEyeTenantRDPAccessUsesThePortsOfTheTenant(t *testing.T) {
+	tenant := alyvixTenant(testTenant, true)
+	tenant.Spec.Alyvix.RDP = &neteye.NetEyeAlyvixRDPSpec{Ports: []int32{3390}}
+	r, c := newTenantReconcilerWithRDP(t, plainNamespace(testTenant), tenant, rdpNetEye())
+	reconcileTenant(t, r)
+
+	policy := &unstructured.Unstructured{}
+	policy.SetGroupVersionKind(networkPolicyGVK)
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.GuacdEgressPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	egress, _, _ := unstructured.NestedSlice(policy.Object, "spec", "egress")
+	if got := egress[len(egress)-1].(map[string]any)["ports"]; !reflect.DeepEqual(got, []any{map[string]any{"protocol": "TCP", "port": int64(3390)}}) {
+		t.Errorf("guacd egress ports = %v, want only 3390", got)
+	}
+}
+
+func TestNetEyeTenantRDPAccessWaitsForTheNetEyeResource(t *testing.T) {
+	r, c := newTenantReconcilerWithRDP(t, plainNamespace(testTenant), alyvixTenant(testTenant, true))
+	reconcileTenant(t, r)
+
+	assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseInstalling, "alyvix-rdp: waiting for the NetEye resource")
+	if result := rdpResult(t, r, c, testTenant); result.State != componentStateProgressing || result.Reason != "WaitingForNetEye" {
+		t.Errorf("alyvix-rdp component = %#v, want waiting for the NetEye resource", result)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.JSONAuthSecretName}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Errorf("Secret err = %v, want nothing created without the NetEye resource", err)
+	}
+}
+
 func TestNetEyeTenantRDPAccessWaitsForTheNamespace(t *testing.T) {
 	// Without the admission policy the namespace component is not ready.
-	r, c := newTenantReconcilerWithoutPolicy(t, plainNamespace(testTenant), tenantResource(), alyvixNetEye(true))
+	r, c := newTenantReconcilerWithoutPolicy(t, plainNamespace(testTenant), alyvixTenant(testTenant, true), rdpNetEye())
 	r.RDPComponent = alyvix.NewRDPComponent(c)
 	reconcileTenant(t, r)
 
@@ -178,16 +231,21 @@ func TestReconcileAlyvixRDPAddsTheTenantListenerAndCertificate(t *testing.T) {
 	c, s := startEnvtest(t)
 	ctx := context.Background()
 	ns := keycloak.WorkloadNamespace
-	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
-		t.Fatalf("create namespace: %v", err)
+	for _, name := range []string{ns, testTenant} {
+		if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}); err != nil {
+			t.Fatalf("create namespace %s: %v", name, err)
+		}
 	}
 	if err := c.Create(ctx, newUnstructured(issuerGVK, ns, "internal-issuer")); err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
-	ne := alyvixNetEye(true)
-	ne.Spec.Alyvix.RDP.Ports = []int32{3389, 3390}
+	ne := rdpNetEye()
 	if err := c.Create(ctx, ne); err != nil {
 		t.Fatalf("create neteye: %v", err)
+	}
+	tenant := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Name: testTenant, Namespace: testTenant}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: "Default"}}
+	if err := c.Create(ctx, tenant); err != nil {
+		t.Fatalf("create tenant: %v", err)
 	}
 	r := &NetEyeReconciler{
 		Client:                 c,
@@ -198,23 +256,45 @@ func TestReconcileAlyvixRDPAddsTheTenantListenerAndCertificate(t *testing.T) {
 		EDOTGatewayComponent:   elasticstack.NewEDOTGatewayComponent(c),
 	}
 	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)}
-	if _, err := r.Reconcile(ctx, req); err != nil {
-		t.Fatalf("reconcile: %v", err)
+	listener := func() map[string]any {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		gateway := requireExists(ctx, t, c, gatewayGVK, ns, "neteye")
+		listeners, _, _ := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
+		for _, raw := range listeners {
+			if raw.(map[string]any)["name"] == alyvix.GatewayListenerName {
+				return raw.(map[string]any)
+			}
+		}
+		return nil
+	}
+	setAlyvix := func(enabled bool) {
+		t.Helper()
+		current := &neteye.NetEyeTenant{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(tenant), current); err != nil {
+			t.Fatal(err)
+		}
+		current.Spec.Alyvix = &neteye.NetEyeAlyvixSpec{Enabled: enabled}
+		if err := c.Update(ctx, current); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	gateway := requireExists(ctx, t, c, gatewayGVK, ns, "neteye")
-	listeners, _, _ := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
-	listener := gatewayListenerByName(t, listeners, alyvix.GatewayListenerName)
-	if listener["hostname"] != alyvix.GatewayListenerHostname || listener["port"] != int64(443) || listener["protocol"] != "HTTPS" {
-		t.Errorf("RDP listener = %v", listener)
+	if got := listener(); got != nil {
+		t.Errorf("RDP listener = %v without a tenant that enables Alyvix, want none", got)
 	}
-	namespaces, _, _ := unstructured.NestedMap(listener, "allowedRoutes", "namespaces")
+
+	setAlyvix(true)
+	got := listener()
+	if got == nil || got["hostname"] != alyvix.GatewayListenerHostname || got["port"] != int64(443) || got["protocol"] != "HTTPS" {
+		t.Fatalf("RDP listener = %v", got)
+	}
+	namespaces, _, _ := unstructured.NestedMap(got, "allowedRoutes", "namespaces")
 	wantNamespaces := map[string]any{"from": "Selector", "selector": map[string]any{"matchExpressions": []any{map[string]any{"key": neteye.TenantLabel, "operator": "Exists"}}}}
 	if !reflect.DeepEqual(namespaces, wantNamespaces) {
 		t.Errorf("RDP listener namespaces = %v, want only tenant namespaces", namespaces)
-	}
-	if keycloakListener := gatewayListenerByName(t, listeners, keycloak.GatewayListenerName); keycloakListener["allowedRoutes"].(map[string]any)["namespaces"].(map[string]any)["from"] != "Same" {
-		t.Errorf("keycloak listener = %v, want routes of the shared namespace only", keycloakListener)
 	}
 	certificate := requireExists(ctx, t, c, certificateGVK, ns, alyvix.TLSCertificateName)
 	if owners := certificate.GetOwnerReferences(); len(owners) != 1 || owners[0].Kind != "NetEye" || owners[0].Name != ne.Name || owners[0].Controller == nil || !*owners[0].Controller {
@@ -226,48 +306,49 @@ func TestReconcileAlyvixRDPAddsTheTenantListenerAndCertificate(t *testing.T) {
 		t.Errorf("certificate dnsNames = %v, secretName = %q", dnsNames, secretName)
 	}
 
-	current := &neteye.NetEye{}
-	if err := c.Get(ctx, req.NamespacedName, current); err != nil {
-		t.Fatal(err)
-	}
-	current.Spec.Alyvix = nil
-	if err := c.Update(ctx, current); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.Reconcile(ctx, req); err != nil {
-		t.Fatalf("reconcile after disable: %v", err)
-	}
-	gateway = requireExists(ctx, t, c, gatewayGVK, ns, "neteye")
-	listeners, _, _ = unstructured.NestedSlice(gateway.Object, "spec", "listeners")
-	for _, raw := range listeners {
-		if raw.(map[string]any)["name"] == alyvix.GatewayListenerName {
-			t.Errorf("RDP listener still present after disable: %v", raw)
-		}
+	setAlyvix(false)
+	if got := listener(); got != nil {
+		t.Errorf("RDP listener still present after disable: %v", got)
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: alyvix.TLSCertificateName}, newUnstructured(certificateGVK, ns, alyvix.TLSCertificateName)); !apierrors.IsNotFound(err) {
 		t.Errorf("certificate err = %v, want deleted after disable", err)
 	}
 }
 
+func TestNetEyeChangesOfTenantsReachTheNetEyeResource(t *testing.T) {
+	scheme := tenantScheme(t)
+	ne := rdpNetEye()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ne).Build()
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: scheme}
+	requests := r.netEyesForTenant(context.Background(), alyvixTenant(testTenant, true))
+	if want := []reconcile.Request{{NamespacedName: client.ObjectKeyFromObject(ne)}}; !reflect.DeepEqual(requests, want) {
+		t.Errorf("requests = %v, want %v", requests, want)
+	}
+}
+
 func TestAPIServerValidatesTheAlyvixRDPPorts(t *testing.T) {
 	c, _ := startEnvtest(t)
 	ctx := context.Background()
-	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: neteye.NetEyeNamespace}}); err != nil {
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testTenant}}); err != nil {
 		t.Fatalf("create namespace: %v", err)
 	}
+	newTenant := func(ports []int32) *neteye.NetEyeTenant {
+		return &neteye.NetEyeTenant{
+			ObjectMeta: metav1.ObjectMeta{Name: testTenant, Namespace: testTenant},
+			Spec:       neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: "Default", Alyvix: &neteye.NetEyeAlyvixSpec{Enabled: true, RDP: &neteye.NetEyeAlyvixRDPSpec{Ports: ports}}},
+		}
+	}
 	for name, ports := range map[string][]int32{"port 0": {0}, "port 65536": {65536}, "duplicate": {3389, 3389}} {
-		ne := alyvixNetEye(true)
-		ne.Name = "invalid"
-		ne.Spec.Alyvix.RDP.Ports = ports
-		if err := c.Create(ctx, ne); !apierrors.IsInvalid(err) {
+		if err := c.Create(ctx, newTenant(ports)); !apierrors.IsInvalid(err) {
 			t.Errorf("%s: create err = %v, want invalid", name, err)
 		}
 	}
-	ne := alyvixNetEye(true)
-	if err := c.Create(ctx, ne); err != nil {
-		t.Fatalf("create valid neteye: %v", err)
+	tenant := newTenant(nil)
+	tenant.Spec.Alyvix.RDP = nil
+	if err := c.Create(ctx, tenant); err != nil {
+		t.Fatalf("create valid tenant: %v", err)
 	}
-	if ne.Spec.Alyvix.RDP.EffectivePorts()[0] != neteye.DefaultAlyvixRDPPort {
-		t.Errorf("effective ports = %v, want the default", ne.Spec.Alyvix.RDP.EffectivePorts())
+	if got := tenant.Spec.Alyvix.EffectiveRDPPorts(); len(got) != 1 || got[0] != neteye.DefaultAlyvixRDPPort {
+		t.Errorf("effective ports = %v, want the default", got)
 	}
 }
