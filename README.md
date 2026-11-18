@@ -70,6 +70,12 @@ least one tenant enables Alyvix.
   browser use: `POST /guacamole/api/tokens`, `DELETE /guacamole/api/session`,
   `GET /guacamole/websocket-tunnel` and
   `GET /guacamole/guacamole-common-js/all.min.js`.
+- The listener is shared by the tenants, so the ValidatingAdmissionPolicy
+  `neteye-tenant-route-hostnames` refuses an HTTPRoute of a tenant namespace
+  that attaches to it, with or without `sectionName`, unless every hostname
+  of the route is the hostname of its own tenant. The policy has no
+  exemption, and the RDP access of a tenant is not ready until the API server
+  enforces it.
 - The egress policies are not a destination allowlist: both workloads may
   send DNS queries (TCP and UDP ports 53 and 5353) to any address, and guacd
   may connect to the RDP ports on any address. Apart from DNS, the web

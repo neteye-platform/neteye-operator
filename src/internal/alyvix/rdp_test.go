@@ -5,6 +5,8 @@ package alyvix
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
@@ -503,7 +505,15 @@ func TestRDPDeleteOnlyDeletesTheObjectThatPassedTheOwnershipCheck(t *testing.T) 
 		t.Fatal(err)
 	}
 	preconditions := map[string]types.UID{}
+	// The fake client assigns no UID, so every object gets its own here: the
+	// test then tells apart an empty, a reused and the right UID.
+	created := 0
 	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, inner client.WithWatch, object client.Object, opts ...client.CreateOption) error {
+			created++
+			object.SetUID(types.UID(fmt.Sprintf("uid-%d", created)))
+			return inner.Create(ctx, object, opts...)
+		},
 		Delete: func(ctx context.Context, inner client.WithWatch, object client.Object, opts ...client.DeleteOption) error {
 			options := &client.DeleteOptions{}
 			options.ApplyOptions(opts)
@@ -516,8 +526,14 @@ func TestRDPDeleteOnlyDeletesTheObjectThatPassedTheOwnershipCheck(t *testing.T) 
 	component := NewRDPComponent(c)
 	component.Ensure(context.Background(), inputs(true), owner())
 	uids := map[string]types.UID{}
+	seen := map[types.UID]bool{}
 	for _, resource := range resourceInventory() {
-		uids[resource.gvk.Kind+"/"+resource.name] = unstructuredObject(t, c, resource.gvk, testTenant, resource.name).GetUID()
+		uid := unstructuredObject(t, c, resource.gvk, testTenant, resource.name).GetUID()
+		if uid == "" || seen[uid] {
+			t.Fatalf("%s %s has the UID %q, want a distinct, nonempty one", resource.gvk.Kind, resource.name, uid)
+		}
+		seen[uid] = true
+		uids[resource.gvk.Kind+"/"+resource.name] = uid
 	}
 
 	if err := component.Delete(context.Background(), testTenant, owner()); err != nil {
@@ -525,6 +541,41 @@ func TestRDPDeleteOnlyDeletesTheObjectThatPassedTheOwnershipCheck(t *testing.T) 
 	}
 	if !reflect.DeepEqual(preconditions, uids) {
 		t.Errorf("delete preconditions = %v, want the UID of each object read = %v", preconditions, uids)
+	}
+}
+
+// A route that cannot be deleted, for example because an admission policy
+// refuses it, must not keep the workloads that serve it.
+func TestRDPDeleteGoesOnWhenAnObjectCannotBeDeleted(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(ctx context.Context, inner client.WithWatch, object client.Object, opts ...client.DeleteOption) error {
+			if object.GetObjectKind().GroupVersionKind().Kind == "HTTPRoute" {
+				return errors.New("denied by an admission policy")
+			}
+			return inner.Delete(ctx, object, opts...)
+		},
+	}).Build()
+	component := NewRDPComponent(c)
+	component.Ensure(context.Background(), inputs(true), owner())
+
+	err := component.Delete(context.Background(), testTenant, owner())
+	if err == nil || !strings.Contains(err.Error(), "denied by an admission policy") || !strings.Contains(err.Error(), HTTPRouteName) {
+		t.Errorf("err = %v, want the failure of the route", err)
+	}
+	unstructuredObject(t, c, httpRouteGVK, testTenant, HTTPRouteName)
+	for _, resource := range resourceInventory() {
+		if resource.gvk.Kind == "HTTPRoute" {
+			continue
+		}
+		object := &unstructured.Unstructured{}
+		object.SetGroupVersionKind(resource.gvk)
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: resource.name}, object); !apierrors.IsNotFound(err) {
+			t.Errorf("%s %s err = %v, want deleted although the route was not", resource.gvk.Kind, resource.name, err)
+		}
 	}
 }
 

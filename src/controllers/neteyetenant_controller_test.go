@@ -54,18 +54,28 @@ func plainNamespace(name string) *corev1.Namespace {
 // TenantNamespacePolicy writes them: controlled by the NetEyeTenant CRD, with a
 // binding that denies.
 func tenantNamespacePolicyObjects() []client.Object {
+	return append([]client.Object{tenantCRD()}, tenantAdmissionPolicyObjects(tenantNamespacePolicy(testOperatorUsername))...)
+}
+
+// tenantRoutePolicyObjects returns the route policy and its binding as
+// TenantNamespacePolicy writes them, without the CRD.
+func tenantRoutePolicyObjects() []client.Object {
+	return tenantAdmissionPolicyObjects(tenantRoutePolicy())
+}
+
+func tenantAdmissionPolicyObjects(p tenantAdmissionPolicy) []client.Object {
 	owner := metav1.OwnerReference{APIVersion: customResourceDefinitionGVK.GroupVersion().String(), Kind: customResourceDefinitionGVK.Kind, Name: netEyeTenantCRDName, UID: "crd-uid", Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(false)}
 	policy := &unstructured.Unstructured{}
 	policy.SetGroupVersionKind(validatingAdmissionPolicyGVK)
-	policy.SetName(TenantNamespacePolicyName)
+	policy.SetName(p.name)
 	policy.SetOwnerReferences([]metav1.OwnerReference{owner})
-	policy.Object["spec"] = tenantNamespacePolicySpec(testOperatorUsername)
+	policy.Object["spec"] = p.spec
 	binding := &unstructured.Unstructured{}
 	binding.SetGroupVersionKind(validatingAdmissionPolicyBindingGVK)
-	binding.SetName(TenantNamespacePolicyName)
+	binding.SetName(p.name)
 	binding.SetOwnerReferences([]metav1.OwnerReference{owner})
-	binding.Object["spec"] = tenantNamespacePolicyBindingSpec()
-	return []client.Object{tenantCRD(), policy, binding}
+	binding.Object["spec"] = tenantAdmissionPolicyBindingSpec(p.name)
+	return []client.Object{policy, binding}
 }
 
 // tenantCRD is the NetEyeTenant CRD that controls the policy objects.
@@ -78,10 +88,11 @@ func tenantCRD() *unstructured.Unstructured {
 }
 
 // newTenantReconciler builds a reconciler on a fake cluster where the tenant
-// namespace admission policy is in place.
+// admission policies are in place.
 func newTenantReconciler(t *testing.T, objects ...client.Object) (*NetEyeTenantReconciler, client.Client) {
 	t.Helper()
-	return newTenantReconcilerWithoutPolicy(t, append(tenantNamespacePolicyObjects(), objects...)...)
+	policies := append(tenantNamespacePolicyObjects(), tenantRoutePolicyObjects()...)
+	return newTenantReconcilerWithoutPolicy(t, append(policies, objects...)...)
 }
 
 // newTenantReconcilerWithoutPolicy builds a reconciler on a fake cluster that
@@ -287,9 +298,9 @@ func TestTenantNamespacePolicyCheckRefusesAnyChangeOfTheScope(t *testing.T) {
 			}
 		})
 	}
-	binding := tenantNamespacePolicyBindingSpec()
+	binding := tenantAdmissionPolicyBindingSpec(TenantNamespacePolicyName)
 	binding["paramRef"] = map[string]any{"name": "params", "parameterNotFoundAction": "Allow"}
-	if sameScope(binding, tenantNamespacePolicyBindingSpec()) {
+	if sameScope(binding, tenantAdmissionPolicyBindingSpec(TenantNamespacePolicyName)) {
 		t.Error("a binding with a parameter reference counts as enforced")
 	}
 }
