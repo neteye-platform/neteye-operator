@@ -79,8 +79,15 @@ func (r *NetEyeReconciler) gatePlanFor(version string, l lifecycle) gatePlan {
 // lifecycleFor derives the procedure in progress from the last completed
 // release. It reports false for an upgrade source the operator cannot handle.
 func lifecycleFor(ne *neteye.NetEye) (lifecycle, bool) {
-	switch ne.Status.CurrentVersion {
-	case ne.Spec.Version:
+	return lifecycleForVersions(ne.Status.CurrentVersion, ne.Spec.Version)
+}
+
+// lifecycleForVersions derives the procedure in progress for a resource that
+// has completed currentVersion and wants version. The NetEye resource and the
+// NetEyeTenant resources share it.
+func lifecycleForVersions(currentVersion, version string) (lifecycle, bool) {
+	switch currentVersion {
+	case version:
 		return lifecycleSteady, true
 	case "":
 		return lifecycleInstall, true
@@ -93,13 +100,18 @@ func lifecycleFor(ne *neteye.NetEye) (lifecycle, bool) {
 
 // procedureGates returns the gate keys present for ne's release.
 func (r *NetEyeReconciler) procedureGates(ctx context.Context, ne *neteye.NetEye) (map[string]struct{}, error) {
+	return listProcedureGates(ctx, r.Client, ne.Namespace, ne.Spec.Version)
+}
+
+// listProcedureGates returns the gate keys present in namespace for version.
+func listProcedureGates(ctx context.Context, c client.Reader, namespace, version string) (map[string]struct{}, error) {
 	list := &neteye.NetEyeProcedureGateList{}
-	if err := r.List(ctx, list, client.InNamespace(ne.Namespace)); err != nil {
+	if err := c.List(ctx, list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("list NetEye procedure gates: %w", err)
 	}
 	gates := make(map[string]struct{}, len(list.Items))
 	for _, gate := range list.Items {
-		if gate.Spec.Version == ne.Spec.Version {
+		if gate.Spec.Version == version {
 			gates[gate.Spec.Gate] = struct{}{}
 		}
 	}
@@ -111,18 +123,24 @@ func procedureGateName(version, gate string) string {
 }
 
 func (r *NetEyeReconciler) ensureProcedureGate(ctx context.Context, ne *neteye.NetEye, gate string, present map[string]struct{}) error {
+	return signalProcedureGate(ctx, r.Client, ne.Namespace, ne.Spec.Version, gate, ownerReferenceFor(ne), present)
+}
+
+// signalProcedureGate creates the gate for version in namespace, owned by
+// owner, unless it is already present.
+func signalProcedureGate(ctx context.Context, c client.Client, namespace, version, gate string, owner metav1.OwnerReference, present map[string]struct{}) error {
 	if _, ok := present[gate]; ok {
 		return nil
 	}
 	object := &neteye.NetEyeProcedureGate{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace:       ne.Namespace,
-			Name:            procedureGateName(ne.Spec.Version, gate),
-			OwnerReferences: []metav1.OwnerReference{ownerReferenceFor(ne)},
+			Namespace:       namespace,
+			Name:            procedureGateName(version, gate),
+			OwnerReferences: []metav1.OwnerReference{owner},
 		},
-		Spec: neteye.NetEyeProcedureGateSpec{Version: ne.Spec.Version, Gate: gate, Producer: neteye.ProcedureGateProducerOperator},
+		Spec: neteye.NetEyeProcedureGateSpec{Version: version, Gate: gate, Producer: neteye.ProcedureGateProducerOperator},
 	}
-	if err := r.Create(ctx, object); err != nil && !apierrors.IsAlreadyExists(err) {
+	if err := c.Create(ctx, object); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create NetEye procedure gate %q: %w", object.Name, err)
 	}
 	present[gate] = struct{}{}

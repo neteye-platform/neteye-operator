@@ -14,8 +14,6 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -62,12 +60,17 @@ type NetEyeTenantReconciler struct {
 	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
 	FailureRequeueAfter        time.Duration
 	ReconciliationRequeueAfter time.Duration
+
+	// releasePlans overrides defaultTenantReleasePlans in tests.
+	releasePlans map[string]tenantReleasePlan
 }
 
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyetenants,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyetenants/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyetenants/finalizers,verbs=update
+// +kubebuilder:rbac:groups=neteye.cloud,resources=neteyeproceduregates,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;create;update;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get;list;watch;create;update
@@ -85,49 +88,98 @@ func (r *NetEyeTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.reconcileDelete(ctx, tenant)
 	}
 
-	results, err := r.reconcileComponents(ctx, tenant)
+	result, err := r.reconcileTenant(ctx, tenant)
+	r.writeStatus(ctx, tenant)
+	if err == nil && tenant.Status.Phase == neteye.PhaseReady {
+		log.Info("NetEyeTenant is ready", "requeueAfter", result.RequeueAfter)
+	}
+	return result, err
+}
+
+// reconcileTenant follows the version rules of the NetEye resource: a tenant
+// at the previous version waits for its upgrade, an install or an upgrade
+// waits for the procedure gates of its components, and status.currentVersion
+// records the version once every component is ready. A tenant that is not
+// valid changes nothing outside itself: the admission webhook normally refuses
+// it, and this check keeps a tenant that bypassed the webhook from touching
+// another namespace.
+func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *neteye.NetEyeTenant) (ctrl.Result, error) {
+	log := ctrl.LoggerFrom(ctx)
+	version := tenant.Spec.Version
+	failed := func(message string) (ctrl.Result, error) {
+		setTenantPhase(tenant, neteye.PhaseFailed, message)
+		log.Error(nil, "NetEyeTenant cannot be reconciled", "reason", message, "requeueAfter", r.failureRequeue())
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+	}
+	switch {
+	case neteye.IsPreviousVersion(version):
+		setTenantPhase(tenant, neteye.PhasePendingUpgrades, fmt.Sprintf("Tenant version '%s' is not the latest; consider upgrading to '%s'. Reconciliation will be paused until the upgrade is performed.", version, neteye.CurrentNetEyeVersion))
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+	case !neteye.IsLatestVersion(version):
+		return failed(fmt.Sprintf("Tenant version '%s' is not the latest. Latest version is '%s'. Reconciliation will be paused until the mismatch has been resolved.", version, neteye.CurrentNetEyeVersion))
+	}
+	procedure, ok := lifecycleForVersions(tenant.Status.CurrentVersion, version)
+	if !ok {
+		return failed(fmt.Sprintf("cannot upgrade the tenant from '%s' to '%s'; only upgrades from '%s' are supported", tenant.Status.CurrentVersion, version, neteye.PreviousNetEyeVersion))
+	}
+	if invalid := invalidTenantReason(tenant); invalid != "" {
+		return failed(invalid)
+	}
+	if controllerutil.AddFinalizer(tenant, NetEyeTenantFinalizer) {
+		if err := r.Update(ctx, tenant); err != nil {
+			setTenantPhase(tenant, neteye.PhaseFailed, fmt.Sprintf("failed to add the finalizer: %v", err))
+			return ctrl.Result{}, fmt.Errorf("add NetEyeTenant finalizer: %w", err)
+		}
+	}
+	holder, err := r.claimDisplayName(ctx, tenant)
 	if err != nil {
+		setTenantPhase(tenant, neteye.PhaseFailed, fmt.Sprintf("failed to claim the display name: %v", err))
+		log.Error(err, "unable to claim the display name of the tenant", "requeueAfter", r.failureRequeue())
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+	}
+	if holder != "" {
+		return failed(fmt.Sprintf("display name %q is already used by tenant %s; choose another display name", tenant.Spec.DisplayName, holder))
+	}
+
+	graph, err := newLifecycleGraph([]lifecycleNode{{ID: tenantNamespaceComponentID}})
+	if err != nil {
+		setTenantPhase(tenant, neteye.PhaseFailed, err.Error())
+		return ctrl.Result{}, fmt.Errorf("construct tenant component lifecycle graph: %w", err)
+	}
+	operations := map[componentID]componentOperation{
+		tenantNamespaceComponentID: func() (componentResult, error) { return r.reconcileNamespace(ctx, tenant) },
+	}
+	if procedure != lifecycleSteady && tenant.Spec.EffectiveUseProcedureGates() {
+		present, err := listProcedureGates(ctx, r.Client, tenant.Namespace, version)
+		if err != nil {
+			setTenantPhase(tenant, neteye.PhaseFailed, err.Error())
+			log.Error(err, "failed to read the procedure gates of the tenant", "requeueAfter", r.failureRequeue())
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
+		plan := r.gatePlanFor(version, procedure)
+		for id, op := range operations {
+			operations[id] = r.gatedOperation(ctx, tenant, id, plan[id], present, op)
+		}
+	}
+	results, err := runComponentOperations(graph, operations)
+	if err != nil {
+		setTenantPhase(tenant, neteye.PhaseFailed, err.Error())
 		return ctrl.Result{}, err
 	}
-	r.writeStatus(ctx, tenant, results)
-
 	for _, result := range results {
 		if result.Err != nil {
 			log.Error(result.Err, "tenant component reconciliation failed", "component", result.ID, "reason", result.Reason, "requeueAfter", result.RequeueAfter)
 		}
 	}
+	phase, message := tenantComponentPhase(results)
+	phase, message = tenantLifecyclePhase(tenant, procedure, phase, message)
+	setTenantPhase(tenant, phase, message)
+
 	requeueAfter := earliestComponentRequeue(results)
 	if requeueAfter == 0 {
 		requeueAfter = r.reconciliationRequeue()
-		log.Info("NetEyeTenant is ready", "requeueAfter", requeueAfter)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
-}
-
-// reconcileComponents runs the components of the tenant in dependency order.
-// A tenant that is not valid changes nothing outside itself: the admission
-// webhook normally refuses it, and this check keeps a tenant that bypassed the
-// webhook from touching another namespace.
-func (r *NetEyeTenantReconciler) reconcileComponents(ctx context.Context, tenant *neteye.NetEyeTenant) (map[componentID]componentResult, error) {
-	graph, err := newLifecycleGraph([]lifecycleNode{{ID: tenantNamespaceComponentID}})
-	if err != nil {
-		return nil, fmt.Errorf("construct tenant component lifecycle graph: %w", err)
-	}
-	if invalid := invalidTenantReason(tenant); invalid != "" {
-		result, err := degradedResult(tenantNamespaceComponentID, "InvalidTenant", invalid, r.failureRequeue(), fmt.Errorf("%s", invalid))
-		if err != nil {
-			return nil, err
-		}
-		return map[componentID]componentResult{tenantNamespaceComponentID: result}, nil
-	}
-	if controllerutil.AddFinalizer(tenant, NetEyeTenantFinalizer) {
-		if err := r.Update(ctx, tenant); err != nil {
-			return nil, fmt.Errorf("add NetEyeTenant finalizer: %w", err)
-		}
-	}
-	return runComponentOperations(graph, map[componentID]componentOperation{
-		tenantNamespaceComponentID: func() (componentResult, error) { return r.reconcileNamespace(ctx, tenant) },
-	})
 }
 
 func invalidTenantReason(tenant *neteye.NetEyeTenant) string {
@@ -192,7 +244,8 @@ func (r *NetEyeTenantReconciler) ensureNamespaceMetadata(ctx context.Context, te
 }
 
 // reconcileDelete removes the tenant metadata from the namespace, so that the
-// namespace no longer counts as a tenant namespace. The namespace itself and
+// namespace no longer counts as a tenant namespace, and then releases the
+// display name. The namespace itself and
 // anything else in it stay: deleting a tenant never deletes the namespace that
 // was created for it. Objects owned by the tenant, such as its network policy,
 // are removed by garbage collection.
@@ -207,6 +260,10 @@ func (r *NetEyeTenantReconciler) reconcileDelete(ctx context.Context, tenant *ne
 	}
 	if err := r.removeNamespaceMetadata(ctx, tenant); err != nil {
 		ctrl.LoggerFrom(ctx).Error(err, "unable to remove the tenant metadata from the namespace", "requeueAfter", r.failureRequeue())
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+	}
+	if err := r.releaseDisplayNames(ctx, tenant, ""); err != nil {
+		ctrl.LoggerFrom(ctx).Error(err, "unable to release the display name of the tenant", "requeueAfter", r.failureRequeue())
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
 	ctrl.LoggerFrom(ctx).Info("NetEyeTenant deleted; its namespace is no longer marked as a tenant namespace", "namespace", tenant.Namespace)
@@ -253,82 +310,64 @@ func (r *NetEyeTenantReconciler) apiReader() client.Reader {
 	return r.Client
 }
 
-// writeStatus publishes the component map and the conditions derived from it.
-func (r *NetEyeTenantReconciler) writeStatus(ctx context.Context, tenant *neteye.NetEyeTenant, results map[componentID]componentResult) {
-	components := tenantComponentStatus(tenant.Generation, results)
+// writeStatus publishes the status of this pass.
+func (r *NetEyeTenantReconciler) writeStatus(ctx context.Context, tenant *neteye.NetEyeTenant) {
+	status := tenant.Status
+	status.ObservedGeneration = tenant.Generation
 	writeStatus(ctx, r.Client, client.ObjectKeyFromObject(tenant), func() *neteye.NetEyeTenant { return &neteye.NetEyeTenant{} }, func(current *neteye.NetEyeTenant) {
-		current.Status.ObservedGeneration = tenant.Generation
-		current.Status.Components = components
-		setTenantConditions(&current.Status, tenant.Generation)
+		current.Status = status
 	})
 }
 
-// tenantComponentStatus converts this pass's component results into the
-// component map of the status.
-func tenantComponentStatus(generation int64, results map[componentID]componentResult) map[string]neteye.NetEyeComponentStatus {
-	components := make(map[string]neteye.NetEyeComponentStatus, len(results))
-	for id, result := range results {
-		blocking := make([]string, 0, len(result.BlockingDependencies))
-		for _, dependency := range result.BlockingDependencies {
-			blocking = append(blocking, string(dependency))
-		}
-		sort.Strings(blocking)
-		components[string(id)] = neteye.NetEyeComponentStatus{
-			Status:               neteye.ComponentState(result.State),
-			ObservedGeneration:   generation,
-			Reason:               result.Reason,
-			Message:              result.Message,
-			BlockingDependencies: blocking,
-			// Tenant components run no workloads yet, so each reports the empty
-			// set of images.
-			ResolvedImages: []neteye.NetEyeResolvedImage{},
-		}
-	}
-	return components
+func setTenantPhase(tenant *neteye.NetEyeTenant, phase neteye.NetEyePhase, message string) {
+	tenant.Status.Phase = phase
+	tenant.Status.Message = message
 }
 
-// setTenantConditions derives Ready, Progressing and Degraded from the
-// component map. Names are sorted, so the messages do not change from one
-// reconciliation to the next while the state stays the same.
-func setTenantConditions(status *neteye.NetEyeTenantStatus, generation int64) {
-	names := make([]string, 0, len(status.Components))
-	for name := range status.Components {
-		names = append(names, name)
+// tenantComponentPhase derives the phase from the component results. The
+// tenant has no per-component status, so the message names the components
+// that are not ready and says why. Names are sorted, so the message does not
+// change from one reconciliation to the next while the state stays the same.
+func tenantComponentPhase(results map[componentID]componentResult) (neteye.NetEyePhase, string) {
+	ids := make([]string, 0, len(results))
+	for id := range results {
+		ids = append(ids, string(id))
 	}
-	sort.Strings(names)
-	var notReady, degraded, progressing []string
-	for _, name := range names {
-		switch status.Components[name].Status {
-		case neteye.ComponentStateReady, neteye.ComponentStateDisabled:
-		case neteye.ComponentStateDegraded:
-			degraded = append(degraded, name)
-			notReady = append(notReady, name)
-		default:
-			progressing = append(progressing, name)
-			notReady = append(notReady, name)
+	sort.Strings(ids)
+	var degraded, waiting []string
+	for _, id := range ids {
+		result := results[componentID(id)]
+		switch result.State {
+		case componentStateDegraded:
+			degraded = append(degraded, id+": "+result.Message)
+		case componentStateProgressing, componentStateBlocked:
+			waiting = append(waiting, id+": "+result.Message)
 		}
 	}
-
-	ready := metav1.Condition{Type: neteye.ConditionReady, Status: metav1.ConditionTrue, ObservedGeneration: generation, Reason: neteye.ReasonAllComponentsReady, Message: "All components are ready"}
 	switch {
 	case len(degraded) > 0:
-		ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, neteye.ReasonComponentsDegraded, "Degraded components: "+strings.Join(degraded, ", ")
-	case len(notReady) > 0:
-		ready.Status, ready.Reason, ready.Message = metav1.ConditionFalse, neteye.ReasonComponentsNotReady, "Waiting for components: "+strings.Join(notReady, ", ")
+		return neteye.PhaseFailed, "Failed components: " + strings.Join(degraded, "; ")
+	case len(waiting) > 0:
+		return neteye.PhaseNotReady, "Waiting for components: " + strings.Join(waiting, "; ")
 	}
-	meta.SetStatusCondition(&status.Conditions, ready)
+	return neteye.PhaseReady, "All components are ready"
+}
 
-	progressingCondition := metav1.Condition{Type: neteye.ConditionProgressing, Status: metav1.ConditionFalse, ObservedGeneration: generation, Reason: neteye.ReasonConverged, Message: "No component is converging"}
-	if len(progressing) > 0 {
-		progressingCondition.Status, progressingCondition.Reason, progressingCondition.Message = metav1.ConditionTrue, neteye.ReasonConverging, "Converging components: "+strings.Join(progressing, ", ")
+// tenantLifecyclePhase folds an unfinished install or upgrade into the phase.
+// The procedure completes, and the version is recorded, once every component
+// is ready.
+func tenantLifecyclePhase(tenant *neteye.NetEyeTenant, procedure lifecycle, phase neteye.NetEyePhase, message string) (neteye.NetEyePhase, string) {
+	switch {
+	case procedure == lifecycleSteady || phase == neteye.PhaseFailed:
+		return phase, message
+	case phase == neteye.PhaseReady:
+		tenant.Status.CurrentVersion = tenant.Spec.Version
+		return phase, message
+	case procedure == lifecycleInstall:
+		return neteye.PhaseInstalling, fmt.Sprintf("Installing NetEye %s in the tenant; %s", tenant.Spec.Version, message)
+	default:
+		return neteye.PhaseUpgrading, fmt.Sprintf("Upgrading the tenant to NetEye %s; %s", tenant.Spec.Version, message)
 	}
-	meta.SetStatusCondition(&status.Conditions, progressingCondition)
-
-	degradedCondition := metav1.Condition{Type: neteye.ConditionDegraded, Status: metav1.ConditionFalse, ObservedGeneration: generation, Reason: neteye.ReasonNoFailures, Message: "No component has failed"}
-	if len(degraded) > 0 {
-		degradedCondition.Status, degradedCondition.Reason, degradedCondition.Message = metav1.ConditionTrue, neteye.ReasonComponentsDegraded, "Degraded components: "+strings.Join(degraded, ", ")
-	}
-	meta.SetStatusCondition(&status.Conditions, degradedCondition)
 }
 
 func (r *NetEyeTenantReconciler) failureRequeue() time.Duration {
@@ -347,7 +386,9 @@ func (r *NetEyeTenantReconciler) reconciliationRequeue() time.Duration {
 
 // SetupWithManager registers the controller. Besides the tenant, it watches
 // the network policies the tenant owns and the tenant namespaces, so drift in
-// either is corrected at once instead of at the next periodic reconciliation.
+// either is corrected at once instead of at the next periodic reconciliation,
+// and the procedure gates in the tenant namespaces, so an install or an
+// upgrade continues as soon as a gate it waits for exists.
 // It also watches the admission policy that protects the tenant metadata and
 // its binding, so the readiness of every tenant follows their state at once.
 func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -364,6 +405,7 @@ func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&neteye.NetEyeTenant{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Owns(networkPolicy).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(tenantForNamespace)).
+		Watches(&neteye.NetEyeProcedureGate{}, handler.EnqueueRequestsFromMapFunc(tenantForProcedureGate)).
 		Watches(admissionPolicy, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantNamespacePolicy).
 		Watches(admissionPolicyBinding, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantNamespacePolicy).
 		Complete(r)
@@ -391,4 +433,14 @@ func tenantForNamespace(_ context.Context, namespace client.Object) []reconcile.
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: namespace.GetName(), Name: namespace.GetName()}}}
+}
+
+// tenantForProcedureGate maps a procedure gate to the tenant of its namespace.
+// The gates of the NetEye resource live in the shared namespace, which has no
+// tenant.
+func tenantForProcedureGate(_ context.Context, gate client.Object) []reconcile.Request {
+	if !tenantNamePattern.MatchString(gate.GetNamespace()) {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: gate.GetNamespace(), Name: gate.GetNamespace()}}}
 }
