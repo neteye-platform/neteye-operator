@@ -40,18 +40,24 @@ only required while the Gateway is managed. Route traffic yourself to the
 
 ### Alyvix RDP access
 
-With `spec.alyvix.rdp.enabled: true` every tenant namespace gets an Apache
-Guacamole web application and proxy daemon (guacd). The Alyvix module opens
-RDP sessions to the Alyvix nodes through them:
+The Alyvix feature module is enabled per tenant. A `NetEyeTenant` with
+`spec.alyvix.enabled: true` gets an Apache Guacamole web application and
+proxy daemon (guacd) in its namespace. The Alyvix module opens RDP sessions
+to the Alyvix nodes through them:
 
 ```yaml
 spec:
+  displayName: Default
   alyvix:
+    enabled: true
     rdp:
-      enabled: true
       # TCP ports of RDP on the Alyvix nodes; the default is 3389.
       ports: [3389]
 ```
+
+The images come from the release data of the `NetEye` resource, which also
+names the Gateway. The Gateway gets the listener of the RDP access while at
+least one tenant enables Alyvix.
 
 - The Guacamole JSON authentication key of a tenant is generated once, in the
   Secret `alyvix-rdp-json-auth` (key `json-secret-key`, 32 hexadecimal

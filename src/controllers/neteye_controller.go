@@ -13,6 +13,7 @@ import (
 	"github.com/go-logr/logr"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
@@ -21,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -440,12 +442,18 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure cert-manager Issuer '%q' exists in namespace %q: %v", issuerRef.Name, keycloak.WorkloadNamespace, err))
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure issuer exists: %w", err)
 	}
-	if err := r.reconcileAlyvixRDPCertificate(ctx, ne, issuerRef, owner); err != nil {
+	alyvixRDP, err := r.alyvixRDPInUse(ctx)
+	if err != nil {
+		log.Error(err, "failed to list the NetEye tenants", "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to list the NetEye tenants: %v", err))
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("list NetEye tenants: %w", err)
+	}
+	if err := r.reconcileAlyvixRDPCertificate(ctx, alyvixRDP, issuerRef, owner); err != nil {
 		log.Error(err, "failed to reconcile the certificate of the Alyvix RDP access", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to reconcile the certificate of the Alyvix RDP access in namespace %q: %v", keycloak.WorkloadNamespace, err))
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("reconcile Alyvix RDP certificate: %w", err)
 	}
-	if err := resources.EnsureGateway(ctx, r.Client, keycloak.WorkloadNamespace, gateway.Name, gateway.ClassName, gateway.Annotations, gatewayListeners(ne), owner); err != nil {
+	if err := resources.EnsureGateway(ctx, r.Client, keycloak.WorkloadNamespace, gateway.Name, gateway.ClassName, gateway.Annotations, gatewayListeners(ne, alyvixRDP), owner); err != nil {
 		log.Error(err, "failed to ensure gateway exists", "namespace", keycloak.WorkloadNamespace, "gatewayName", gateway.Name, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure gateway '%q' exists in namespace %q: %v", gateway.Name, keycloak.WorkloadNamespace, err))
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure gateway: %w", err)
@@ -458,11 +466,29 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 	return ctrl.Result{}, nil
 }
 
+// alyvixRDPInUse reports whether a tenant enables the Alyvix feature module,
+// whose RDP access needs a listener on the shared Gateway.
+func (r *NetEyeReconciler) alyvixRDPInUse(ctx context.Context) (bool, error) {
+	tenants := &neteye.NetEyeTenantList{}
+	if err := r.List(ctx, tenants); err != nil {
+		if meta.IsNoMatchError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	for i := range tenants.Items {
+		if tenants.Items[i].DeletionTimestamp.IsZero() && tenants.Items[i].Spec.AlyvixEnabled() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // reconcileAlyvixRDPCertificate keeps the wildcard certificate of the Gateway
-// listener of the Alyvix RDP access while the access is enabled. The tenant
+// listener of the Alyvix RDP access while a tenant uses it. The tenant
 // components create the workloads and the routes in the tenant namespaces.
-func (r *NetEyeReconciler) reconcileAlyvixRDPCertificate(ctx context.Context, ne *neteye.NetEye, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) error {
-	if !ne.Spec.AlyvixRDPEnabled() {
+func (r *NetEyeReconciler) reconcileAlyvixRDPCertificate(ctx context.Context, inUse bool, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) error {
+	if !inUse {
 		return resources.DeleteCertificate(ctx, r.Client, keycloak.WorkloadNamespace, alyvix.TLSCertificateName, owner)
 	}
 	return resources.EnsureCertificate(ctx, r.Client, keycloak.WorkloadNamespace, alyvix.TLSCertificateName, alyvix.TLSSecretName, alyvix.GatewayListenerHostname, []string{alyvix.GatewayListenerHostname}, issuerRef, &owner)
@@ -491,9 +517,9 @@ func gatewayRefFor(ne *neteye.NetEye) *resources.GatewayRef {
 
 // gatewayListeners returns the per-component HTTPS listeners exposed on the
 // shared Gateway. The identity listener is always present; the Elastic Stack
-// and Alyvix RDP listeners are only added when their feature module is
-// enabled.
-func gatewayListeners(ne *neteye.NetEye) []resources.GatewayListener {
+// listeners are only added when the feature module is enabled, and the Alyvix
+// RDP listener when a tenant enables the Alyvix feature module.
+func gatewayListeners(ne *neteye.NetEye, alyvixRDP bool) []resources.GatewayListener {
 	listeners := []resources.GatewayListener{
 		{Name: keycloak.GatewayListenerName, Hostname: keycloak.RouteHostname, TLSSecretName: keycloak.TLSSecretName, RouteKind: resources.RouteKindHTTP},
 	}
@@ -503,7 +529,7 @@ func gatewayListeners(ne *neteye.NetEye) []resources.GatewayListener {
 			resources.GatewayListener{Name: elasticstack.CrossTenantListenerName, Hostname: elasticstack.CrossTenantRouteHostname, TLSSecretName: elasticstack.CrossTenantTLSSecretName, RouteKind: resources.RouteKindHTTP},
 		)
 	}
-	if ne.Spec.AlyvixRDPEnabled() {
+	if alyvixRDP {
 		listeners = append(listeners, alyvix.GatewayListener())
 	}
 	return listeners
@@ -750,5 +776,22 @@ func (r *NetEyeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&neteye.NetEye{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Watches(&neteye.NetEyeProcedureGate{}, handler.EnqueueRequestsFromMapFunc(r.netEyesForProcedureGate)).
+		Watches(&neteye.NetEyeTenant{}, handler.EnqueueRequestsFromMapFunc(r.netEyesForTenant), builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Complete(r)
+}
+
+// netEyesForTenant maps a change of a tenant to the NetEye resources: a tenant
+// that enables the Alyvix feature module needs the RDP listener of the shared
+// Gateway.
+func (r *NetEyeReconciler) netEyesForTenant(ctx context.Context, _ client.Object) []reconcile.Request {
+	list := &neteye.NetEyeList{}
+	if err := r.List(ctx, list, client.InNamespace(neteye.NetEyeNamespace)); err != nil {
+		ctrl.LoggerFrom(ctx).Error(err, "list NetEye resources after a change of a NetEye tenant")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(list.Items))
+	for i := range list.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
+	}
+	return requests
 }

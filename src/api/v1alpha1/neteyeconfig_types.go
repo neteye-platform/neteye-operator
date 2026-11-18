@@ -278,56 +278,6 @@ type NetEyeElasticStackSpec struct {
 	Telemetry *NetEyeTelemetrySpec `json:"telemetry,omitempty"`
 }
 
-// NetEyeAlyvixSpec configures the services of the Alyvix feature module.
-type NetEyeAlyvixSpec struct {
-	// RDP configures the RDP access to the Alyvix sessions through Apache
-	// Guacamole.
-	// +kubebuilder:validation:Optional
-	RDP *NetEyeAlyvixRDPSpec `json:"rdp,omitempty"`
-}
-
-// NetEyeAlyvixRDPSpec configures the RDP access to the Alyvix sessions. When
-// it is enabled, every tenant runs its own Apache Guacamole web application
-// and proxy daemon (guacd) in the tenant namespace, and the shared Gateway
-// exposes the web application of each tenant on its own hostname. The
-// Guacamole JSON authentication key of a tenant is generated once, in a Secret
-// of the tenant namespace.
-type NetEyeAlyvixRDPSpec struct {
-	// Enabled deploys the RDP access in every tenant namespace.
-	// +kubebuilder:default=false
-	Enabled bool `json:"enabled"`
-
-	// Ports lists the TCP ports of the RDP service on the Alyvix nodes. The
-	// proxy daemon may open connections to these ports on any address. The
-	// default is 3389.
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=16
-	// +kubebuilder:validation:items:Minimum=1
-	// +kubebuilder:validation:items:Maximum=65535
-	// +listType=set
-	Ports []int32 `json:"ports,omitempty"`
-}
-
-// DefaultAlyvixRDPPort is the TCP port of the RDP service on the Alyvix nodes
-// when spec.alyvix.rdp.ports is unset.
-const DefaultAlyvixRDPPort int32 = 3389
-
-// AlyvixRDPEnabled reports whether the RDP access to the Alyvix sessions is
-// part of the desired state.
-func (s *NetEyeSpec) AlyvixRDPEnabled() bool {
-	return s != nil && s.Alyvix != nil && s.Alyvix.RDP != nil && s.Alyvix.RDP.Enabled
-}
-
-// EffectivePorts returns the RDP ports, applying the default for an unset
-// list.
-func (s *NetEyeAlyvixRDPSpec) EffectivePorts() []int32 {
-	if s == nil || len(s.Ports) == 0 {
-		return []int32{DefaultAlyvixRDPPort}
-	}
-	return append([]int32(nil), s.Ports...)
-}
-
 // NetEyeTelemetrySpec configures the shared telemetry components. Both
 // components are reconciled whenever NetEyeElasticStackSpec.Enabled is true.
 type NetEyeTelemetrySpec struct {
@@ -614,11 +564,6 @@ type NetEyeSpec struct {
 	// OTel Collector and EDOT Gateway. Images are resolved from release data.
 	// +kubebuilder:validation:Optional
 	ElasticStack *NetEyeElasticStackSpec `json:"elasticStack,omitempty"`
-
-	// Alyvix configures the services of the Alyvix feature module that run in
-	// the cluster. Images are resolved from release data.
-	// +kubebuilder:validation:Optional
-	Alyvix *NetEyeAlyvixSpec `json:"alyvix,omitempty"`
 
 	// CABundle selects the optional ConfigMap with extra PEM CA certificates
 	// that Keycloak and the OpenTelemetry Collector trust in addition to their

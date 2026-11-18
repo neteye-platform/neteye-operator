@@ -1282,11 +1282,6 @@ func (in *NetEyeSpec) DeepCopyInto(out *NetEyeSpec) {
 		*out = new(NetEyeElasticStackSpec)
 		(*in).DeepCopyInto(*out)
 	}
-	if in.Alyvix != nil {
-		in, out := &in.Alyvix, &out.Alyvix
-		*out = new(NetEyeAlyvixSpec)
-		(*in).DeepCopyInto(*out)
-	}
 	if in.CABundle != nil {
 		in, out := &in.CABundle, &out.CABundle
 		*out = new(NetEyeConfigMapKeySelector)
@@ -1421,6 +1416,11 @@ func (in *NetEyeTenantSpec) DeepCopyInto(out *NetEyeTenantSpec) {
 		in, out := &in.UseProcedureGates, &out.UseProcedureGates
 		*out = new(bool)
 		**out = **in
+	}
+	if in.Alyvix != nil {
+		in, out := &in.Alyvix, &out.Alyvix
+		*out = new(NetEyeAlyvixSpec)
+		(*in).DeepCopyInto(*out)
 	}
 }
 
