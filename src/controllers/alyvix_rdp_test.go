@@ -267,6 +267,44 @@ func TestNetEyeTenantRDPAccessWaitsForTheNamespace(t *testing.T) {
 	}
 }
 
+func TestNetEyeTenantRDPAccessWaitsForTheRoutePolicy(t *testing.T) {
+	foreign := tenantRoutePolicyObjects()
+	foreign[0].SetOwnerReferences(nil)
+	unmanaged := rdpNetEye()
+	unmanaged.Spec.Gateway.Managed = ptr.To(false)
+	for name, tc := range map[string]struct {
+		policy     []client.Object
+		ne         *neteye.NetEye
+		wantState  componentState
+		wantReason string
+	}{
+		"missing":           {nil, rdpNetEye(), componentStateProgressing, "WaitingForRoutePolicy"},
+		"foreign":           {foreign, rdpNetEye(), componentStateDegraded, "RoutePolicyConflict"},
+		"enforced":          {tenantRoutePolicyObjects(), rdpNetEye(), componentStateProgressing, alyvix.ReasonDeploymentNotAvailable},
+		"unmanaged Gateway": {nil, unmanaged, componentStateProgressing, alyvix.ReasonDeploymentNotAvailable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			objects := append(tenantNamespacePolicyObjects(), tc.policy...)
+			r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), alyvixTenant(testTenant, true), tc.ne)...)
+			r.RDPComponent = alyvix.NewRDPComponent(c)
+			reconcileTenant(t, r)
+
+			result := rdpResult(t, r, c, testTenant)
+			if result.State != tc.wantState || result.Reason != tc.wantReason {
+				t.Errorf("alyvix-rdp component = %#v, want %s with reason %s", result, tc.wantState, tc.wantReason)
+			}
+			if tc.wantReason == "WaitingForRoutePolicy" {
+				// The install of the tenant names the policy it waits for.
+				assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseInstalling, "alyvix-rdp: waiting for the ValidatingAdmissionPolicy \""+TenantRoutePolicyName+"\"")
+			}
+			// The workloads are deployed meanwhile; only the readiness waits.
+			if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.GuacamoleName}, &appsv1.Deployment{}); err != nil {
+				t.Errorf("guacamole Deployment: %v", err)
+			}
+		})
+	}
+}
+
 func TestReconcileAlyvixRDPAddsTheTenantListenerAndCertificate(t *testing.T) {
 	c, s := startEnvtest(t)
 	ctx := context.Background()
@@ -408,39 +446,111 @@ func TestReconcileAlyvixRDPCertificateFailureDoesNotStopTheOtherResources(t *tes
 	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Status.Phase == neteye.PhaseReady || !strings.Contains(current.Status.Message, "Alyvix RDP") {
-		t.Errorf("phase = %q, message = %q, want the Alyvix certificate failure reported", current.Status.Phase, current.Status.Message)
+	// The install is not finished, so its phase and progress message stay,
+	// followed by the certificate failure.
+	if current.Status.Phase != neteye.PhaseInstalling || !strings.HasPrefix(current.Status.Message, "Installing NetEye") || !strings.Contains(current.Status.Message, "Alyvix RDP") {
+		t.Errorf("phase = %q, message = %q, want the install with the Alyvix certificate failure reported", current.Status.Phase, current.Status.Message)
 	}
 	if owners := requireExists(ctx, t, c, certificateGVK, ns, alyvix.TLSCertificateName).GetOwnerReferences(); len(owners) != 1 || owners[0].UID != "other-uid" {
 		t.Errorf("certificate owners = %#v, want the other controller kept", owners)
 	}
 }
 
-func TestDeleteGatewayRunsEveryDeletion(t *testing.T) {
-	scheme := tenantScheme(t)
-	owner := metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "neteye", UID: "neteye-uid", Controller: ptr.To(true)}
+// gatewayCleanupClient is a fake cluster with the redirect route, the Alyvix
+// RDP certificate and the Gateway of the NetEye, where the deletion of the
+// given kind fails.
+func gatewayCleanupClient(t *testing.T, owner metav1.OwnerReference, failingKind string) client.Client {
+	t.Helper()
 	owned := func(gvk schema.GroupVersionKind, name string) *unstructured.Unstructured {
 		object := newUnstructured(gvk, keycloak.WorkloadNamespace, name)
 		object.SetOwnerReferences([]metav1.OwnerReference{owner})
 		return object
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).
+	return fake.NewClientBuilder().WithScheme(tenantScheme(t)).
 		WithObjects(owned(httpRouteGVK, resources.HTTPToHTTPSRedirectRouteName), owned(certificateGVK, alyvix.TLSCertificateName), owned(gatewayGVK, "neteye")).
 		WithInterceptorFuncs(interceptor.Funcs{Delete: func(ctx context.Context, inner client.WithWatch, object client.Object, opts ...client.DeleteOption) error {
-			if object.GetObjectKind().GroupVersionKind().Kind == "Certificate" {
-				return errors.New("certificate deletion failed")
+			if object.GetObjectKind().GroupVersionKind().Kind == failingKind {
+				return errors.New(strings.ToLower(failingKind) + " deletion failed")
 			}
 			return inner.Delete(ctx, object, opts...)
 		}}).Build()
+}
+
+func requireDeleted(t *testing.T, c client.Client, objects ...*unstructured.Unstructured) {
+	t.Helper()
+	for _, object := range objects {
+		if err := c.Get(context.Background(), client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
+			t.Errorf("%s %s err = %v, want deleted", object.GetKind(), object.GetName(), err)
+		}
+	}
+}
+
+func TestDeleteGatewayRunsEveryDeletion(t *testing.T) {
+	owner := metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "neteye", UID: "neteye-uid", Controller: ptr.To(true)}
+	c := gatewayCleanupClient(t, owner, "HTTPRoute")
 
 	err := deleteGateway(context.Background(), c, owner)
-	if err == nil || !strings.Contains(err.Error(), "certificate deletion failed") {
-		t.Errorf("err = %v, want the certificate failure", err)
+	if err == nil || !strings.Contains(err.Error(), "httproute deletion failed") {
+		t.Errorf("err = %v, want the route failure", err)
 	}
-	for _, object := range []*unstructured.Unstructured{newUnstructured(httpRouteGVK, keycloak.WorkloadNamespace, resources.HTTPToHTTPSRedirectRouteName), newUnstructured(gatewayGVK, keycloak.WorkloadNamespace, "neteye")} {
-		if err := c.Get(context.Background(), client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
-			t.Errorf("%s %s err = %v, want deleted although the certificate deletion failed", object.GetKind(), object.GetName(), err)
-		}
+	requireDeleted(t, c, newUnstructured(gatewayGVK, keycloak.WorkloadNamespace, "neteye"))
+}
+
+// An Alyvix certificate that cannot be deleted must not stop the cleanup of the
+// unmanaged Gateway, nor the component graph: it is reported apart, as with the
+// managed Gateway.
+func TestUnmanagedGatewayReportsTheAlyvixCertificateFailureApart(t *testing.T) {
+	ne := rdpNetEye()
+	ne.UID = "neteye-uid"
+	ne.Spec.Gateway.Managed = ptr.To(false)
+	c := gatewayCleanupClient(t, ownerReferenceFor(ne), "Certificate")
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: tenantScheme(t)}
+
+	result, alyvixRDPErr, err := r.reconcileBaseResources(context.Background(), ne)
+	if err != nil || shouldReturn(result, err) {
+		t.Fatalf("result = %v, err = %v, want the reconciliation to go on", result, err)
+	}
+	if alyvixRDPErr == nil || !strings.Contains(alyvixRDPErr.Error(), "certificate deletion failed") {
+		t.Errorf("Alyvix RDP error = %v, want the certificate failure", alyvixRDPErr)
+	}
+	requireDeleted(t, c, newUnstructured(httpRouteGVK, keycloak.WorkloadNamespace, resources.HTTPToHTTPSRedirectRouteName), newUnstructured(gatewayGVK, keycloak.WorkloadNamespace, "neteye"))
+}
+
+func TestUnmanagedGatewayDeletesTheAlyvixCertificateWhenTheCleanupFails(t *testing.T) {
+	ne := rdpNetEye()
+	ne.UID = "neteye-uid"
+	ne.Spec.Gateway.Managed = ptr.To(false)
+	c := gatewayCleanupClient(t, ownerReferenceFor(ne), "Gateway")
+	r := &NetEyeReconciler{Client: c, Log: logr.Discard(), Scheme: tenantScheme(t)}
+
+	if _, _, err := r.reconcileBaseResources(context.Background(), ne); err == nil || !strings.Contains(err.Error(), "gateway deletion failed") {
+		t.Errorf("err = %v, want the Gateway failure", err)
+	}
+	requireDeleted(t, c, newUnstructured(certificateGVK, keycloak.WorkloadNamespace, alyvix.TLSCertificateName))
+}
+
+func TestAlyvixRDPFailureKeepsAnUnfinishedProcedure(t *testing.T) {
+	failure := errors.New("denied")
+	for name, tc := range map[string]struct {
+		phase       neteye.NetEyePhase
+		message     string
+		err         error
+		wantPhase   neteye.NetEyePhase
+		wantMessage string
+	}{
+		"no failure": {neteye.PhaseReady, "All components are ready", nil, neteye.PhaseReady, "All components are ready"},
+		"ready":      {neteye.PhaseReady, "All components are ready", failure, neteye.PhaseNotReady, "failed to reconcile the certificate of the Alyvix RDP access: denied"},
+		"upgrade": {neteye.PhaseUpgrading, "Upgrading to NetEye 4.52; waiting for procedure gates of: identity", failure, neteye.PhaseUpgrading,
+			"Upgrading to NetEye 4.52; waiting for procedure gates of: identity; failed to reconcile the certificate of the Alyvix RDP access: denied"},
+		"failed": {neteye.PhaseFailed, "Check services status for details", failure, neteye.PhaseFailed,
+			"Check services status for details; failed to reconcile the certificate of the Alyvix RDP access: denied"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			phase, message := withAlyvixRDPFailure(tc.phase, tc.message, tc.err)
+			if phase != tc.wantPhase || message != tc.wantMessage {
+				t.Errorf("phase, message = %q, %q; want %q, %q", phase, message, tc.wantPhase, tc.wantMessage)
+			}
+		})
 	}
 }
 

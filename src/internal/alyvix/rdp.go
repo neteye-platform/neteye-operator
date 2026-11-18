@@ -246,26 +246,37 @@ func (c *RDPComponent) Ensure(ctx context.Context, in RDPInputs, owner metav1.Ow
 // Delete removes the RDP access of a tenant. The Secret with the JSON
 // authentication key stays, so the key does not change when the access is
 // enabled again; the garbage collector removes it with the tenant.
+//
+// Every object is tried even if another one fails, so a route that cannot be
+// deleted does not keep the workloads that serve it.
 func (c *RDPComponent) Delete(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
+	var errs []error
 	for _, resource := range resourceInventory() {
-		object := &unstructured.Unstructured{}
-		object.SetGroupVersionKind(resource.gvk)
-		if err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resource.name}, object); err != nil {
-			if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
-				continue
-			}
-			return err
+		if err := c.deleteOwned(ctx, namespace, resource, owner); err != nil {
+			errs = append(errs, fmt.Errorf("delete %s %s: %w", resource.gvk.Kind, resource.name, err))
 		}
-		if !controlledBy(object, owner) {
-			continue
+	}
+	return errors.Join(errs...)
+}
+
+func (c *RDPComponent) deleteOwned(ctx context.Context, namespace string, resource managedResource, owner metav1.OwnerReference) error {
+	object := &unstructured.Unstructured{}
+	object.SetGroupVersionKind(resource.gvk)
+	if err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: resource.name}, object); err != nil {
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return nil
 		}
-		// Delete only the object that passed the ownership check: if it was
-		// replaced in between, the precondition fails and the next pass checks
-		// the new one.
-		uid := object.GetUID()
-		if err := c.client.Delete(ctx, object, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
+		return err
+	}
+	if !controlledBy(object, owner) {
+		return nil
+	}
+	// Delete only the object that passed the ownership check: if it was
+	// replaced in between, the precondition fails and the next pass checks the
+	// new one.
+	uid := object.GetUID()
+	if err := c.client.Delete(ctx, object, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
+		return err
 	}
 	return nil
 }

@@ -226,15 +226,13 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 			log.Info("NetEye procedure completed", "procedure", procedure, "fromVersion", previous, "version", ne.Spec.Version)
 		}
 	}
+	phase, message = withAlyvixRDPFailure(phase, message, alyvixRDPErr)
 	setPhase(ne, phase, message)
 	requeueAfter := earliestComponentRequeue(results)
-	// The certificate of the Alyvix RDP access concerns only the tenants with
-	// Alyvix: it is retried on its own and does not stop the other components.
-	if alyvixRDPErr != nil {
-		setPhase(ne, neteye.PhaseNotReady, fmt.Sprintf("failed to reconcile the certificate of the Alyvix RDP access: %v", alyvixRDPErr))
-		if requeueAfter == 0 || requeueAfter > r.failureRequeue() {
-			requeueAfter = r.failureRequeue()
-		}
+	// The certificate of the Alyvix RDP access is retried on its own and does
+	// not stop the other components.
+	if alyvixRDPErr != nil && (requeueAfter == 0 || requeueAfter > r.failureRequeue()) {
+		requeueAfter = r.failureRequeue()
 	}
 	if requeueAfter == 0 {
 		requeueAfter = r.reconciliationRequeue()
@@ -248,6 +246,21 @@ func (r *NetEyeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 		log.Info("NetEye is ready", "namespace", ne.Namespace, "name", ne.Name, "requeueAfter", requeueAfter)
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// withAlyvixRDPFailure adds a failure of the certificate of the Alyvix RDP
+// access to the phase of the components. The failure concerns only the tenants
+// with Alyvix: it makes a ready platform NotReady, but it does not replace an
+// unfinished install or upgrade, or a failure, whose message comes first.
+func withAlyvixRDPFailure(phase neteye.NetEyePhase, message string, err error) (neteye.NetEyePhase, string) {
+	if err == nil {
+		return phase, message
+	}
+	failure := fmt.Sprintf("failed to reconcile the certificate of the Alyvix RDP access: %v", err)
+	if phase == neteye.PhaseReady {
+		return neteye.PhaseNotReady, failure
+	}
+	return phase, message + "; " + failure
 }
 
 // lifecycleNodesFor declares what each component waits for. The collector's OIDC extension fails to start until
@@ -437,12 +450,19 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 	issuerRef := issuerRefFor(ne)
 	owner := ownerReferenceFor(ne)
 	if !gateway.EffectiveManaged() {
+		// Without the Gateway there is no Alyvix RDP listener, so its
+		// certificate goes too. As with the managed Gateway, a failure
+		// concerns only the RDP access and does not stop the cleanup.
+		alyvixRDPErr := r.reconcileAlyvixRDPCertificate(ctx, false, issuerRef, owner)
+		if alyvixRDPErr != nil {
+			log.Error(alyvixRDPErr, "failed to delete the certificate of the Alyvix RDP access", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		}
 		if err := deleteGateway(ctx, r.Client, owner); err != nil {
 			log.Error(err, "failed to delete gateway resources", "namespace", keycloak.WorkloadNamespace, "gatewayName", gateway.Name, "requeueAfter", r.failureRequeue())
 			setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to delete gateway resources in namespace %q: %v", keycloak.WorkloadNamespace, err))
-			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil, fmt.Errorf("delete gateway: %w", err)
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, alyvixRDPErr, fmt.Errorf("delete gateway: %w", err)
 		}
-		return ctrl.Result{}, nil, nil
+		return ctrl.Result{}, alyvixRDPErr, nil
 	}
 	if err := resources.EnsureIssuerExists(ctx, r.Client, keycloak.WorkloadNamespace, issuerRef); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -516,7 +536,6 @@ func (r *NetEyeReconciler) reconcileAlyvixRDPCertificate(ctx context.Context, in
 func deleteGateway(ctx context.Context, c client.Client, owner metav1.OwnerReference) error {
 	return errors.Join(
 		resources.DeleteHTTPRoute(ctx, c, keycloak.WorkloadNamespace, resources.HTTPToHTTPSRedirectRouteName, owner),
-		resources.DeleteCertificate(ctx, c, keycloak.WorkloadNamespace, alyvix.TLSCertificateName, owner),
 		resources.DeleteOwnedGateways(ctx, c, keycloak.WorkloadNamespace, owner),
 	)
 }

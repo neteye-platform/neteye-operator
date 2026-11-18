@@ -19,10 +19,13 @@ import (
 var ErrDeploymentStalled = errors.New("deployment exceeded its progress deadline")
 
 // IsDeploymentReady reports ready only after the controller observed the desired
-// generation, every desired replica is both ready and updated, and no replica of
-// an earlier revision is left. During a rollout a ready replica can still be an
-// old one while the updated replica is not ready yet. A rollout the Deployment
-// controller reports as ProgressDeadlineExceeded returns ErrDeploymentStalled.
+// generation, every desired replica is both ready and updated, and no
+// non-terminating replica of an earlier revision is left. During a rollout a
+// ready replica can still be an old one while the updated replica is not ready
+// yet. status.replicas does not count terminating pods, so an old pod that is
+// shutting down does not delay readiness; it no longer serves as a ready
+// endpoint. A rollout the Deployment controller reports as
+// ProgressDeadlineExceeded returns ErrDeploymentStalled.
 func IsDeploymentReady(ctx context.Context, c client.Client, namespace, name string) (bool, string, error) {
 	deployment := &appsv1.Deployment{}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, deployment); err != nil {
