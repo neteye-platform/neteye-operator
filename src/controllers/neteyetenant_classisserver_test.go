@@ -21,20 +21,20 @@ import (
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
-func fleetServerTenant(mode neteye.TenantDatabaseType) *neteye.NetEyeTenant {
+func classisServerTenant(mode neteye.TenantDatabaseType) *neteye.NetEyeTenant {
 	tenant := tenantResource()
 	tenant.Spec.Database = &neteye.TenantDatabaseSpec{Type: mode}
-	tenant.Spec.FleetServer = &neteye.NetEyeFleetServerSpec{
+	tenant.Spec.ClassisServer = &neteye.NetEyeClassisServerSpec{
 		Enabled:              true,
 		Image:                "ghcr.io/neteye-platform/classis-server:1.0.0",
-		Blobs:                neteye.FleetServerBlobsSpec{Endpoint: "https://s3.example.com", Bucket: "classis", Region: "us-east-1", Prefix: "tenant/", CredentialsSecretName: "s3"},
+		Blobs:                neteye.ClassisServerBlobsSpec{Endpoint: "https://s3.example.com", Bucket: "classis", Region: "us-east-1", Prefix: "tenant/", CredentialsSecretName: "s3"},
 		AdminUsersSecretName: "admin",
 		LogLevel:             "info",
-		Network:              neteye.FleetServerNetworkSpec{AdminIngressCIDRs: []string{"10.0.1.0/24"}},
+		Network:              neteye.ClassisServerNetworkSpec{AdminIngressCIDRs: []string{"10.0.1.0/24"}},
 	}
 	if mode == neteye.TenantDatabaseExternal {
 		tenant.Spec.Database.Hostname = "db.example.com"
-		tenant.Spec.FleetServer.Database = &neteye.FleetServerDatabaseSpec{External: &neteye.FleetServerExternalDatabaseSpec{DBName: "classis", User: "classis", CredentialsSecretName: "db"}}
+		tenant.Spec.ClassisServer.Database = &neteye.ClassisServerDatabaseSpec{External: &neteye.ClassisServerExternalDatabaseSpec{DBName: "classis", User: "classis", CredentialsSecretName: "db"}}
 	}
 	return tenant
 }
@@ -55,7 +55,7 @@ func cnpgSystemNamespaceObject() *corev1.Namespace {
 	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cnpg-system"}}
 }
 
-func fleetServerSecrets(names ...string) []client.Object {
+func classisServerSecrets(names ...string) []client.Object {
 	objects := make([]client.Object, 0, len(names))
 	for _, name := range names {
 		objects = append(objects, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: name}})
@@ -63,8 +63,8 @@ func fleetServerSecrets(names ...string) []client.Object {
 	return objects
 }
 
-func TestFleetServerDeploymentIsHardenedAndStateless(t *testing.T) {
-	d := fleetServerDeployment(fleetServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets")
+func TestClassisServerDeploymentIsHardenedAndStateless(t *testing.T) {
+	d := classisServerDeployment(classisServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets")
 	if d.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType || *d.Spec.Replicas != 1 {
 		t.Errorf("strategy = %v replicas = %d, want Recreate with one replica", d.Spec.Strategy.Type, *d.Spec.Replicas)
 	}
@@ -98,8 +98,8 @@ func TestFleetServerDeploymentIsHardenedAndStateless(t *testing.T) {
 
 // The Server reads its environment under CLASSIS_SERVER__ since the product
 // was renamed; the old FLEET_SERVER__ prefix is ignored by it.
-func TestFleetServerDeploymentUsesTheClassisNames(t *testing.T) {
-	d := fleetServerDeployment(fleetServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets")
+func TestClassisServerDeploymentUsesTheClassisNames(t *testing.T) {
+	d := classisServerDeployment(classisServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets")
 	container := d.Spec.Template.Spec.Containers[0]
 	var accessKey bool
 	for _, env := range container.Env {
@@ -116,15 +116,15 @@ func TestFleetServerDeploymentUsesTheClassisNames(t *testing.T) {
 	if len(container.Args) != 2 || container.Args[0] != "--config" || container.Args[1] != "/etc/classis/config/server.toml" {
 		t.Errorf("args = %v, want --config on the mounted server.toml", container.Args)
 	}
-	for _, name := range []string{string(fleetServerComponentID), string(fleetServerDatabaseComponentID), fleetServerConfigChecksumAnnotation} {
+	for _, name := range []string{string(classisServerComponentID), string(classisServerDatabaseComponentID), classisServerConfigVersionAnnotation, classisServerSecretsVersionsAnnotation} {
 		if strings.Contains(name, "fleet") {
 			t.Errorf("%q still carries the old product name", name)
 		}
 	}
 }
 
-func TestFleetServerConfigNamesTheFilesOfTheTwoDatabaseModes(t *testing.T) {
-	internal := fleetServerConfig(fleetServerTenant(neteye.TenantDatabaseLocal))
+func TestClassisServerConfigNamesTheFilesOfTheTwoDatabaseModes(t *testing.T) {
+	internal := classisServerConfig(classisServerTenant(neteye.TenantDatabaseLocal))
 	for _, want := range []string{`host = "classis-server-db-rw"`, `store = "postgres"`, `store = "s3"`, `tls = true`, `endpoint = "https://s3.example.com"`, `listen = "0.0.0.0:4321"`, "[log]\nformat = \"json\""} {
 		if !strings.Contains(internal, want) {
 			t.Errorf("internal config lacks %q:\n%s", want, internal)
@@ -133,21 +133,21 @@ func TestFleetServerConfigNamesTheFilesOfTheTwoDatabaseModes(t *testing.T) {
 	if strings.Contains(internal, "[health]") {
 		t.Errorf("config has a [health] section:\n%s", internal)
 	}
-	if external := fleetServerConfig(fleetServerTenant(neteye.TenantDatabaseExternal)); !strings.Contains(external, `host = "db.example.com"`) || !strings.Contains(external, "port = 5432") {
+	if external := classisServerConfig(classisServerTenant(neteye.TenantDatabaseExternal)); !strings.Contains(external, `host = "db.example.com"`) || !strings.Contains(external, "port = 5432") {
 		t.Errorf("external config:\n%s", external)
 	}
 }
 
-func TestInternalFleetServerCreatesTheDatabaseAndTheServer(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseLocal)
-	objects := append([]client.Object{plainNamespace(testTenant), cnpgSystemNamespaceObject(), tenant, installedCloudNativePG()}, fleetServerSecrets("admin", "s3", "classis-server-db-app", "classis-server-db-ca")...)
+func TestInternalClassisServerCreatesTheDatabaseAndTheServer(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseLocal)
+	objects := append([]client.Object{plainNamespace(testTenant), cnpgSystemNamespaceObject(), tenant, installedCloudNativePG()}, classisServerSecrets("admin", "s3", "classis-server-db-app", "classis-server-db-ca")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 	ctx := context.Background()
 
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
-	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: fleetServerDatabaseName}, cluster); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: classisServerDatabaseName}, cluster); err != nil {
 		t.Fatalf("CloudNativePG cluster: %v", err)
 	}
 	if instances, _, _ := unstructured.NestedInt64(cluster.Object, "spec", "instances"); instances != 2 {
@@ -157,11 +157,11 @@ func TestInternalFleetServerCreatesTheDatabaseAndTheServer(t *testing.T) {
 		t.Errorf("imageName = %q, want PostgreSQL 18", image)
 	}
 	// The database is not ready yet, so the server waits for it.
-	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: fleetServerName}, &appsv1.Deployment{}); err == nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: classisServerName}, &appsv1.Deployment{}); err == nil {
 		t.Error("the Deployment exists before the database is ready")
 	}
 	status := getTenant(t, c, testTenant, testTenant).Status.Components
-	if status[string(fleetServerDatabaseComponentID)].Status != neteye.ComponentStateProgressing || status[string(fleetServerComponentID)].Status != neteye.ComponentStateBlocked {
+	if status[string(classisServerDatabaseComponentID)].Status != neteye.ComponentStateProgressing || status[string(classisServerComponentID)].Status != neteye.ComponentStateBlocked {
 		t.Errorf("components = %#v", status)
 	}
 
@@ -172,11 +172,11 @@ func TestInternalFleetServerCreatesTheDatabaseAndTheServer(t *testing.T) {
 	}
 	reconcileTenant(t, r)
 	for _, object := range []client.Object{&appsv1.Deployment{}, &corev1.Service{}, &corev1.ConfigMap{}} {
-		if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: fleetServerName}, object); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: classisServerName}, object); err != nil {
 			t.Errorf("%T: %v", object, err)
 		}
 	}
-	for _, name := range []string{fleetServerName, fleetServerDatabaseName} {
+	for _, name := range []string{classisServerName, classisServerDatabaseName} {
 		policy := &unstructured.Unstructured{}
 		policy.SetGroupVersionKind(resources.NetworkPolicyGVK())
 		if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: name}, policy); err != nil {
@@ -185,52 +185,52 @@ func TestInternalFleetServerCreatesTheDatabaseAndTheServer(t *testing.T) {
 	}
 }
 
-func TestExternalFleetServerCreatesNoDatabase(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseExternal)
-	objects := append([]client.Object{plainNamespace(testTenant), cnpgSystemNamespaceObject(), tenant}, fleetServerSecrets("admin", "s3", "db")...)
+func TestExternalClassisServerCreatesNoDatabase(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseExternal)
+	objects := append([]client.Object{plainNamespace(testTenant), cnpgSystemNamespaceObject(), tenant}, classisServerSecrets("admin", "s3", "db")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 	ctx := context.Background()
 
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
-	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: fleetServerDatabaseName}, cluster); err == nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: classisServerDatabaseName}, cluster); err == nil {
 		t.Error("an internal database was created for an external one")
 	}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: fleetServerName}, &appsv1.Deployment{}); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: classisServerName}, &appsv1.Deployment{}); err != nil {
 		t.Errorf("Deployment: %v", err)
 	}
 }
 
-func TestFleetServerWaitsForItsSecrets(t *testing.T) {
-	r, c := newTenantReconciler(t, plainNamespace(testTenant), fleetServerTenant(neteye.TenantDatabaseExternal))
+func TestClassisServerWaitsForItsSecrets(t *testing.T) {
+	r, c := newTenantReconciler(t, plainNamespace(testTenant), classisServerTenant(neteye.TenantDatabaseExternal))
 	reconcileTenant(t, r)
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: fleetServerName}, &appsv1.Deployment{}); err == nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: classisServerName}, &appsv1.Deployment{}); err == nil {
 		t.Error("the Deployment exists without its Secrets")
 	}
-	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(fleetServerComponentID)]
+	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(classisServerComponentID)]
 	if component.Reason != "WaitingForSecrets" || !strings.Contains(component.Message, "admin") {
 		t.Errorf("component = %#v", component)
 	}
 }
 
-func TestDisabledFleetServerLosesItsDeploymentOnly(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseExternal)
-	objects := append([]client.Object{plainNamespace(testTenant), tenant}, fleetServerSecrets("admin", "s3", "db")...)
+func TestDisabledClassisServerLosesItsDeploymentOnly(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseExternal)
+	objects := append([]client.Object{plainNamespace(testTenant), tenant}, classisServerSecrets("admin", "s3", "db")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 	ctx := context.Background()
 
 	current := getTenant(t, c, testTenant, testTenant)
-	current.Spec.FleetServer.Enabled = false
+	current.Spec.ClassisServer.Enabled = false
 	if err := c.Update(ctx, current); err != nil {
 		t.Fatal(err)
 	}
 	reconcileTenant(t, r)
-	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: fleetServerName}, &appsv1.Deployment{}); err == nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: classisServerName}, &appsv1.Deployment{}); err == nil {
 		t.Error("the Deployment of a disabled server remains")
 	}
-	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: fleetServerName}, &corev1.Service{}); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: classisServerName}, &corev1.Service{}); err != nil {
 		t.Errorf("the Service was removed: %v", err)
 	}
 }
@@ -244,9 +244,9 @@ func cloudNativePGExtension(t *testing.T, c client.Client) error {
 
 // The first tenant with an internal database installs the operator, and its
 // database waits until OLM reports the operator installed.
-func TestInternalFleetServerInstallsCloudNativePGAndWaitsForIt(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseLocal)
-	objects := append([]client.Object{plainNamespace(testTenant), cnpgSystemNamespaceObject(), tenant}, fleetServerSecrets("admin", "s3", "classis-server-db-app", "classis-server-db-ca")...)
+func TestInternalClassisServerInstallsCloudNativePGAndWaitsForIt(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseLocal)
+	objects := append([]client.Object{plainNamespace(testTenant), cnpgSystemNamespaceObject(), tenant}, classisServerSecrets("admin", "s3", "classis-server-db-app", "classis-server-db-ca")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 	if err := cloudNativePGExtension(t, c); err != nil {
@@ -254,10 +254,10 @@ func TestInternalFleetServerInstallsCloudNativePGAndWaitsForIt(t *testing.T) {
 	}
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: fleetServerDatabaseName}, cluster); err == nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: classisServerDatabaseName}, cluster); err == nil {
 		t.Error("the database cluster was created before the operator was installed")
 	}
-	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(fleetServerDatabaseComponentID)]
+	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(classisServerDatabaseComponentID)]
 	if component.Reason != "WaitingForCloudNativePG" {
 		t.Errorf("component = %#v, want WaitingForCloudNativePG", component)
 	}
@@ -266,9 +266,9 @@ func TestInternalFleetServerInstallsCloudNativePGAndWaitsForIt(t *testing.T) {
 // neteye-setup creates the cnpg-system namespace, as for Keycloak: while it is
 // missing the database waits, and the operator creates neither the namespace
 // nor the ClusterExtension.
-func TestInternalFleetServerWaitsForTheNamespaceThatSetupCreates(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseLocal)
-	objects := append([]client.Object{plainNamespace(testTenant), tenant}, fleetServerSecrets("admin", "s3", "classis-server-db-app", "classis-server-db-ca")...)
+func TestInternalClassisServerWaitsForTheNamespaceThatSetupCreates(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseLocal)
+	objects := append([]client.Object{plainNamespace(testTenant), tenant}, classisServerSecrets("admin", "s3", "classis-server-db-app", "classis-server-db-ca")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 	if err := cloudNativePGExtension(t, c); err == nil {
@@ -277,7 +277,7 @@ func TestInternalFleetServerWaitsForTheNamespaceThatSetupCreates(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "cnpg-system"}, &corev1.Namespace{}); err == nil {
 		t.Error("the operator created the cnpg-system namespace")
 	}
-	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(fleetServerDatabaseComponentID)]
+	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(classisServerDatabaseComponentID)]
 	if component.Reason != "WaitingForCNPGNamespace" {
 		t.Errorf("component = %#v, want WaitingForCNPGNamespace", component)
 	}
@@ -287,9 +287,9 @@ func TestInternalFleetServerWaitsForTheNamespaceThatSetupCreates(t *testing.T) {
 }
 
 // An external database installs nothing.
-func TestExternalFleetServerInstallsNoCloudNativePG(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseExternal)
-	objects := append([]client.Object{plainNamespace(testTenant), tenant}, fleetServerSecrets("admin", "s3", "db")...)
+func TestExternalClassisServerInstallsNoCloudNativePG(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseExternal)
+	objects := append([]client.Object{plainNamespace(testTenant), tenant}, classisServerSecrets("admin", "s3", "db")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 	if err := cloudNativePGExtension(t, c); err == nil {
@@ -300,12 +300,12 @@ func TestExternalFleetServerInstallsNoCloudNativePG(t *testing.T) {
 // The operator belongs to the cluster: disabling the server leaves it, and a
 // second tenant reuses it instead of installing another.
 func TestCloudNativePGStaysWhenTheServerIsDisabled(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseLocal)
-	objects := append([]client.Object{plainNamespace(testTenant), cnpgSystemNamespaceObject(), tenant}, fleetServerSecrets("admin", "s3", "classis-server-db-app", "classis-server-db-ca")...)
+	tenant := classisServerTenant(neteye.TenantDatabaseLocal)
+	objects := append([]client.Object{plainNamespace(testTenant), cnpgSystemNamespaceObject(), tenant}, classisServerSecrets("admin", "s3", "classis-server-db-app", "classis-server-db-ca")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 	current := getTenant(t, c, testTenant, testTenant)
-	current.Spec.FleetServer.Enabled = false
+	current.Spec.ClassisServer.Enabled = false
 	if err := c.Update(context.Background(), current); err != nil {
 		t.Fatal(err)
 	}
@@ -326,15 +326,15 @@ func TestCloudNativePGStaysWhenTheServerIsDisabled(t *testing.T) {
 // The server speaks plain HTTP behind a proxy and authenticates no agent: no
 // Certificate is requested, and the Deployment is created once the Secrets of the
 // admin users and of S3 exist, with no Secret for any key of the agents.
-func TestFleetServerNeedsNoCertificateAndNoAgentKey(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseExternal)
-	objects := append([]client.Object{plainNamespace(testTenant), tenant}, fleetServerSecrets("admin", "s3", "db")...)
+func TestClassisServerNeedsNoCertificateAndNoAgentKey(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseExternal)
+	objects := append([]client.Object{plainNamespace(testTenant), tenant}, classisServerSecrets("admin", "s3", "db")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: fleetServerName}, &appsv1.Deployment{}); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: classisServerName}, &appsv1.Deployment{}); err != nil {
 		t.Errorf("the Deployment does not exist although admin, s3 and db Secrets do: %v", err)
 	}
-	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(fleetServerComponentID)]
+	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(classisServerComponentID)]
 	if component.Reason == "WaitingForSecrets" {
 		t.Errorf("component = %#v, no Secret is missing", component)
 	}
@@ -346,12 +346,12 @@ func TestFleetServerNeedsNoCertificateAndNoAgentKey(t *testing.T) {
 }
 
 // A missing Secret of the admin users still holds the Deployment back.
-func TestFleetServerWaitsForTheAdminUsers(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseExternal)
-	objects := append([]client.Object{plainNamespace(testTenant), tenant}, fleetServerSecrets("s3", "db")...)
+func TestClassisServerWaitsForTheAdminUsers(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseExternal)
+	objects := append([]client.Object{plainNamespace(testTenant), tenant}, classisServerSecrets("s3", "db")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
-	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(fleetServerComponentID)]
+	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(classisServerComponentID)]
 	if component.Reason != "WaitingForSecrets" || !strings.Contains(component.Message, "admin") {
 		t.Errorf("component = %#v, want WaitingForSecrets naming admin", component)
 	}
@@ -359,8 +359,8 @@ func TestFleetServerWaitsForTheAdminUsers(t *testing.T) {
 
 // The configuration has no TLS section and no [agents] section: the Server refuses
 // both, and it admits the agents without checking them.
-func TestFleetServerConfigHasNoTLSAndNoAgentsSection(t *testing.T) {
-	config := fleetServerConfig(fleetServerTenant(neteye.TenantDatabaseLocal))
+func TestClassisServerConfigHasNoTLSAndNoAgentsSection(t *testing.T) {
+	config := classisServerConfig(classisServerTenant(neteye.TenantDatabaseLocal))
 	for _, removed := range []string{"[tls]", "[rest.tls]", "[client_ca]", "[enrolment]", "[agents", "jwt", "client_ca_file", "tls.crt"} {
 		if strings.Contains(config, removed) {
 			t.Errorf("config holds %q, the server refuses it or it is gone:\n%s", removed, config)
@@ -375,8 +375,8 @@ func TestFleetServerConfigHasNoTLSAndNoAgentsSection(t *testing.T) {
 
 // The probes ask over plain HTTP, and the startup probe outlasts the 180 s the
 // server retries PostgreSQL and S3 at startup.
-func TestFleetServerStartupProbeOutlastsTheServerRetries(t *testing.T) {
-	probe := fleetServerDeployment(fleetServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets").Spec.Template.Spec.Containers[0].StartupProbe
+func TestClassisServerStartupProbeOutlastsTheServerRetries(t *testing.T) {
+	probe := classisServerDeployment(classisServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets").Spec.Template.Spec.Containers[0].StartupProbe
 	if total := probe.PeriodSeconds * probe.FailureThreshold; total < 200 {
 		t.Errorf("startup probe allows %d s, want at least 200", total)
 	}
@@ -386,8 +386,8 @@ func TestFleetServerStartupProbeOutlastsTheServerRetries(t *testing.T) {
 }
 
 // No Secret volume belongs to the agents, and none is left over from the TLS days.
-func TestFleetServerMountsNoAgentKeyNorTLS(t *testing.T) {
-	pod := fleetServerDeployment(fleetServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets").Spec.Template.Spec
+func TestClassisServerMountsNoAgentKeyNorTLS(t *testing.T) {
+	pod := classisServerDeployment(classisServerTenant(neteye.TenantDatabaseLocal), "sum", "secrets").Spec.Template.Spec
 	for _, volume := range pod.Volumes {
 		switch volume.Name {
 		case "agent-token-key", "tls", "client-ca":
@@ -398,9 +398,9 @@ func TestFleetServerMountsNoAgentKeyNorTLS(t *testing.T) {
 
 // A component that waits for another, here the Deployment, is looked at again as soon
 // as NetEyeReconciler looks at its own waiting components, not after the interval of a failure.
-func TestFleetServerWaitingComponentsAreRequeuedQuickly(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseExternal)
-	objects := append([]client.Object{plainNamespace(testTenant), tenant}, fleetServerSecrets("admin", "s3", "db")...)
+func TestClassisServerWaitingComponentsAreRequeuedQuickly(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseExternal)
+	objects := append([]client.Object{plainNamespace(testTenant), tenant}, classisServerSecrets("admin", "s3", "db")...)
 	r, _ := newTenantReconciler(t, objects...)
 	result, err := r.Reconcile(context.Background(), requestFor(&neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}}))
 	if err != nil {
@@ -415,14 +415,14 @@ func TestFleetServerWaitingComponentsAreRequeuedQuickly(t *testing.T) {
 }
 
 // The CA bundle of the tenant is the CA of the S3 service.
-func TestFleetServerTrustsTheCABundleOfTheTenant(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseLocal)
+func TestClassisServerTrustsTheCABundleOfTheTenant(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseLocal)
 	tenant.Spec.CABundle = &neteye.ConfigMapKeyReference{Name: "tenant-ca-bundle", Key: "ca.pem"}
-	if config := fleetServerConfig(tenant); !strings.Contains(config, `ca_file = "/etc/classis/ca-bundle/ca.pem"`) {
+	if config := classisServerConfig(tenant); !strings.Contains(config, `ca_file = "/etc/classis/ca-bundle/ca.pem"`) {
 		t.Errorf("config has no S3 ca_file:\n%s", config)
 	}
 	found := false
-	for _, volume := range fleetServerDeployment(tenant, "sum", "secrets").Spec.Template.Spec.Volumes {
+	for _, volume := range classisServerDeployment(tenant, "sum", "secrets").Spec.Template.Spec.Volumes {
 		found = found || (volume.ConfigMap != nil && volume.ConfigMap.Name == "tenant-ca-bundle")
 	}
 	if !found {
@@ -443,11 +443,11 @@ func peerless(rules []any, peerKey string) []any {
 	return found
 }
 
-func TestFleetServerNetworkPoliciesAreWidenedWherePeersCannotBeNamed(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseLocal)
-	tenant.Spec.FleetServer.Blobs.Endpoint = "https://s3.example.com:9000"
+func TestClassisServerNetworkPoliciesAreWidenedWherePeersCannotBeNamed(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseLocal)
+	tenant.Spec.ClassisServer.Blobs.Endpoint = "https://s3.example.com:9000"
 
-	server := fleetServerNetworkPolicySpec(tenant)
+	server := classisServerNetworkPolicySpec(tenant)
 	// 4320 is open to any source, and 4321 is narrowed by adminIngressCIDRs.
 	ingress := server["ingress"].([]any)
 	if got := peerless(ingress, "from"); len(got) != 1 {
@@ -472,21 +472,21 @@ func TestFleetServerNetworkPoliciesAreWidenedWherePeersCannotBeNamed(t *testing.
 	}
 
 	// Without adminIngressCIDRs, 4321 is open to any source.
-	tenant.Spec.FleetServer.Network.AdminIngressCIDRs = nil
-	if got := peerless(fleetServerNetworkPolicySpec(tenant)["ingress"].([]any), "from"); len(got) != 2 {
+	tenant.Spec.ClassisServer.Network.AdminIngressCIDRs = nil
+	if got := peerless(classisServerNetworkPolicySpec(tenant)["ingress"].([]any), "from"); len(got) != 2 {
 		t.Fatalf("expected both planes without a peer, got %v", got)
 	}
 
 	// An external database port joins the egress to any destination.
-	external := fleetServerTenant(neteye.TenantDatabaseExternal)
+	external := classisServerTenant(neteye.TenantDatabaseExternal)
 	external.Spec.Database.Port = 5433
-	if got := peerless(fleetServerNetworkPolicySpec(external)["egress"].([]any), "to"); !reflect.DeepEqual(got[len(got)-1], resources.NetworkPolicyPorts("TCP", 443, 5433)) {
+	if got := peerless(classisServerNetworkPolicySpec(external)["egress"].([]any), "to"); !reflect.DeepEqual(got[len(got)-1], resources.NetworkPolicyPorts("TCP", 443, 5433)) {
 		t.Fatalf("external database port missing: %v", got)
 	}
 
 	// The PostgreSQL instances reach the Kubernetes API on 443 and 6443 from
 	// any destination, with no address to list.
-	database := fleetServerDatabaseNetworkPolicySpec()
+	database := classisServerDatabaseNetworkPolicySpec()
 	if got := peerless(database["egress"].([]any), "to"); !reflect.DeepEqual(got, []any{resources.NetworkPolicyPorts("TCP", 443, 6443)}) {
 		t.Fatalf("API server egress: %v", got)
 	}
@@ -494,9 +494,9 @@ func TestFleetServerNetworkPoliciesAreWidenedWherePeersCannotBeNamed(t *testing.
 
 // The instances of a tenant database never share a node, whatever their number:
 // the anti-affinity is required, never preferred.
-func TestFleetServerDatabaseInstancesNeverShareANode(t *testing.T) {
+func TestClassisServerDatabaseInstancesNeverShareANode(t *testing.T) {
 	for _, instances := range []int32{1, 2} {
-		spec := fleetServerDatabaseSpec(&neteye.FleetServerInternalDatabaseSpec{Instances: instances})
+		spec := classisServerDatabaseSpec(&neteye.ClassisServerInternalDatabaseSpec{Instances: instances})
 		if got := spec["instances"]; got != int64(instances) {
 			t.Errorf("instances = %v, want %d", got, instances)
 		}
@@ -509,7 +509,7 @@ func TestFleetServerDatabaseInstancesNeverShareANode(t *testing.T) {
 			t.Errorf("affinity with %d instance(s) = %v, want %v", instances, got, want)
 		}
 	}
-	if got := fleetServerDatabaseSpec(nil)["affinity"].(map[string]any)["podAntiAffinityType"]; got != "required" {
+	if got := classisServerDatabaseSpec(nil)["affinity"].(map[string]any)["podAntiAffinityType"]; got != "required" {
 		t.Errorf("default spec anti-affinity = %v, want required", got)
 	}
 }

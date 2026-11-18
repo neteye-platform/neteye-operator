@@ -5,8 +5,6 @@ package controllers
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -31,46 +29,46 @@ import (
 )
 
 const (
-	fleetServerDatabaseComponentID componentID = "classis-server-database"
-	fleetServerComponentID         componentID = "classis-server"
+	classisServerDatabaseComponentID componentID = "classis-server-database"
+	classisServerComponentID         componentID = "classis-server"
 
-	// fleetServerName names the Deployment, the Service, the ConfigMap and the
+	// classisServerName names the Deployment, the Service, the ConfigMap and the
 	// policies of the server, and is the host label of its DNS name.
-	fleetServerName = "classis-server"
-	// fleetServerDatabaseName names the CloudNativePG cluster of the tenant.
+	classisServerName = "classis-server"
+	// classisServerDatabaseName names the CloudNativePG cluster of the tenant.
 	// CloudNativePG derives the Secrets and the Services from it.
-	fleetServerDatabaseName = "classis-server-db"
+	classisServerDatabaseName = "classis-server-db"
 
-	fleetServerAgentPort = 4320
-	fleetServerAdminPort = 4321
-	// fleetServerUID is the UID of the non-root user of the distroless image.
-	fleetServerUID int64 = 65532
+	classisServerAgentPort = 4320
+	classisServerAdminPort = 4321
+	// classisServerUID is the UID of the non-root user of the distroless image.
+	classisServerUID int64 = 65532
 
-	// fleetServerEnvPrefix prefixes the environment variables that override the
+	// classisServerEnvPrefix prefixes the environment variables that override the
 	// configuration file.
-	fleetServerEnvPrefix = "CLASSIS_SERVER__"
+	classisServerEnvPrefix = "CLASSIS_SERVER__"
 
 	// cnpgSystemNamespace is where the CloudNativePG operator runs. Its pods
 	// reach the status port of every instance.
 	cnpgSystemNamespace = "cnpg-system"
 
-	// fleetServerSecretMode makes mounted Secrets readable by the group of the
+	// classisServerSecretMode makes mounted Secrets readable by the group of the
 	// pod only (fsGroup): the server refuses a secret file readable by others.
-	fleetServerSecretMode int32 = 0o440
+	classisServerSecretMode int32 = 0o440
 
-	fleetServerConfigChecksumAnnotation = "neteye.cloud/classis-server-config-checksum"
-	fleetServerConfigFile               = "server.toml"
+	classisServerConfigVersionAnnotation = "neteye.cloud/classis-server-config-resource-version"
+	classisServerConfigFile              = "server.toml"
 )
 
 var cnpgClusterGVK = schema.GroupVersionKind{Group: "postgresql.cnpg.io", Version: "v1", Kind: "Cluster"}
 
-// fleetServerSelector selects the pods of the server.
-func fleetServerSelector() map[string]string {
-	return map[string]string{"app.kubernetes.io/name": fleetServerName}
+// classisServerSelector selects the pods of the server.
+func classisServerSelector() map[string]string {
+	return map[string]string{"app.kubernetes.io/name": classisServerName}
 }
 
-// fleetServerDatabaseConnection is how the server reaches PostgreSQL.
-type fleetServerDatabaseConnection struct {
+// classisServerDatabaseConnection is how the server reaches PostgreSQL.
+type classisServerDatabaseConnection struct {
 	Host, DBName, User string
 	Port               int32
 	// PasswordSecret and CASecret name the Secrets that hold the password key and
@@ -78,14 +76,14 @@ type fleetServerDatabaseConnection struct {
 	PasswordSecret, CASecret string
 }
 
-func fleetServerDatabase(tenant *neteye.NetEyeTenant) fleetServerDatabaseConnection {
+func classisServerDatabase(tenant *neteye.NetEyeTenant) classisServerDatabaseConnection {
 	if tenant.Spec.Database != nil && tenant.Spec.Database.Type == neteye.TenantDatabaseExternal {
 		port := tenant.Spec.Database.Port
 		if port == 0 {
 			port = 5432
 		}
-		connection := fleetServerDatabaseConnection{Host: tenant.Spec.Database.Hostname, Port: port}
-		if external := fleetServerExternalDatabase(tenant); external != nil {
+		connection := classisServerDatabaseConnection{Host: tenant.Spec.Database.Hostname, Port: port}
+		if external := classisServerExternalDatabase(tenant); external != nil {
 			connection.DBName, connection.User = external.DBName, external.User
 			connection.PasswordSecret, connection.CASecret = external.CredentialsSecretName, external.CredentialsSecretName
 		}
@@ -93,79 +91,74 @@ func fleetServerDatabase(tenant *neteye.NetEyeTenant) fleetServerDatabaseConnect
 	}
 	// CloudNativePG creates the application user and its Secret, the Services of
 	// the primary, and the CA that signs the server certificates.
-	return fleetServerDatabaseConnection{Host: fleetServerDatabaseName + "-rw", Port: 5432, DBName: "classis", User: "classis", PasswordSecret: fleetServerDatabaseName + "-app", CASecret: fleetServerDatabaseName + "-ca"}
+	return classisServerDatabaseConnection{Host: classisServerDatabaseName + "-rw", Port: 5432, DBName: "classis", User: "classis", PasswordSecret: classisServerDatabaseName + "-app", CASecret: classisServerDatabaseName + "-ca"}
 }
 
-func fleetServerExternalDatabase(tenant *neteye.NetEyeTenant) *neteye.FleetServerExternalDatabaseSpec {
-	if spec := tenant.Spec.FleetServer; spec != nil && spec.Database != nil {
+func classisServerExternalDatabase(tenant *neteye.NetEyeTenant) *neteye.ClassisServerExternalDatabaseSpec {
+	if spec := tenant.Spec.ClassisServer; spec != nil && spec.Database != nil {
 		return spec.Database.External
 	}
 	return nil
 }
 
-func fleetServerInternalDatabase(tenant *neteye.NetEyeTenant) *neteye.FleetServerInternalDatabaseSpec {
-	if spec := tenant.Spec.FleetServer; spec != nil && spec.Database != nil {
+func classisServerInternalDatabase(tenant *neteye.NetEyeTenant) *neteye.ClassisServerInternalDatabaseSpec {
+	if spec := tenant.Spec.ClassisServer; spec != nil && spec.Database != nil {
 		return spec.Database.Internal
 	}
 	return nil
 }
 
-// fleetServerLocalDatabase tells whether the operator runs the database.
-func fleetServerLocalDatabase(tenant *neteye.NetEyeTenant) bool {
+// classisServerLocalDatabase tells whether the operator runs the database.
+func classisServerLocalDatabase(tenant *neteye.NetEyeTenant) bool {
 	return tenant.Spec.Database == nil || tenant.Spec.Database.Type == neteye.TenantDatabaseLocal
 }
 
-// fleetServerConfig renders the TOML configuration. Secrets are paths of the
+// classisServerConfig renders the TOML configuration. Secrets are paths of the
 // files the Deployment mounts; the S3 access key is the only value that comes
 // from the environment.
-func fleetServerConfig(tenant *neteye.NetEyeTenant) string {
-	spec := tenant.Spec.FleetServer
-	database := fleetServerDatabase(tenant)
+func classisServerConfig(tenant *neteye.NetEyeTenant) string {
+	spec := tenant.Spec.ClassisServer
+	database := classisServerDatabase(tenant)
 	var b strings.Builder
 	logFormat := spec.LogFormat
 	if logFormat == "" {
 		logFormat = "json"
 	}
-	fmt.Fprintf(&b, "listen = \"0.0.0.0:%d\"\n\n[log]\nformat = %q\n\n", fleetServerAgentPort, logFormat)
+	fmt.Fprintf(&b, "listen = \"0.0.0.0:%d\"\n\n[log]\nformat = %q\n\n", classisServerAgentPort, logFormat)
 	// The server speaks plain HTTP: a reverse proxy in front of it ends TLS and
 	// authenticates the agents. The server itself admits every request of the agent
 	// plane and refuses an [agents] section, so none is rendered.
-	fmt.Fprintf(&b, "[rest]\nlisten = \"0.0.0.0:%d\"\n\n", fleetServerAdminPort)
-	fmt.Fprintf(&b, "[rest.auth]\nbasic_users_file = \"%s/basic-users\"\n\n", fleetServerMount("admin-users"))
-	fmt.Fprintf(&b, "[database]\nstore = \"postgres\"\n\n[database.postgres]\nhost = %q\nport = %d\ndbname = %q\nuser = %q\npassword_file = \"%s/password\"\nca_file = \"%s/ca.crt\"\ntls = true\n\n", database.Host, database.Port, database.DBName, database.User, fleetServerMount("db-password"), fleetServerMount("db-ca"))
+	fmt.Fprintf(&b, "[rest]\nlisten = \"0.0.0.0:%d\"\n\n", classisServerAdminPort)
+	fmt.Fprintf(&b, "[rest.auth]\nbasic_users_file = \"%s/basic-users\"\n\n", classisServerMount("admin-users"))
+	fmt.Fprintf(&b, "[database]\nstore = \"postgres\"\n\n[database.postgres]\nhost = %q\nport = %d\ndbname = %q\nuser = %q\npassword_file = \"%s/password\"\nca_file = \"%s/ca.crt\"\ntls = true\n\n", database.Host, database.Port, database.DBName, database.User, classisServerMount("db-password"), classisServerMount("db-ca"))
 	blobs := spec.Blobs
-	fmt.Fprintf(&b, "[blobs]\nstore = \"s3\"\n\n[blobs.s3]\nendpoint = %q\nbucket = %q\nregion = %q\nprefix = %q\nsecret_access_key_file = \"%s/secret-access-key\"\n", blobs.Endpoint, blobs.Bucket, blobs.Region, blobs.Prefix, fleetServerMount("s3-credentials"))
+	fmt.Fprintf(&b, "[blobs]\nstore = \"s3\"\n\n[blobs.s3]\nendpoint = %q\nbucket = %q\nregion = %q\nprefix = %q\nsecret_access_key_file = \"%s/secret-access-key\"\n", blobs.Endpoint, blobs.Bucket, blobs.Region, blobs.Prefix, classisServerMount("s3-credentials"))
 	if ca := tenant.Spec.CABundle; ca != nil {
-		fmt.Fprintf(&b, "ca_file = \"%s/%s\"\n", fleetServerMount("ca-bundle"), ca.Key)
+		fmt.Fprintf(&b, "ca_file = \"%s/%s\"\n", classisServerMount("ca-bundle"), ca.Key)
 	}
 	return b.String()
 }
 
-func fleetServerMount(volume string) string { return "/etc/classis/" + volume }
-
-func checksum(data string) string {
-	sum := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(sum[:])
-}
+func classisServerMount(volume string) string { return "/etc/classis/" + volume }
 
 func secretVolume(name, secretName string) corev1.Volume {
-	return corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: secretName, DefaultMode: ptr.To(fleetServerSecretMode)}}}
+	return corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: secretName, DefaultMode: ptr.To(classisServerSecretMode)}}}
 }
 
-// fleetServerDeployment builds the Deployment of the server. One replica and
+// classisServerDeployment builds the Deployment of the server. One replica and
 // the Recreate strategy: the database lock lets only one server run, so the old
 // pod stops before the new one starts. The root filesystem is read-only and the
 // only writable volume is an emptyDir for /tmp: the server keeps its records in
 // PostgreSQL and its artifacts in S3.
-func fleetServerDeployment(tenant *neteye.NetEyeTenant, configChecksum, secretsChecksum string) *appsv1.Deployment {
-	spec := tenant.Spec.FleetServer
-	database := fleetServerDatabase(tenant)
-	labels := fleetServerSelector()
+func classisServerDeployment(tenant *neteye.NetEyeTenant, configVersion, secretsVersions string) *appsv1.Deployment {
+	spec := tenant.Spec.ClassisServer
+	database := classisServerDatabase(tenant)
+	labels := classisServerSelector()
 
 	volumes := []corev1.Volume{
-		{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: fleetServerName}}}},
+		{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: classisServerName}}}},
 		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		secretVolume("admin-users", fleetServerAdminUsersSecret(spec)),
+		secretVolume("admin-users", classisServerAdminUsersSecret(spec)),
 		secretVolume("db-password", database.PasswordSecret),
 		secretVolume("db-ca", database.CASecret),
 		secretVolume("s3-credentials", spec.Blobs.CredentialsSecretName),
@@ -175,11 +168,11 @@ func fleetServerDeployment(tenant *neteye.NetEyeTenant, configChecksum, secretsC
 		{Name: "tmp", MountPath: "/tmp"},
 	}
 	for _, name := range []string{"admin-users", "db-password", "db-ca", "s3-credentials"} {
-		mounts = append(mounts, corev1.VolumeMount{Name: name, MountPath: fleetServerMount(name), ReadOnly: true})
+		mounts = append(mounts, corev1.VolumeMount{Name: name, MountPath: classisServerMount(name), ReadOnly: true})
 	}
 	if ca := tenant.Spec.CABundle; ca != nil {
 		volumes = append(volumes, corev1.Volume{Name: "ca-bundle", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: ca.Name}, Items: []corev1.KeyToPath{{Key: ca.Key, Path: ca.Key}}}}})
-		mounts = append(mounts, corev1.VolumeMount{Name: "ca-bundle", MountPath: fleetServerMount("ca-bundle"), ReadOnly: true})
+		mounts = append(mounts, corev1.VolumeMount{Name: "ca-bundle", MountPath: classisServerMount("ca-bundle"), ReadOnly: true})
 	}
 
 	// /livez and /readyz are served on the operator plane, outside its Basic
@@ -193,34 +186,34 @@ func fleetServerDeployment(tenant *neteye.NetEyeTenant, configChecksum, secretsC
 	startup.PeriodSeconds, startup.FailureThreshold = 5, 60
 
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: fleetServerName, Namespace: tenant.Namespace, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{Name: classisServerName, Namespace: tenant.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr.To(int32(1)),
 			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{fleetServerConfigChecksumAnnotation: configChecksum, fleetServerSecretsChecksumAnnotation: secretsChecksum}},
+				ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{classisServerConfigVersionAnnotation: configVersion, classisServerSecretsVersionsAnnotation: secretsVersions}},
 				Spec: corev1.PodSpec{
 					AutomountServiceAccountToken:  ptr.To(false),
 					TerminationGracePeriodSeconds: ptr.To(int64(30)),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot:   ptr.To(true),
-						RunAsUser:      ptr.To(fleetServerUID),
-						RunAsGroup:     ptr.To(fleetServerUID),
-						FSGroup:        ptr.To(fleetServerUID),
+						RunAsUser:      ptr.To(classisServerUID),
+						RunAsGroup:     ptr.To(classisServerUID),
+						FSGroup:        ptr.To(classisServerUID),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Containers: []corev1.Container{{
-						Name:  fleetServerName,
+						Name:  classisServerName,
 						Image: spec.Image,
-						Args:  []string{"--config", "/etc/classis/config/" + fleetServerConfigFile},
+						Args:  []string{"--config", "/etc/classis/config/" + classisServerConfigFile},
 						Ports: []corev1.ContainerPort{
-							{Name: "agent", ContainerPort: fleetServerAgentPort},
-							{Name: "admin", ContainerPort: fleetServerAdminPort},
+							{Name: "agent", ContainerPort: classisServerAgentPort},
+							{Name: "admin", ContainerPort: classisServerAdminPort},
 						},
 						Env: []corev1.EnvVar{
 							{Name: "RUST_LOG", Value: spec.LogLevel},
-							{Name: fleetServerEnvPrefix + "BLOBS__S3__ACCESS_KEY_ID", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: spec.Blobs.CredentialsSecretName}, Key: "access-key-id"}}},
+							{Name: classisServerEnvPrefix + "BLOBS__S3__ACCESS_KEY_ID", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: spec.Blobs.CredentialsSecretName}, Key: "access-key-id"}}},
 						},
 						VolumeMounts:   mounts,
 						LivenessProbe:  probe("/livez"),
@@ -239,24 +232,24 @@ func fleetServerDeployment(tenant *neteye.NetEyeTenant, configChecksum, secretsC
 	}
 }
 
-// fleetServerService exposes the two planes inside the cluster. The proxies of
+// classisServerService exposes the two planes inside the cluster. The proxies of
 // the PCS nodes publish the agent plane; the operator plane stays internal, and
 // the network policy decides who reaches it.
-func fleetServerService(tenant *neteye.NetEyeTenant) *corev1.Service {
+func classisServerService(tenant *neteye.NetEyeTenant) *corev1.Service {
 	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: fleetServerName, Namespace: tenant.Namespace, Labels: fleetServerSelector()},
+		ObjectMeta: metav1.ObjectMeta{Name: classisServerName, Namespace: tenant.Namespace, Labels: classisServerSelector()},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: fleetServerSelector(),
+			Selector: classisServerSelector(),
 			Ports: []corev1.ServicePort{
-				{Name: "agent", Port: fleetServerAgentPort, TargetPort: intstr.FromString("agent"), Protocol: corev1.ProtocolTCP},
-				{Name: "admin", Port: fleetServerAdminPort, TargetPort: intstr.FromString("admin"), Protocol: corev1.ProtocolTCP},
+				{Name: "agent", Port: classisServerAgentPort, TargetPort: intstr.FromString("agent"), Protocol: corev1.ProtocolTCP},
+				{Name: "admin", Port: classisServerAdminPort, TargetPort: intstr.FromString("admin"), Protocol: corev1.ProtocolTCP},
 			},
 		},
 	}
 }
 
-// fleetServerDatabaseSpec is the spec of the CloudNativePG cluster: PostgreSQL 18
+// classisServerDatabaseSpec is the spec of the CloudNativePG cluster: PostgreSQL 18
 // with the instances of the tenant, one database and its owner, and TCP
 // keepalives, so that a connection to a dead node does not outlive it.
 //
@@ -265,7 +258,7 @@ func fleetServerService(tenant *neteye.NetEyeTenant) *corev1.Service {
 // would be lost together. The price is that, with two instances on a cluster
 // with a single worker, the second instance stays Pending; such a cluster
 // must set instances to 1.
-func fleetServerDatabaseSpec(spec *neteye.FleetServerInternalDatabaseSpec) map[string]any {
+func classisServerDatabaseSpec(spec *neteye.ClassisServerInternalDatabaseSpec) map[string]any {
 	instances, image, size := int64(2), "ghcr.io/cloudnative-pg/postgresql:18", "5Gi"
 	storage := map[string]any{}
 	if spec != nil {
@@ -348,7 +341,7 @@ func s3Port(endpoint string) int64 {
 	return port
 }
 
-// fleetServerNetworkPolicySpec opens, over the default deny of the tenant, the
+// classisServerNetworkPolicySpec opens, over the default deny of the tenant, the
 // planes of the server, its way to PostgreSQL, S3 and DNS.
 //
 // DECISION PENDING, SECURITY: the Server authenticates NO agent. The agent plane
@@ -367,24 +360,24 @@ func s3Port(endpoint string) int64 {
 // admits the traffic of the local node to its pods whatever the policies say.
 // The egress to S3 and to an external database is open to any destination on
 // its ports, because the service may be inside the cluster or outside it.
-func fleetServerNetworkPolicySpec(tenant *neteye.NetEyeTenant) map[string]any {
-	spec := tenant.Spec.FleetServer
+func classisServerNetworkPolicySpec(tenant *neteye.NetEyeTenant) map[string]any {
+	spec := tenant.Spec.ClassisServer
 	network := spec.Network
-	ingress := []any{anyPeerPorts(resources.NetworkPolicyPorts("TCP", fleetServerAgentPort))}
+	ingress := []any{anyPeerPorts(resources.NetworkPolicyPorts("TCP", classisServerAgentPort))}
 	if len(network.AdminIngressCIDRs) > 0 {
-		ingress = append(ingress, map[string]any{"from": cidrPeers(network.AdminIngressCIDRs), "ports": resources.NetworkPolicyPorts("TCP", fleetServerAdminPort)})
+		ingress = append(ingress, map[string]any{"from": cidrPeers(network.AdminIngressCIDRs), "ports": resources.NetworkPolicyPorts("TCP", classisServerAdminPort)})
 	} else {
-		ingress = append(ingress, anyPeerPorts(resources.NetworkPolicyPorts("TCP", fleetServerAdminPort)))
+		ingress = append(ingress, anyPeerPorts(resources.NetworkPolicyPorts("TCP", classisServerAdminPort)))
 	}
-	database := fleetServerDatabase(tenant)
+	database := classisServerDatabase(tenant)
 	egress := []any{dnsEgress}
 	ports := []int64{443}
 	if port := s3Port(spec.Blobs.Endpoint); port != 443 {
 		ports = append(ports, port)
 	}
-	if fleetServerLocalDatabase(tenant) {
+	if classisServerLocalDatabase(tenant) {
 		egress = append(egress, map[string]any{
-			"to":    []any{map[string]any{"podSelector": podSelector(map[string]string{"cnpg.io/cluster": fleetServerDatabaseName})}},
+			"to":    []any{map[string]any{"podSelector": podSelector(map[string]string{"cnpg.io/cluster": classisServerDatabaseName})}},
 			"ports": resources.NetworkPolicyPorts("TCP", int64(database.Port)),
 		})
 	} else {
@@ -392,20 +385,20 @@ func fleetServerNetworkPolicySpec(tenant *neteye.NetEyeTenant) map[string]any {
 	}
 	egress = append(egress, anyPeerPorts(resources.NetworkPolicyPorts("TCP", ports...)))
 	return map[string]any{
-		"podSelector": podSelector(fleetServerSelector()),
+		"podSelector": podSelector(classisServerSelector()),
 		"policyTypes": []any{"Ingress", "Egress"},
 		"ingress":     ingress,
 		"egress":      egress,
 	}
 }
 
-// fleetServerDatabaseNetworkPolicySpec opens the PostgreSQL instances: the
+// classisServerDatabaseNetworkPolicySpec opens the PostgreSQL instances: the
 // server and the instances themselves on the database port, the CloudNativePG
 // operator on the status port, and the Kubernetes API for the instance manager.
 // A native policy cannot name the Kubernetes API, so the egress on its ports
 // (443 through the Service, 6443 on the node) is open to any destination.
-func fleetServerDatabaseNetworkPolicySpec() map[string]any {
-	instances := podSelector(map[string]string{"cnpg.io/cluster": fleetServerDatabaseName})
+func classisServerDatabaseNetworkPolicySpec() map[string]any {
+	instances := podSelector(map[string]string{"cnpg.io/cluster": classisServerDatabaseName})
 	ports := resources.NetworkPolicyPorts("TCP", 5432, 8000)
 	egress := []any{
 		dnsEgress,
@@ -416,7 +409,7 @@ func fleetServerDatabaseNetworkPolicySpec() map[string]any {
 		"podSelector": instances,
 		"policyTypes": []any{"Ingress", "Egress"},
 		"ingress": []any{
-			map[string]any{"from": []any{map[string]any{"podSelector": podSelector(fleetServerSelector())}}, "ports": resources.NetworkPolicyPorts("TCP", 5432)},
+			map[string]any{"from": []any{map[string]any{"podSelector": podSelector(classisServerSelector())}}, "ports": resources.NetworkPolicyPorts("TCP", 5432)},
 			map[string]any{"from": []any{map[string]any{"podSelector": instances}}, "ports": ports},
 			map[string]any{"from": []any{map[string]any{"namespaceSelector": namespaceNamed(cnpgSystemNamespace)}}, "ports": ports},
 		},
@@ -424,132 +417,133 @@ func fleetServerDatabaseNetworkPolicySpec() map[string]any {
 	}
 }
 
-// fleetServerComponents returns the lifecycle nodes and operations of the
+// classisServerComponents returns the lifecycle nodes and operations of the
 // server, or none when the tenant has no server.
-func (r *NetEyeTenantReconciler) fleetServerComponents(ctx context.Context, tenant *neteye.NetEyeTenant) ([]lifecycleNode, map[componentID]componentOperation) {
-	spec := tenant.Spec.FleetServer
+func (r *NetEyeTenantReconciler) classisServerComponents(ctx context.Context, tenant *neteye.NetEyeTenant) ([]lifecycleNode, map[componentID]componentOperation) {
+	spec := tenant.Spec.ClassisServer
 	if spec == nil {
 		return nil, nil
 	}
-	nodes := []lifecycleNode{{ID: fleetServerComponentID, Dependencies: []componentID{tenantNamespaceComponentID}}}
+	nodes := []lifecycleNode{{ID: classisServerComponentID, Dependencies: []componentID{tenantNamespaceComponentID}}}
 	operations := map[componentID]componentOperation{
-		fleetServerComponentID: func() (componentResult, error) { return r.reconcileFleetServer(ctx, tenant) },
+		classisServerComponentID: func() (componentResult, error) { return r.reconcileClassisServer(ctx, tenant) },
 	}
-	if spec.Enabled && fleetServerLocalDatabase(tenant) {
-		nodes = append(nodes, lifecycleNode{ID: fleetServerDatabaseComponentID, Dependencies: []componentID{tenantNamespaceComponentID}})
-		nodes[0].Dependencies = append(nodes[0].Dependencies, fleetServerDatabaseComponentID)
-		operations[fleetServerDatabaseComponentID] = func() (componentResult, error) { return r.reconcileFleetServerDatabase(ctx, tenant) }
+	if spec.Enabled && classisServerLocalDatabase(tenant) {
+		nodes = append(nodes, lifecycleNode{ID: classisServerDatabaseComponentID, Dependencies: []componentID{tenantNamespaceComponentID}})
+		nodes[0].Dependencies = append(nodes[0].Dependencies, classisServerDatabaseComponentID)
+		operations[classisServerDatabaseComponentID] = func() (componentResult, error) { return r.reconcileClassisServerDatabase(ctx, tenant) }
 	}
 	return nodes, operations
 }
 
-// reconcileFleetServerDatabase creates the CloudNativePG cluster of the tenant
+// reconcileClassisServerDatabase creates the CloudNativePG cluster of the tenant
 // and its network policy, and waits for the cluster to be ready. An External
 // database creates nothing.
 // TODO: back up the cluster before an upgrade of the server. The backup needs an
 // object store, which the tenant does not have yet.
-func (r *NetEyeTenantReconciler) reconcileFleetServerDatabase(ctx context.Context, tenant *neteye.NetEyeTenant) (componentResult, error) {
+func (r *NetEyeTenantReconciler) reconcileClassisServerDatabase(ctx context.Context, tenant *neteye.NetEyeTenant) (componentResult, error) {
 	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
 	// The CloudNativePG operator is installed once for the cluster, by the first
 	// tenant that needs it, and stays when that tenant goes. neteye-setup creates
 	// its namespace, as it does for Keycloak; this only asks OLM for the operator.
 	operator := cnpg.NewComponent(r.Client, r.Log)
 	if err := operator.EnsureOperatorExtension(ctx); errors.Is(err, cnpg.ErrOperatorNamespaceMissing) {
-		return progressingResult(fleetServerDatabaseComponentID, "WaitingForCNPGNamespace", "waiting for neteye-setup to create the cnpg-system namespace, where the CloudNativePG operator is installed", r.progressingRequeue())
+		return progressingResult(classisServerDatabaseComponentID, "WaitingForCNPGNamespace", "waiting for neteye-setup to create the cnpg-system namespace, where the CloudNativePG operator is installed", r.progressingRequeue())
 	} else if err != nil {
-		return degradedResult(fleetServerDatabaseComponentID, "CloudNativePGInstallFailed", fmt.Sprintf("failed to install the CloudNativePG operator: %v", err), r.failureRequeue(), err)
+		return degradedResult(classisServerDatabaseComponentID, "CloudNativePGInstallFailed", fmt.Sprintf("failed to install the CloudNativePG operator: %v", err), r.failureRequeue(), err)
 	}
 	if ready, message, err := operator.IsReady(ctx); err != nil {
-		return degradedResult(fleetServerDatabaseComponentID, "CloudNativePGInstallFailed", err.Error(), r.failureRequeue(), err)
+		return degradedResult(classisServerDatabaseComponentID, "CloudNativePGInstallFailed", err.Error(), r.failureRequeue(), err)
 	} else if !ready {
-		return progressingResult(fleetServerDatabaseComponentID, "WaitingForCloudNativePG", message, r.progressingRequeue())
+		return progressingResult(classisServerDatabaseComponentID, "WaitingForCloudNativePG", message, r.progressingRequeue())
 	}
-	if _, err := resources.Apply(ctx, r.Client, resources.ObjectDefinition{GVK: cnpgClusterGVK, Name: fleetServerDatabaseName, Namespace: tenant.Namespace, Spec: fleetServerDatabaseSpec(fleetServerInternalDatabase(tenant)), Owner: &owner}); err != nil {
+	if _, err := resources.Apply(ctx, r.Client, resources.ObjectDefinition{GVK: cnpgClusterGVK, Name: classisServerDatabaseName, Namespace: tenant.Namespace, Spec: classisServerDatabaseSpec(classisServerInternalDatabase(tenant)), Owner: &owner}); err != nil {
 		if meta.IsNoMatchError(err) {
-			return progressingResult(fleetServerDatabaseComponentID, "WaitingForCloudNativePG", "waiting for the CloudNativePG Cluster API", r.progressingRequeue())
+			return progressingResult(classisServerDatabaseComponentID, "WaitingForCloudNativePG", "waiting for the CloudNativePG Cluster API", r.progressingRequeue())
 		}
 		reason := "DatabaseFailed"
-		return degradedResult(fleetServerDatabaseComponentID, reason, fmt.Sprintf("failed to apply the CloudNativePG cluster: %v", err), r.failureRequeue(), err)
+		return degradedResult(classisServerDatabaseComponentID, reason, fmt.Sprintf("failed to apply the CloudNativePG cluster: %v", err), r.failureRequeue(), err)
 	}
-	if err := resources.EnsureNetworkPolicy(ctx, r.Client, tenant.Namespace, fleetServerDatabaseName, fleetServerDatabaseNetworkPolicySpec(), owner); err != nil {
-		return degradedResult(fleetServerDatabaseComponentID, "NetworkPolicyFailed", fmt.Sprintf("failed to apply the database network policy: %v", err), r.failureRequeue(), err)
+	if err := resources.EnsureNetworkPolicy(ctx, r.Client, tenant.Namespace, classisServerDatabaseName, classisServerDatabaseNetworkPolicySpec(), owner); err != nil {
+		return degradedResult(classisServerDatabaseComponentID, "NetworkPolicyFailed", fmt.Sprintf("failed to apply the database network policy: %v", err), r.failureRequeue(), err)
 	}
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(cnpgClusterGVK)
-	if err := r.Get(ctx, types.NamespacedName{Namespace: tenant.Namespace, Name: fleetServerDatabaseName}, cluster); err != nil {
-		return degradedResult(fleetServerDatabaseComponentID, "DatabaseFailed", err.Error(), r.failureRequeue(), err)
+	if err := r.Get(ctx, types.NamespacedName{Namespace: tenant.Namespace, Name: classisServerDatabaseName}, cluster); err != nil {
+		return degradedResult(classisServerDatabaseComponentID, "DatabaseFailed", err.Error(), r.failureRequeue(), err)
 	}
 	ready, message, err := resources.ReadyConditionMessage(cluster, "CloudNativePG cluster")
 	if err != nil {
-		return degradedResult(fleetServerDatabaseComponentID, "DatabaseFailed", err.Error(), r.failureRequeue(), err)
+		return degradedResult(classisServerDatabaseComponentID, "DatabaseFailed", err.Error(), r.failureRequeue(), err)
 	}
 	if !ready {
-		return progressingResult(fleetServerDatabaseComponentID, "WaitingForDatabase", message, r.progressingRequeue())
+		return progressingResult(classisServerDatabaseComponentID, "WaitingForDatabase", message, r.progressingRequeue())
 	}
-	return readyResult(fleetServerDatabaseComponentID, "Available", "The database cluster is ready")
+	return readyResult(classisServerDatabaseComponentID, "Available", "The database cluster is ready")
 }
 
-// reconcileFleetServer applies the configuration, the Service, the network
+// reconcileClassisServer applies the configuration, the Service, the network
 // policy and the Deployment of the server, then reports the Deployment state.
 // A disabled server loses its Deployment and nothing else.
-func (r *NetEyeTenantReconciler) reconcileFleetServer(ctx context.Context, tenant *neteye.NetEyeTenant) (componentResult, error) {
-	spec := tenant.Spec.FleetServer
+func (r *NetEyeTenantReconciler) reconcileClassisServer(ctx context.Context, tenant *neteye.NetEyeTenant) (componentResult, error) {
+	spec := tenant.Spec.ClassisServer
 	if !spec.Enabled {
-		deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: fleetServerName, Namespace: tenant.Namespace}}
+		deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: classisServerName, Namespace: tenant.Namespace}}
 		if err := r.Delete(ctx, deployment); err != nil && !apierrors.IsNotFound(err) {
-			return degradedResult(fleetServerComponentID, "DeploymentFailed", err.Error(), r.failureRequeue(), err)
+			return degradedResult(classisServerComponentID, "DeploymentFailed", err.Error(), r.failureRequeue(), err)
 		}
-		return readyResult(fleetServerComponentID, "Disabled", "The fleet server is disabled")
+		return readyResult(classisServerComponentID, "Disabled", "The Classis Server is disabled")
 	}
 	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
 	if err := r.ensureGeneratedAdminSecrets(ctx, tenant); err != nil {
-		return degradedResult(fleetServerComponentID, "AdminSecretFailed", err.Error(), r.failureRequeue(), err)
+		return degradedResult(classisServerComponentID, "AdminSecretFailed", err.Error(), r.failureRequeue(), err)
 	}
-	if missing, err := r.missingFleetServerSecrets(ctx, tenant); err != nil {
-		return degradedResult(fleetServerComponentID, "SecretCheckFailed", err.Error(), r.failureRequeue(), err)
+	if missing, err := r.missingClassisServerSecrets(ctx, tenant); err != nil {
+		return degradedResult(classisServerComponentID, "SecretCheckFailed", err.Error(), r.failureRequeue(), err)
 	} else if len(missing) > 0 {
-		return progressingResult(fleetServerComponentID, "WaitingForSecrets", "waiting for Secrets: "+strings.Join(missing, ", "), r.progressingRequeue())
+		return progressingResult(classisServerComponentID, "WaitingForSecrets", "waiting for Secrets: "+strings.Join(missing, ", "), r.progressingRequeue())
 	}
 
-	config := fleetServerConfig(tenant)
-	if _, err := resources.EnsureConfigMap(ctx, r.Client, tenant.Namespace, fleetServerName, map[string]string{fleetServerConfigFile: config}, owner); err != nil {
-		return degradedResult(fleetServerComponentID, "ConfigFailed", err.Error(), r.failureRequeue(), err)
-	}
-	if err := resources.EnsureService(ctx, r.Client, fleetServerService(tenant), owner); err != nil {
-		return degradedResult(fleetServerComponentID, "ServiceFailed", err.Error(), r.failureRequeue(), err)
-	}
-	if err := resources.EnsureNetworkPolicy(ctx, r.Client, tenant.Namespace, fleetServerName, fleetServerNetworkPolicySpec(tenant), owner); err != nil {
-		return degradedResult(fleetServerComponentID, "NetworkPolicyFailed", err.Error(), r.failureRequeue(), err)
-	}
-	secretsChecksum, err := r.fleetServerSecretsChecksum(ctx, tenant)
+	config := classisServerConfig(tenant)
+	configVersion, err := resources.EnsureConfigMap(ctx, r.Client, tenant.Namespace, classisServerName, map[string]string{classisServerConfigFile: config}, owner)
 	if err != nil {
-		return degradedResult(fleetServerComponentID, "SecretCheckFailed", err.Error(), r.failureRequeue(), err)
+		return degradedResult(classisServerComponentID, "ConfigFailed", err.Error(), r.failureRequeue(), err)
 	}
-	if err := resources.EnsureDeployment(ctx, r.Client, fleetServerDeployment(tenant, checksum(config), secretsChecksum), owner); err != nil {
-		return degradedResult(fleetServerComponentID, "DeploymentFailed", err.Error(), r.failureRequeue(), err)
+	if err := resources.EnsureService(ctx, r.Client, classisServerService(tenant), owner); err != nil {
+		return degradedResult(classisServerComponentID, "ServiceFailed", err.Error(), r.failureRequeue(), err)
 	}
-	ready, message, err := resources.IsDeploymentReady(ctx, r.Client, tenant.Namespace, fleetServerName)
+	if err := resources.EnsureNetworkPolicy(ctx, r.Client, tenant.Namespace, classisServerName, classisServerNetworkPolicySpec(tenant), owner); err != nil {
+		return degradedResult(classisServerComponentID, "NetworkPolicyFailed", err.Error(), r.failureRequeue(), err)
+	}
+	secretsVersions, err := r.classisServerSecretsVersions(ctx, tenant)
 	if err != nil {
-		return degradedResult(fleetServerComponentID, "DeploymentFailed", err.Error(), r.failureRequeue(), err)
+		return degradedResult(classisServerComponentID, "SecretCheckFailed", err.Error(), r.failureRequeue(), err)
+	}
+	if err := resources.EnsureDeployment(ctx, r.Client, classisServerDeployment(tenant, configVersion, secretsVersions), owner); err != nil {
+		return degradedResult(classisServerComponentID, "DeploymentFailed", err.Error(), r.failureRequeue(), err)
+	}
+	ready, message, err := resources.IsDeploymentReady(ctx, r.Client, tenant.Namespace, classisServerName)
+	if err != nil {
+		return degradedResult(classisServerComponentID, "DeploymentFailed", err.Error(), r.failureRequeue(), err)
 	}
 	if !ready {
-		return progressingResult(fleetServerComponentID, "WaitingForDeployment", message, r.progressingRequeue())
+		return progressingResult(classisServerComponentID, "WaitingForDeployment", message, r.progressingRequeue())
 	}
-	return readyResult(fleetServerComponentID, "Available", "The fleet server is ready")
+	return readyResult(classisServerComponentID, "Available", "The Classis Server is ready")
 }
 
-// missingFleetServerSecrets names the Secrets the pod mounts that do not exist
+// missingClassisServerSecrets names the Secrets the pod mounts that do not exist
 // yet, so that the pod is not created only to stay in ContainerCreating.
-func (r *NetEyeTenantReconciler) missingFleetServerSecrets(ctx context.Context, tenant *neteye.NetEyeTenant) ([]string, error) {
-	spec := tenant.Spec.FleetServer
+func (r *NetEyeTenantReconciler) missingClassisServerSecrets(ctx context.Context, tenant *neteye.NetEyeTenant) ([]string, error) {
+	spec := tenant.Spec.ClassisServer
 	names := map[string]struct{}{}
-	for _, name := range []string{fleetServerAdminUsersSecret(spec), spec.Blobs.CredentialsSecretName} {
+	for _, name := range []string{classisServerAdminUsersSecret(spec), spec.Blobs.CredentialsSecretName} {
 		if name != "" {
 			names[name] = struct{}{}
 		}
 	}
-	if !fleetServerLocalDatabase(tenant) {
-		names[fleetServerDatabase(tenant).PasswordSecret] = struct{}{}
+	if !classisServerLocalDatabase(tenant) {
+		names[classisServerDatabase(tenant).PasswordSecret] = struct{}{}
 	}
 	var missing []string
 	for name := range names {

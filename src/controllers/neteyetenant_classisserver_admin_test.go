@@ -22,16 +22,16 @@ import (
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 )
 
-// fleetServerTenantWithoutUsers is a tenant whose spec names no users Secret, so
+// classisServerTenantWithoutUsers is a tenant whose spec names no users Secret, so
 // the operator generates the administrator.
-func fleetServerTenantWithoutUsers() *neteye.NetEyeTenant {
-	tenant := fleetServerTenant(neteye.TenantDatabaseExternal)
-	tenant.Spec.FleetServer.AdminUsersSecretName = ""
+func classisServerTenantWithoutUsers() *neteye.NetEyeTenant {
+	tenant := classisServerTenant(neteye.TenantDatabaseExternal)
+	tenant.Spec.ClassisServer.AdminUsersSecretName = ""
 	return tenant
 }
 
 func secretWithData(name string, data map[string]string) *corev1.Secret {
-	return fleetServerSecret(testTenant, name, data)
+	return classisServerSecret(testTenant, name, data)
 }
 
 func getSecret(t *testing.T, c client.Client, name string) *corev1.Secret {
@@ -89,8 +89,8 @@ func TestRandomPasswordIsLongAlphanumericAndFresh(t *testing.T) {
 // With no users Secret in the spec the operator creates the administrator once:
 // the clear credentials in one Secret, the hash in the other, which the pod mounts.
 // The next reconciliation changes neither.
-func TestFleetServerGeneratesItsAdministratorOnce(t *testing.T) {
-	objects := append([]client.Object{plainNamespace(testTenant), fleetServerTenantWithoutUsers()}, fleetServerSecrets("s3", "db")...)
+func TestClassisServerGeneratesItsAdministratorOnce(t *testing.T) {
+	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenantWithoutUsers()}, classisServerSecrets("s3", "db")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 
@@ -115,7 +115,7 @@ func TestFleetServerGeneratesItsAdministratorOnce(t *testing.T) {
 	}
 
 	deployment := &appsv1.Deployment{}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: fleetServerName}, deployment); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: classisServerName}, deployment); err != nil {
 		t.Fatalf("Deployment: %v", err)
 	}
 	mounted := ""
@@ -139,14 +139,14 @@ func TestFleetServerGeneratesItsAdministratorOnce(t *testing.T) {
 
 // An administrator that exists is never overwritten, and a lost users Secret is
 // made again from the password that exists.
-func TestFleetServerKeepsAnExistingAdministrator(t *testing.T) {
+func TestClassisServerKeepsAnExistingAdministrator(t *testing.T) {
 	chosen := "chosen-by-a-person-0123456789ab"
-	existing := secretWithData(fleetServerAdminSecretName, map[string]string{fleetServerAdminUserKey: fleetServerAdminUsername, fleetServerAdminPassKey: chosen})
-	objects := append([]client.Object{plainNamespace(testTenant), fleetServerTenantWithoutUsers(), existing}, fleetServerSecrets("s3", "db")...)
+	existing := secretWithData(classisServerAdminSecretName, map[string]string{classisServerAdminUserKey: classisServerAdminUsername, classisServerAdminPassKey: chosen})
+	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenantWithoutUsers(), existing}, classisServerSecrets("s3", "db")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 
-	if got := getSecret(t, c, "classis-server-admin"); string(got.Data[fleetServerAdminPassKey]) != chosen {
+	if got := getSecret(t, c, "classis-server-admin"); string(got.Data[classisServerAdminPassKey]) != chosen {
 		t.Errorf("the existing password became %q", got.Data["password"])
 	}
 	users := getSecret(t, c, "classis-server-admin-users")
@@ -163,16 +163,16 @@ func TestFleetServerKeepsAnExistingAdministrator(t *testing.T) {
 
 // A users file whose password is unknown is not replaced by a guess: the
 // component says which Secret to delete, and the file keeps its content.
-func TestFleetServerDoesNotOverwriteUsersWithoutTheirPassword(t *testing.T) {
+func TestClassisServerDoesNotOverwriteUsersWithoutTheirPassword(t *testing.T) {
 	users := secretWithData("classis-server-admin-users", map[string]string{"basic-users": "admin = \"keep-me\"\n"})
-	objects := append([]client.Object{plainNamespace(testTenant), fleetServerTenantWithoutUsers(), users}, fleetServerSecrets("s3", "db")...)
+	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenantWithoutUsers(), users}, classisServerSecrets("s3", "db")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 
 	if got := getSecret(t, c, "classis-server-admin-users"); string(got.Data["basic-users"]) != "admin = \"keep-me\"\n" {
 		t.Errorf("the users file was overwritten: %q", got.Data["basic-users"])
 	}
-	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(fleetServerComponentID)]
+	component := getTenant(t, c, testTenant, testTenant).Status.Components[string(classisServerComponentID)]
 	if component.Reason != "AdminSecretFailed" || !strings.Contains(component.Message, "classis-server-admin-users") {
 		t.Errorf("component = %#v, want AdminSecretFailed naming the Secret to delete", component)
 	}
@@ -183,8 +183,8 @@ func TestFleetServerDoesNotOverwriteUsersWithoutTheirPassword(t *testing.T) {
 
 // A spec that names its users Secret keeps the behavior of before: the operator
 // generates nothing and mounts that Secret.
-func TestFleetServerWithItsOwnUsersSecretGeneratesNothing(t *testing.T) {
-	objects := append([]client.Object{plainNamespace(testTenant), fleetServerTenant(neteye.TenantDatabaseExternal)}, fleetServerSecrets("admin", "s3", "db")...)
+func TestClassisServerWithItsOwnUsersSecretGeneratesNothing(t *testing.T) {
+	objects := append([]client.Object{plainNamespace(testTenant), classisServerTenant(neteye.TenantDatabaseExternal)}, classisServerSecrets("admin", "s3", "db")...)
 	r, c := newTenantReconciler(t, objects...)
 	reconcileTenant(t, r)
 	for _, name := range []string{"classis-server-admin", "classis-server-admin-users"} {
@@ -193,7 +193,7 @@ func TestFleetServerWithItsOwnUsersSecretGeneratesNothing(t *testing.T) {
 		}
 	}
 	deployment := &appsv1.Deployment{}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: fleetServerName}, deployment); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: classisServerName}, deployment); err != nil {
 		t.Fatalf("Deployment: %v", err)
 	}
 	for _, volume := range deployment.Spec.Template.Spec.Volumes {
@@ -203,24 +203,25 @@ func TestFleetServerWithItsOwnUsersSecretGeneratesNothing(t *testing.T) {
 	}
 }
 
-func secretsChecksumOf(t *testing.T, c client.Client) string {
+func secretsVersionsOf(t *testing.T, c client.Client) string {
 	t.Helper()
 	deployment := &appsv1.Deployment{}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: fleetServerName}, deployment); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: classisServerName}, deployment); err != nil {
 		t.Fatalf("Deployment: %v", err)
 	}
-	sum := deployment.Spec.Template.Annotations[fleetServerSecretsChecksumAnnotation]
-	if sum == "" {
-		t.Fatal("the pod template has no secrets checksum")
+	versions := deployment.Spec.Template.Annotations[classisServerSecretsVersionsAnnotation]
+	if versions == "" {
+		t.Fatal("the pod template has no secrets versions")
 	}
-	return sum
+	return versions
 }
 
-// Changing the data of a mounted Secret or of the CA bundle changes the pod
-// template, so the Recreate strategy restarts the server that reads those files
-// at startup only. A write that changes no data changes nothing.
-func TestFleetServerRestartsWhenAMountedSecretChanges(t *testing.T) {
-	tenant := fleetServerTenant(neteye.TenantDatabaseExternal)
+// Changing a mounted Secret or the CA bundle changes the pod template, so the
+// Recreate strategy restarts the server that reads those files at startup only.
+// A reconciliation without a write changes nothing. The template names resource
+// versions, never a digest of the data of a Secret.
+func TestClassisServerRestartsWhenAMountedSecretChanges(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantDatabaseExternal)
 	tenant.Spec.CABundle = &neteye.ConfigMapKeyReference{Name: "bundle", Key: "ca.pem"}
 	bundle := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: "bundle"}, Data: map[string]string{"ca.pem": "one"}}
 	objects := []client.Object{plainNamespace(testTenant), tenant, bundle,
@@ -230,17 +231,17 @@ func TestFleetServerRestartsWhenAMountedSecretChanges(t *testing.T) {
 	r, c := newTenantReconciler(t, objects...)
 	ctx := context.Background()
 	reconcileTenant(t, r)
-	first := secretsChecksumOf(t, c)
+	first := secretsVersionsOf(t, c)
 
-	// The same data written again.
-	s3 := getSecret(t, c, "s3")
-	s3.Labels = map[string]string{"touched": "yes"}
-	if err := c.Update(ctx, s3); err != nil {
-		t.Fatal(err)
-	}
+	// Nothing written.
 	reconcileTenant(t, r)
-	if got := secretsChecksumOf(t, c); got != first {
-		t.Error("the checksum changed although no data did")
+	if got := secretsVersionsOf(t, c); got != first {
+		t.Errorf("the versions changed although nothing was written: %q, then %q", first, got)
+	}
+	for _, secret := range []string{"admin", "s3", "db"} {
+		if !strings.Contains(first, "secret/"+secret+"=") {
+			t.Errorf("the versions %q do not name the Secret %q", first, secret)
+		}
 	}
 
 	for name, change := range map[string]func(){
@@ -269,11 +270,11 @@ func TestFleetServerRestartsWhenAMountedSecretChanges(t *testing.T) {
 			}
 		},
 	} {
-		before := secretsChecksumOf(t, c)
+		before := secretsVersionsOf(t, c)
 		change()
 		reconcileTenant(t, r)
-		if after := secretsChecksumOf(t, c); after == before {
-			t.Errorf("changing %s left the checksum as it was", name)
+		if after := secretsVersionsOf(t, c); after == before {
+			t.Errorf("changing %s left the versions as they were", name)
 		}
 	}
 }

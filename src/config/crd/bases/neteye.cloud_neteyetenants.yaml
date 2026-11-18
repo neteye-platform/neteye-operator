@@ -59,7 +59,10 @@ spec:
           metadata:
             type: object
           spec:
-            description: NetEyeTenantSpec defines the desired state of a NetEye tenant.
+            description: |-
+              NetEyeTenantSpec defines the desired state of a NetEye tenant. The rules
+              that tie classisServer to database are checked by the validating webhook, not
+              by CEL: OLM refuses a CRD upgrade that adds a validation rule to spec.
             properties:
               alyvix:
                 description: |-
@@ -113,66 +116,9 @@ spec:
                 required:
                 - name
                 type: object
-              database:
-                description: Database says where the PostgreSQL of the tenant lives.
-                properties:
-                  hostname:
-                    description: Hostname is the host of the external PostgreSQL.
-                      Only for type external.
-                    maxLength: 253
-                    minLength: 1
-                    type: string
-                  port:
-                    description: Port is the port of the external PostgreSQL. Only
-                      for type external.
-                    format: int32
-                    maximum: 65535
-                    minimum: 1
-                    type: integer
-                  type:
-                    description: |-
-                      Type is local for a CloudNativePG cluster of the tenant, or external for a
-                      PostgreSQL that someone else runs.
-                    enum:
-                    - local
-                    - external
-                    type: string
-                required:
-                - type
-                type: object
-                x-kubernetes-validations:
-                - message: hostname and port must not be set when type is local
-                  rule: self.type != 'local' || (!has(self.hostname) && !has(self.port))
-                - message: hostname is required when type is external
-                  rule: self.type != 'external' || has(self.hostname)
-                - message: type is immutable
-                  rule: self.type == oldSelf.type
-              displayName:
+              classisServer:
                 description: |-
-                  DisplayName is the name of the tenant that people see and use. It can
-                  change, except while the tenant is at the previous version: then, as for
-                  the NetEye resource, the tenant accepts no change until it upgrades.
-                  Resources derived from the tenant use metadata.name, which never changes. It has at least one letter or digit, so a name made
-                  only of blank characters is refused; the Hangul fillers, which are
-                  letters that show nothing, do not count. The length counts characters,
-                  not bytes. Only one tenant holds a display name: the webhook refuses a
-                  name that another tenant uses, and when two writes pass the webhook at
-                  the same time, the operator gives the name to one tenant and reports the
-                  other one as Failed until it gets another display name.
-                maxLength: 63
-                minLength: 1
-                type: string
-                x-kubernetes-validations:
-                - message: must not contain surrounding whitespace
-                  rule: self == self.trim()
-                - message: must not contain control or format characters, or line
-                    or paragraph separators
-                  rule: '!self.matches(''[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]'')'
-                - message: must contain at least one letter or digit
-                  rule: self.matches('[^\\P{L}\\x{115F}\\x{1160}\\x{3164}\\x{FFA0}]|\\p{N}')
-              fleetServer:
-                description: |-
-                  FleetServer is the Classis fleet server of the tenant. When it is not
+                  ClassisServer is the Classis Server of the tenant. When it is not
                   set, the tenant has none. It needs database.
                 properties:
                   adminUsersSecretName:
@@ -296,7 +242,7 @@ spec:
                       and leaves the database, the Service and the policies in place.
                     type: boolean
                   image:
-                    description: Image is the container image of the Classis server.
+                    description: Image is the container image of the Classis Server.
                     maxLength: 512
                     minLength: 1
                     type: string
@@ -333,6 +279,63 @@ spec:
                 - enabled
                 - image
                 type: object
+              database:
+                description: Database says where the PostgreSQL of the tenant lives.
+                properties:
+                  hostname:
+                    description: Hostname is the host of the external PostgreSQL.
+                      Only for type external.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  port:
+                    description: Port is the port of the external PostgreSQL. Only
+                      for type external.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  type:
+                    description: |-
+                      Type is local for a CloudNativePG cluster of the tenant, or external for a
+                      PostgreSQL that someone else runs.
+                    enum:
+                    - local
+                    - external
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: hostname and port must not be set when type is local
+                  rule: self.type != 'local' || (!has(self.hostname) && !has(self.port))
+                - message: hostname is required when type is external
+                  rule: self.type != 'external' || has(self.hostname)
+                - message: type is immutable
+                  rule: self.type == oldSelf.type
+              displayName:
+                description: |-
+                  DisplayName is the name of the tenant that people see and use. It can
+                  change, except while the tenant is at the previous version: then, as for
+                  the NetEye resource, the tenant accepts no change until it upgrades.
+                  Resources derived from the tenant use metadata.name, which never changes. It has at least one letter or digit, so a name made
+                  only of blank characters is refused; the Hangul fillers, which are
+                  letters that show nothing, do not count. The length counts characters,
+                  not bytes. Only one tenant holds a display name: the webhook refuses a
+                  name that another tenant uses, and when two writes pass the webhook at
+                  the same time, the operator gives the name to one tenant and reports the
+                  other one as Failed until it gets another display name.
+                maxLength: 63
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: must not contain surrounding whitespace
+                  rule: self == self.trim()
+                - message: must not contain control or format characters, or line
+                    or paragraph separators
+                  rule: '!self.matches(''[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]'')'
+                - message: must contain at least one letter or digit
+                  rule: self.matches('[^\\P{L}\\x{115F}\\x{1160}\\x{3164}\\x{FFA0}]|\\p{N}')
               useProcedureGates:
                 default: true
                 description: |-
@@ -356,17 +359,6 @@ spec:
             - displayName
             - version
             type: object
-            x-kubernetes-validations:
-            - message: fleetServer needs database
-              rule: '!has(self.fleetServer) || has(self.database)'
-            - message: fleetServer.database.external is required when database.type
-                is external
-              rule: '!has(self.fleetServer) || !has(self.database) || self.database.type
-                != ''external'' || (has(self.fleetServer.database) && has(self.fleetServer.database.external))'
-            - message: fleetServer.database.external must not be set when database.type
-                is local
-              rule: '!has(self.fleetServer) || !has(self.database) || self.database.type
-                != ''local'' || !has(self.fleetServer.database) || !has(self.fleetServer.database.external)'
           status:
             description: |-
               NetEyeTenantStatus defines the observed state of a NetEye tenant. It has the

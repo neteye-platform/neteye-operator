@@ -77,16 +77,16 @@ type ConfigMapKeyReference struct {
 	Key string `json:"key"`
 }
 
-// NetEyeFleetServerSpec defines the Classis fleet server of a tenant: one
+// NetEyeClassisServerSpec defines the Classis Server of a tenant: one
 // instance, with its records in PostgreSQL and its package artifacts in an S3
 // bucket, so that the pod writes nothing to its filesystem.
-type NetEyeFleetServerSpec struct {
+type NetEyeClassisServerSpec struct {
 	// Enabled runs the server. When false, the operator removes the Deployment
 	// and leaves the database, the Service and the policies in place.
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 
-	// Image is the container image of the Classis server.
+	// Image is the container image of the Classis Server.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
@@ -95,11 +95,11 @@ type NetEyeFleetServerSpec struct {
 	// Database tunes the database of the server. Where it lives is the
 	// tenant's spec.database.
 	// +kubebuilder:validation:Optional
-	Database *FleetServerDatabaseSpec `json:"database,omitempty"`
+	Database *ClassisServerDatabaseSpec `json:"database,omitempty"`
 
 	// Blobs is the S3 bucket that holds the package artifacts.
 	// +kubebuilder:validation:Required
-	Blobs FleetServerBlobsSpec `json:"blobs"`
+	Blobs ClassisServerBlobsSpec `json:"blobs"`
 
 	// AdminUsersSecretName names a Secret whose basic-users key holds the file
 	// of the operator plane users, with their Argon2id password hashes. When it
@@ -126,24 +126,24 @@ type NetEyeFleetServerSpec struct {
 
 	// Network narrows the network policies of the server.
 	// +kubebuilder:validation:Optional
-	Network FleetServerNetworkSpec `json:"network,omitempty"`
+	Network ClassisServerNetworkSpec `json:"network,omitempty"`
 }
 
-// FleetServerDatabaseSpec tunes the database of the Classis server. Which of the
+// ClassisServerDatabaseSpec tunes the database of the Classis Server. Which of the
 // two applies follows spec.database.type of the tenant.
-type FleetServerDatabaseSpec struct {
+type ClassisServerDatabaseSpec struct {
 	// Internal tunes the CloudNativePG cluster of a local database.
 	// +kubebuilder:validation:Optional
-	Internal *FleetServerInternalDatabaseSpec `json:"internal,omitempty"`
+	Internal *ClassisServerInternalDatabaseSpec `json:"internal,omitempty"`
 
 	// External names the database and the credentials on an external
 	// PostgreSQL. Required when spec.database.type is external.
 	// +kubebuilder:validation:Optional
-	External *FleetServerExternalDatabaseSpec `json:"external,omitempty"`
+	External *ClassisServerExternalDatabaseSpec `json:"external,omitempty"`
 }
 
-// FleetServerInternalDatabaseSpec tunes the CloudNativePG cluster of a tenant.
-type FleetServerInternalDatabaseSpec struct {
+// ClassisServerInternalDatabaseSpec tunes the CloudNativePG cluster of a tenant.
+type ClassisServerInternalDatabaseSpec struct {
 	// Instances is the number of PostgreSQL instances. The instances never
 	// share a node (required pod anti-affinity on the node name): with two
 	// instances on a cluster that has a single worker node, the second instance
@@ -170,10 +170,10 @@ type FleetServerInternalDatabaseSpec struct {
 	StorageClassName string `json:"storageClassName,omitempty"`
 }
 
-// FleetServerExternalDatabaseSpec names the database and the credentials on the
+// ClassisServerExternalDatabaseSpec names the database and the credentials on the
 // external PostgreSQL of spec.database. The server connects with TLS 1.3 and
 // verifies the certificate.
-type FleetServerExternalDatabaseSpec struct {
+type ClassisServerExternalDatabaseSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
@@ -192,8 +192,8 @@ type FleetServerExternalDatabaseSpec struct {
 	CredentialsSecretName string `json:"credentialsSecretName"`
 }
 
-// FleetServerBlobsSpec is the S3 bucket of the package artifacts.
-type FleetServerBlobsSpec struct {
+// ClassisServerBlobsSpec is the S3 bucket of the package artifacts.
+type ClassisServerBlobsSpec struct {
 	// Endpoint is the https URL of the S3 service. When a private CA signs its
 	// certificate, the tenant's spec.caBundle holds that CA.
 	// +kubebuilder:validation:Required
@@ -225,12 +225,12 @@ type FleetServerBlobsSpec struct {
 	CredentialsSecretName string `json:"credentialsSecretName"`
 }
 
-// FleetServerNetworkSpec narrows the network policies of the server. The
+// ClassisServerNetworkSpec narrows the network policies of the server. The
 // policies are native (networking.k8s.io/v1) and follow the rule of the other
 // components: where a native policy cannot name the peer (the Kubernetes API,
 // the nodes, a service outside the cluster), the rule is open to any peer on
 // its ports.
-type FleetServerNetworkSpec struct {
+type ClassisServerNetworkSpec struct {
 	// AdminIngressCIDRs, when set, are the only sources of the operator plane
 	// (4321). When empty, any source reaches it: a native policy cannot select
 	// the nodes of the PCS proxy, so the proxy, TLS and the Basic credentials

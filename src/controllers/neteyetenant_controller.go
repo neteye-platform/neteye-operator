@@ -183,8 +183,8 @@ func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *ne
 		return failed(fmt.Sprintf("display name %q is already used by tenant %s; choose another display name", tenant.Spec.DisplayName, holder))
 	}
 
-	fleetNodes, fleetOperations := r.fleetServerComponents(ctx, tenant)
-	graph, err := newLifecycleGraph(append(tenantLifecycleNodes(tenant), fleetNodes...))
+	classisNodes, classisOperations := r.classisServerComponents(ctx, tenant)
+	graph, err := newLifecycleGraph(append(tenantLifecycleNodes(tenant), classisNodes...))
 	if err != nil {
 		setTenantPhase(tenant, neteye.PhaseFailed, err.Error())
 		return ctrl.Result{}, fmt.Errorf("construct tenant component lifecycle graph: %w", err)
@@ -194,7 +194,7 @@ func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *ne
 		tenantGatewayComponentID:   func() (componentResult, error) { return r.reconcileGateway(ctx, tenant) },
 		tenantAlyvixRDPComponentID: func() (componentResult, error) { return r.reconcileAlyvixRDP(ctx, tenant) },
 	}
-	for id, operation := range fleetOperations {
+	for id, operation := range classisOperations {
 		operations[id] = operation
 	}
 	if procedure != lifecycleSteady && tenant.Spec.EffectiveUseProcedureGates() {

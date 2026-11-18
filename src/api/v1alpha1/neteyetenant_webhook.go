@@ -33,9 +33,10 @@ func SetupNetEyeTenantWebhookWithManager(mgr ctrl.Manager) error {
 // +kubebuilder:object:generate=false
 
 // NetEyeTenantValidator validates the NetEyeTenant rules that the CRD schema
-// cannot express: the version transitions, the namespace of a tenant, and a
-// display name that is unique among tenants. The CRD validates everything
-// that depends on one field only.
+// cannot express: the version transitions, the namespace of a tenant, a
+// display name that is unique among tenants, and the database of the Classis
+// Server, which depends on two fields of the spec. The CRD validates
+// everything that depends on one field only.
 type NetEyeTenantValidator struct {
 	reader client.Reader
 }
@@ -46,6 +47,7 @@ func (v *NetEyeTenantValidator) ValidateCreate(ctx context.Context, obj *NetEyeT
 	if err := validateVersionOnCreate(obj.Spec.Version); err != nil {
 		errors = append(errors, err)
 	}
+	errors = append(errors, ValidateClassisServerDatabase(obj)...)
 	if len(errors) == 0 {
 		checks, err := v.validateNotNewerThanNetEye(ctx, obj)
 		if err != nil {
@@ -62,14 +64,14 @@ func (v *NetEyeTenantValidator) ValidateCreate(ctx context.Context, obj *NetEyeT
 
 // ValidateUpdate validates NetEyeTenant resources on update. The name and the
 // namespace of a resource never change. The version follows the rules of the
-// NetEye resource, and a new display name must be unique. An update of a
-// tenant that is being deleted, such as the removal of its finalizer, is
-// always accepted.
+// NetEye resource, the database of the Classis Server is checked again, and a
+// new display name must be unique. An update of a tenant that is being
+// deleted, such as the removal of its finalizer, is always accepted.
 func (v *NetEyeTenantValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *NetEyeTenant) (admission.Warnings, error) {
 	if !newObj.DeletionTimestamp.IsZero() {
 		return nil, nil
 	}
-	var errors field.ErrorList
+	errors := ValidateClassisServerDatabase(newObj)
 	if err := validateVersionOnUpdate(oldObj.Spec.Version, newObj.Spec.Version); err != nil {
 		errors = append(errors, err)
 	} else if oldObj.Spec.Version != newObj.Spec.Version {
@@ -87,6 +89,29 @@ func (v *NetEyeTenantValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 		errors = append(errors, checks...)
 	}
 	return nil, tenantInvalid(newObj, errors)
+}
+
+// ValidateClassisServerDatabase enforces that a Classis Server has a database, that
+// an external database names the database of the server, and that a local
+// database names none.
+func ValidateClassisServerDatabase(tenant *NetEyeTenant) field.ErrorList {
+	server := tenant.Spec.ClassisServer
+	if server == nil {
+		return nil
+	}
+	database := tenant.Spec.Database
+	if database == nil {
+		return field.ErrorList{field.Required(field.NewPath("spec", "database"), "classisServer needs database")}
+	}
+	external := server.Database != nil && server.Database.External != nil
+	path := field.NewPath("spec", "classisServer", "database", "external")
+	switch {
+	case database.Type == TenantDatabaseExternal && !external:
+		return field.ErrorList{field.Required(path, "required when spec.database.type is external")}
+	case database.Type == TenantDatabaseLocal && external:
+		return field.ErrorList{field.Forbidden(path, "must not be set when spec.database.type is local")}
+	}
+	return nil
 }
 
 // ValidateDelete allows NetEyeTenant deletion.
