@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -26,6 +27,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/keycloak"
+	"github.com/neteye-platform/neteye-operator/internal/permissionsync"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -38,6 +41,11 @@ const (
 	// tenantNamespaceComponentID is the tenant namespace: its tenant metadata
 	// and its network baseline. Later tenant components depend on it.
 	tenantNamespaceComponentID componentID = "namespace"
+
+	// tenantPermissionSyncComponentID is the PermissionSync instance of the
+	// tenant. It runs in the tenant namespace, so it depends on it, and on
+	// the realm of the tenant when it trusts that realm.
+	tenantPermissionSyncComponentID componentID = "permission-sync"
 )
 
 var tenantNamePattern = regexp.MustCompile(neteye.TenantNamePattern)
@@ -51,6 +59,11 @@ type NetEyeTenantReconciler struct {
 	// APIReader reads from the API server without the cache. The deletion of a
 	// tenant uses it. When nil, the client is used.
 	APIReader client.Reader
+
+	// AdminProviders gives the Admin API client of the internal Keycloak
+	// administrator, which creates the realm of the tenant and its
+	// administrator account. The KeycloakRealm controller shares it.
+	AdminProviders *keycloak.AdminProviderRegistry
 
 	// OperatorUsername is the Kubernetes username of the operator, the only
 	// user that the tenant namespace admission policy exempts. The tenant uses
@@ -72,6 +85,11 @@ type NetEyeTenantReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;create;update;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=neteye.cloud,resources=neteyes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups="",resources=configmaps;services,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=neteye.cloud,resources=keycloakrealms,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get;list;watch;create;update
 
@@ -141,13 +159,23 @@ func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *ne
 		return failed(fmt.Sprintf("display name %q is already used by tenant %s; choose another display name", tenant.Spec.DisplayName, holder))
 	}
 
-	graph, err := newLifecycleGraph([]lifecycleNode{{ID: tenantNamespaceComponentID}})
+	permissionSyncDependencies := []componentID{tenantNamespaceComponentID}
+	if tenant.Spec.PermissionSync.EffectiveRealm(tenant.Name) == tenant.Name {
+		permissionSyncDependencies = append(permissionSyncDependencies, tenantRealmComponentID)
+	}
+	graph, err := newLifecycleGraph([]lifecycleNode{
+		{ID: tenantNamespaceComponentID},
+		{ID: tenantRealmComponentID, Dependencies: []componentID{tenantNamespaceComponentID}},
+		{ID: tenantPermissionSyncComponentID, Dependencies: permissionSyncDependencies},
+	})
 	if err != nil {
 		setTenantPhase(tenant, neteye.PhaseFailed, err.Error())
 		return ctrl.Result{}, fmt.Errorf("construct tenant component lifecycle graph: %w", err)
 	}
 	operations := map[componentID]componentOperation{
-		tenantNamespaceComponentID: func() (componentResult, error) { return r.reconcileNamespace(ctx, tenant) },
+		tenantNamespaceComponentID:      func() (componentResult, error) { return r.reconcileNamespace(ctx, tenant) },
+		tenantRealmComponentID:          func() (componentResult, error) { return r.reconcileRealm(ctx, tenant) },
+		tenantPermissionSyncComponentID: func() (componentResult, error) { return r.reconcilePermissionSync(ctx, tenant) },
 	}
 	if procedure != lifecycleSteady && tenant.Spec.EffectiveUseProcedureGates() {
 		present, err := listProcedureGates(ctx, r.Client, tenant.Namespace, version)
@@ -218,6 +246,47 @@ func (r *NetEyeTenantReconciler) reconcileNamespace(ctx context.Context, tenant 
 	return readyResult(tenantNamespaceComponentID, "Available", "Tenant namespace is ready")
 }
 
+// reconcilePermissionSync deploys the PermissionSync instance of the tenant.
+// The version of the tenant gives the image, and the tenant gives the CA
+// bundle. The NetEye resource gives the public hostname of Keycloak, so the
+// trusted issuer, and tells whether the operator manages the Gateway.
+func (r *NetEyeTenantReconciler) reconcilePermissionSync(ctx context.Context, tenant *neteye.NetEyeTenant) (componentResult, error) {
+	installations := &neteye.NetEyeList{}
+	if err := r.List(ctx, installations); err != nil {
+		return degradedResult(tenantPermissionSyncComponentID, "NetEyeReadFailed", fmt.Sprintf("failed to read the NetEye resource: %v", err), r.failureRequeue(), err)
+	}
+	if len(installations.Items) == 0 {
+		return progressingResult(tenantPermissionSyncComponentID, "WaitingForNetEye", "waiting for the NetEye resource, which gives the identity hostname", r.failureRequeue())
+	}
+	release, ok := neteye.ComponentsForVersion(tenant.Spec.Version)
+	if !ok {
+		err := fmt.Errorf("NetEye version %q is not supported", tenant.Spec.Version)
+		return degradedResult(tenantPermissionSyncComponentID, "UnsupportedVersion", err.Error(), r.failureRequeue(), err)
+	}
+	return r.ensurePermissionSync(ctx, tenant, &installations.Items[0], release.PermissionSyncImage)
+}
+
+func (r *NetEyeTenantReconciler) ensurePermissionSync(ctx context.Context, tenant *neteye.NetEyeTenant, installation *neteye.NetEye, image string) (componentResult, error) {
+	outcome, err := permissionsync.Ensure(ctx, r.Client, permissionsync.Input{
+		Tenant:           tenant,
+		IdentityHostname: installation.Spec.Identity.Hostname,
+		Image:            image,
+		CABundle:         tenantCABundleRef(tenant),
+		ManagedGateway:   installation.Spec.Gateway.EffectiveManaged(),
+	})
+	if err != nil {
+		return degradedResult(tenantPermissionSyncComponentID, "ReconcileFailed", err.Error(), r.failureRequeue(), err)
+	}
+	switch outcome.State {
+	case permissionsync.StateReady:
+		return readyResult(tenantPermissionSyncComponentID, outcome.Reason, outcome.Message)
+	case permissionsync.StateInvalid:
+		return degradedResult(tenantPermissionSyncComponentID, outcome.Reason, outcome.Message, r.failureRequeue(), fmt.Errorf("%s", outcome.Message))
+	default:
+		return progressingResult(tenantPermissionSyncComponentID, outcome.Reason, outcome.Message, r.failureRequeue())
+	}
+}
+
 // ensureNamespaceMetadata marks the namespace as the namespace of the tenant
 // and shows the tenant display name on it.
 func (r *NetEyeTenantReconciler) ensureNamespaceMetadata(ctx context.Context, tenant *neteye.NetEyeTenant) error {
@@ -243,7 +312,8 @@ func (r *NetEyeTenantReconciler) ensureNamespaceMetadata(ctx context.Context, te
 	return nil
 }
 
-// reconcileDelete removes the tenant metadata from the namespace, so that the
+// reconcileDelete removes the Keycloak realm of the tenant and its
+// administrator, then the tenant metadata from the namespace, so that the
 // namespace no longer counts as a tenant namespace, and then releases the
 // display name. The namespace itself and
 // anything else in it stay: deleting a tenant never deletes the namespace that
@@ -257,6 +327,14 @@ func (r *NetEyeTenantReconciler) reconcileDelete(ctx context.Context, tenant *ne
 	// the metadata that another tenant wrote on that namespace.
 	if invalidTenantReason(tenant) != "" {
 		return r.removeFinalizer(ctx, tenant)
+	}
+	removed, err := r.deleteTenantRealm(ctx, tenant)
+	if err != nil {
+		ctrl.LoggerFrom(ctx).Error(err, "unable to delete the Keycloak realm of the tenant", "requeueAfter", r.failureRequeue())
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+	}
+	if !removed {
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
 	if err := r.removeNamespaceMetadata(ctx, tenant); err != nil {
 		ctrl.LoggerFrom(ctx).Error(err, "unable to remove the tenant metadata from the namespace", "requeueAfter", r.failureRequeue())
@@ -325,32 +403,36 @@ func setTenantPhase(tenant *neteye.NetEyeTenant, phase neteye.NetEyePhase, messa
 }
 
 // tenantComponentPhase derives the phase from the component results. The
-// tenant has no per-component status, so the message names the components
-// that are not ready and says why. Names are sorted, so the message does not
-// change from one reconciliation to the next while the state stays the same.
+// tenant has no per-component status, so the message lists every component
+// that is not ready, with its state, its reason and why. Names are sorted, so
+// the message does not change from one reconciliation to the next while the
+// state stays the same.
 func tenantComponentPhase(results map[componentID]componentResult) (neteye.NetEyePhase, string) {
 	ids := make([]string, 0, len(results))
 	for id := range results {
 		ids = append(ids, string(id))
 	}
 	sort.Strings(ids)
-	var degraded, waiting []string
+	phase := neteye.PhaseReady
+	var notReady []string
 	for _, id := range ids {
 		result := results[componentID(id)]
 		switch result.State {
+		case componentStateReady:
+			continue
 		case componentStateDegraded:
-			degraded = append(degraded, id+": "+result.Message)
-		case componentStateProgressing, componentStateBlocked:
-			waiting = append(waiting, id+": "+result.Message)
+			phase = neteye.PhaseFailed
+		default:
+			if phase == neteye.PhaseReady {
+				phase = neteye.PhaseNotReady
+			}
 		}
+		notReady = append(notReady, fmt.Sprintf("%s %s (%s): %s", id, result.State, result.Reason, result.Message))
 	}
-	switch {
-	case len(degraded) > 0:
-		return neteye.PhaseFailed, "Failed components: " + strings.Join(degraded, "; ")
-	case len(waiting) > 0:
-		return neteye.PhaseNotReady, "Waiting for components: " + strings.Join(waiting, "; ")
+	if len(notReady) == 0 {
+		return neteye.PhaseReady, "All components are ready"
 	}
-	return neteye.PhaseReady, "All components are ready"
+	return phase, "Components not ready: " + strings.Join(notReady, "; ")
 }
 
 // tenantLifecyclePhase folds an unfinished install or upgrade into the phase.
@@ -404,6 +486,15 @@ func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&neteye.NetEyeTenant{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Owns(networkPolicy).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Service{}).
+		Owns(&neteye.KeycloakRealm{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.tenantsForSecret)).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.tenantsForCABundle)).
+		// Only the spec of NetEye matters (release and identity hostname), so
+		// its status writes do not reconcile every tenant.
+		Watches(&neteye.NetEye{}, handler.EnqueueRequestsFromMapFunc(r.allTenants), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(tenantForNamespace)).
 		Watches(&neteye.NetEyeProcedureGate{}, handler.EnqueueRequestsFromMapFunc(tenantForProcedureGate)).
 		Watches(admissionPolicy, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantNamespacePolicy).
@@ -411,12 +502,67 @@ func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// allTenants maps a change of the shared admission policy to every tenant,
-// because all tenants depend on it.
+// tenantsForSecret maps a Secret to the tenants that read it: the credentials
+// of the tenant realm administrator and the GLPI credentials of PermissionSync
+// to the tenant of their namespace, and the root CA of NetEye and the Keycloak
+// administrator credentials of the platform to every tenant. Other Secrets of
+// a tenant namespace do not reconcile the tenant, because each reconciliation
+// calls the Keycloak Admin API.
+func (r *NetEyeTenantReconciler) tenantsForSecret(ctx context.Context, secret client.Object) []reconcile.Request {
+	if secret.GetNamespace() == keycloak.WorkloadNamespace {
+		switch secret.GetName() {
+		case permissionsync.RootCASecretName, keycloak.AdminSecretName, keycloak.InternalAdminSecretName:
+			return r.allTenants(ctx, secret)
+		}
+		return nil
+	}
+	if !tenantNamePattern.MatchString(secret.GetNamespace()) {
+		return nil
+	}
+	request := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: secret.GetNamespace(), Name: secret.GetNamespace()}}
+	if secret.GetName() == keycloak.AdminSecretName {
+		return []reconcile.Request{request}
+	}
+	tenant := &neteye.NetEyeTenant{}
+	if err := r.Get(ctx, request.NamespacedName, tenant); err != nil {
+		return nil
+	}
+	if glpi := tenant.Spec.PermissionSync.GLPI; glpi != nil && glpi.CredentialsSecretRef.Name == secret.GetName() {
+		return []reconcile.Request{request}
+	}
+	return nil
+}
+
+// tenantsForCABundle maps a change of a ConfigMap in a tenant namespace to
+// that tenant when the ConfigMap is its CA bundle, because PermissionSync
+// trusts its certificates.
+func (r *NetEyeTenantReconciler) tenantsForCABundle(ctx context.Context, configMap client.Object) []reconcile.Request {
+	if !tenantNamePattern.MatchString(configMap.GetNamespace()) {
+		return nil
+	}
+	request := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: configMap.GetNamespace(), Name: configMap.GetNamespace()}}
+	tenant := &neteye.NetEyeTenant{}
+	if err := r.Get(ctx, request.NamespacedName, tenant); err != nil {
+		return nil
+	}
+	if tenant.Spec.EffectiveCABundle().Name != configMap.GetName() {
+		return nil
+	}
+	return []reconcile.Request{request}
+}
+
+// tenantCABundleRef returns the CA bundle ConfigMap of the tenant.
+func tenantCABundleRef(tenant *neteye.NetEyeTenant) resources.CABundleRef {
+	selector := tenant.Spec.EffectiveCABundle()
+	return resources.CABundleRef{Name: selector.Name, Key: selector.Key}
+}
+
+// allTenants maps a change of a shared object to every tenant, because all
+// tenants depend on it.
 func (r *NetEyeTenantReconciler) allTenants(ctx context.Context, _ client.Object) []reconcile.Request {
 	tenants := &neteye.NetEyeTenantList{}
 	if err := r.List(ctx, tenants); err != nil {
-		ctrl.LoggerFrom(ctx).Error(err, "list NetEyeTenants after a change of the tenant namespace admission policy")
+		ctrl.LoggerFrom(ctx).Error(err, "list NetEyeTenants after a change of an object that every tenant uses")
 		return nil
 	}
 	requests := make([]reconcile.Request, 0, len(tenants.Items))
@@ -429,7 +575,7 @@ func (r *NetEyeTenantReconciler) allTenants(ctx context.Context, _ client.Object
 // tenantForNamespace maps a namespace to the tenant it may contain, which has
 // the same name.
 func tenantForNamespace(_ context.Context, namespace client.Object) []reconcile.Request {
-	if !strings.HasPrefix(namespace.GetName(), neteye.TenantNamePrefix) {
+	if !tenantNamePattern.MatchString(namespace.GetName()) {
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: namespace.GetName(), Name: namespace.GetName()}}}

@@ -110,7 +110,7 @@ spec:
               verbs: [update]
             - apiGroups: [neteye.cloud]
               resources: [keycloakrealms]
-              verbs: [create, get, list, patch, update, watch]
+              verbs: [create, delete, get, list, patch, update, watch]
             - apiGroups: [neteye.cloud]
               resources: [keycloakrealms/status]
               verbs: [get, patch, update]
@@ -156,6 +156,10 @@ spec:
                       - {
                         name: RELATED_IMAGE_EDOT_GATEWAY,
                         value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1,
+                      }
+                      - {
+                        name: RELATED_IMAGE_PERMISSIONSYNC,
+                        value: ghcr.io/neteye-platform/permissionsync:0.2.0@sha256:554bcf1803c2fe7ac52b8a081b4d0727d131647b43a716449f2063dd719a921c,
                       }
                     securityContext:
                       {

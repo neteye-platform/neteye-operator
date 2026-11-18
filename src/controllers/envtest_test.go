@@ -1064,6 +1064,32 @@ func TestAPIServerValidatesNetEyeTenantSchema(t *testing.T) {
 		})
 	}
 
+	withPermissionSync := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{
+		Version:     neteye.CurrentNetEyeVersion,
+		DisplayName: "Default",
+		PermissionSync: neteye.NetEyeTenantPermissionSyncSpec{
+			Realm:           "master",
+			Replicas:        ptr.To(int32(1)),
+			Provider:        &neteye.NetEyeTenantPermissionSyncProviderSpec{Endpoint: "https://node.example.com/neteye/api/v2/permission-provider/desired-state"},
+			GLPI:            &neteye.NetEyeTenantPermissionSyncGLPISpec{Endpoint: "https://node.example.com/glpi/apirest.php", CredentialsSecretRef: neteye.NetEyeTenantPermissionSyncGLPICredentials{Name: "permissionsync-glpi-credentials"}},
+			Targets:         []neteye.NetEyeTenantPermissionSyncTarget{{LogicalTarget: "glpi", Adapter: "glpi"}},
+			PodExtraEnvVars: []neteye.NetEyeEnvVar{{Name: "PERMISSIONSYNC_OBSERVABILITY__LOG_LEVEL", Value: "debug"}},
+		},
+	}}
+	if err := c.Create(ctx, withPermissionSync, client.DryRunAll); err != nil {
+		t.Fatalf("tenant with a complete permissionSync section rejected: %v", err)
+	}
+	unknownAdapter := withPermissionSync.DeepCopy()
+	unknownAdapter.Spec.PermissionSync.Targets[0].Adapter = "ldap"
+	if err := c.Create(ctx, unknownAdapter, client.DryRunAll); err == nil || !strings.Contains(err.Error(), "spec.permissionSync.targets[0].adapter") {
+		t.Errorf("error = %v, want the unknown adapter refused", err)
+	}
+	tooMany := withPermissionSync.DeepCopy()
+	tooMany.Spec.PermissionSync.Replicas = ptr.To(int32(0))
+	if err := c.Create(ctx, tooMany, client.DryRunAll); err == nil || !strings.Contains(err.Error(), "spec.permissionSync.replicas") {
+		t.Errorf("error = %v, want zero replicas refused", err)
+	}
+
 	// The length counts characters, not bytes: 63 two-byte characters fit.
 	longest := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: strings.Repeat("ü", 63)}}
 	if err := c.Create(ctx, longest, client.DryRunAll); err != nil {
@@ -1126,16 +1152,18 @@ func TestAPIServerGivesADisplayNameToOneTenantOnly(t *testing.T) {
 		t.Fatalf("second tenant = %q: %s, want it refused", second.Status.Phase, second.Status.Message)
 	}
 
-	// Once the first tenant is gone, the second one gets the display name.
+	// Once the first tenant uses another display name, the second one gets
+	// the name.
 	first := &neteye.NetEyeTenant{}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: testTenant}, first); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Delete(ctx, first); err != nil {
+	first.Spec.DisplayName = "First"
+	if err := c.Update(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	if gone := reconcile(testTenant); gone != nil {
-		t.Fatalf("first tenant still exists after its deletion: %#v", gone.Finalizers)
+	if renamed := reconcile(testTenant); strings.Contains(renamed.Status.Message, "already used") {
+		t.Fatalf("first tenant = %q: %s, want its new display name", renamed.Status.Phase, renamed.Status.Message)
 	}
 	if second := reconcile(otherTenant); strings.Contains(second.Status.Message, "already used") {
 		t.Fatalf("second tenant = %q: %s, want the display name", second.Status.Phase, second.Status.Message)

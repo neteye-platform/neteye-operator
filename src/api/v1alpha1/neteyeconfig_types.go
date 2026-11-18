@@ -19,6 +19,8 @@ type NetEyeComponents struct {
 	OTelCollectorImage string
 	// Full image reference for the EDOT Gateway container.
 	EDOTGatewayImage string
+	// Full image reference for the PermissionSync container of each tenant.
+	PermissionSyncImage string
 }
 
 // NetEyeSecretKeySelector identifies one key inside a Secret in the NetEye CR
@@ -448,9 +450,10 @@ func (s *NetEyeGatewaySpec) EffectiveManaged() bool {
 
 // netEyeVersionMap maps a NetEye version string to its component image set.
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
-// image version.
+// image version. The PermissionSync image must be 0.2.0 or later, because the
+// operator passes the GLPI credentials as environment variables.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.10@sha256:686311bbb1b8f557d09cd04c5c0d2a1cabf85c2dd9a68e97075d77f238f4b47c", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.10@sha256:686311bbb1b8f557d09cd04c5c0d2a1cabf85c2dd9a68e97075d77f238f4b47c", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1", PermissionSyncImage: "ghcr.io/neteye-platform/permissionsync:0.2.0@sha256:554bcf1803c2fe7ac52b8a081b4d0727d131647b43a716449f2063dd719a921c"},
 }
 
 const (
@@ -464,6 +467,9 @@ const (
 	// CA bundle when spec.caBundle is unset.
 	DefaultCABundleConfigMapName = "neteye-ca-bundle"
 	DefaultCABundleKey           = "ca-bundle.pem"
+
+	// RelatedImagePermissionSyncEnv overrides the PermissionSync image packaged with the operator.
+	RelatedImagePermissionSyncEnv = "RELATED_IMAGE_PERMISSIONSYNC"
 
 	CurrentNetEyeVersion  = "4.51"
 	PreviousNetEyeVersion = "4.50"
@@ -485,6 +491,9 @@ func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	}
 	if image := strings.TrimSpace(os.Getenv(RelatedImageEDOTGatewayEnv)); image != "" {
 		c.EDOTGatewayImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImagePermissionSyncEnv)); image != "" {
+		c.PermissionSyncImage = image
 	}
 	return c, ok
 }
