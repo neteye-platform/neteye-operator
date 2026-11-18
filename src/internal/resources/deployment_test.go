@@ -45,6 +45,36 @@ func TestIsDeploymentReadyRequiresUpdatedReplicas(t *testing.T) {
 	}
 }
 
+// During the rollout of one replica the old pod is ready and the new one is
+// updated but not ready: the counts alone look complete.
+func TestIsDeploymentReadyWaitsForTheOldReplicasToGo(t *testing.T) {
+	desired := int32(1)
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "guacamole", Namespace: "tenant", Generation: 2},
+		Spec:       appsv1.DeploymentSpec{Replicas: &desired},
+		Status:     appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 2, ReadyReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1},
+	}
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&appsv1.Deployment{}).WithObjects(deployment).Build()
+
+	ready, message, err := IsDeploymentReady(context.Background(), c, "tenant", "guacamole")
+	if err != nil || ready || !strings.Contains(message, "old replicas 1") {
+		t.Fatalf("ready=%t message=%q err=%v, want not ready while an old replica is left", ready, message, err)
+	}
+
+	deployment.Status.Replicas = 1
+	if err := c.Status().Update(context.Background(), deployment); err != nil {
+		t.Fatal(err)
+	}
+	ready, _, err = IsDeploymentReady(context.Background(), c, "tenant", "guacamole")
+	if err != nil || !ready {
+		t.Fatalf("ready=%t err=%v, want ready with one ready replica of the current revision", ready, err)
+	}
+}
+
 func TestIsDeploymentReadyReportsStalledRollout(t *testing.T) {
 	stalled := appsv1.DeploymentCondition{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse, Reason: "ProgressDeadlineExceeded", Message: `ReplicaSet "collector-1" has timed out progressing.`}
 	for _, test := range []struct {

@@ -42,6 +42,33 @@ func EnsureHTTPRoute(ctx context.Context, client client.Client, namespace string
 	return ensureHTTPRouteSpec(ctx, client, namespace, name, desiredSpec, owner)
 }
 
+// EnsureHTTPRouteRules ensures a Gateway API HTTPRoute exists for the given
+// hostnames with the given rules. Each rule names its own backends, which must
+// be Services in the namespace of the route.
+func EnsureHTTPRouteRules(ctx context.Context, client client.Client, namespace, name string, gateway GatewayRef, sectionName string, hostnames []string, rules []any, owner *metav1.OwnerReference) error {
+	desiredSpec := map[string]any{
+		"parentRefs": []any{
+			map[string]any{
+				"group":       "gateway.networking.k8s.io",
+				"kind":        "Gateway",
+				"namespace":   gateway.Namespace,
+				"name":        gateway.Name,
+				"sectionName": sectionName,
+			},
+		},
+		"hostnames": stringSliceToInterfaces(hostnames),
+		"rules":     rules,
+	}
+	return ensureHTTPRouteSpec(ctx, client, namespace, name, desiredSpec, owner)
+}
+
+// HTTPRouteServiceBackend is a backendRef of an HTTPRoute rule to a Service in
+// the namespace of the route, written with the values that the API server
+// defaults, so that the live spec equals the desired one.
+func HTTPRouteServiceBackend(serviceName string, port int64) map[string]any {
+	return map[string]any{"group": "", "kind": "Service", "name": serviceName, "port": port, "weight": int64(1)}
+}
+
 func ensureHTTPRouteSpec(ctx context.Context, client client.Client, namespace string, name string, desiredSpec map[string]any, owner *metav1.OwnerReference) error {
 	outcome, err := Apply(ctx, client, ObjectDefinition{
 		GVK:       httpRouteGVK(),

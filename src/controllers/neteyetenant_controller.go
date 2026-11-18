@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -27,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/alyvix"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
@@ -39,6 +41,11 @@ const (
 	// tenantNamespaceComponentID is the tenant namespace: its tenant metadata
 	// and its network baseline. Later tenant components depend on it.
 	tenantNamespaceComponentID componentID = "namespace"
+
+	// tenantAlyvixRDPComponentID is the RDP access to the Alyvix sessions of
+	// the tenant: Apache Guacamole and guacd. It runs while the tenant enables
+	// the Alyvix feature module.
+	tenantAlyvixRDPComponentID componentID = "alyvix-rdp"
 )
 
 var tenantNamePattern = regexp.MustCompile(neteye.TenantNamePattern)
@@ -53,6 +60,10 @@ type NetEyeTenantReconciler struct {
 	// tenant uses it. When nil, the client is used.
 	APIReader client.Reader
 
+	// RDPComponent reconciles the RDP access to the Alyvix sessions of a
+	// tenant. When nil, the component is reported as disabled.
+	RDPComponent *alyvix.RDPComponent
+
 	// OperatorUsername is the Kubernetes username of the operator, the only
 	// user that the tenant namespace admission policy exempts. The tenant uses
 	// it to check that the policy in the cluster is the one of the operator.
@@ -60,6 +71,7 @@ type NetEyeTenantReconciler struct {
 
 	// Requeue intervals. When zero, the matching Default*RequeueAfter is used.
 	FailureRequeueAfter        time.Duration
+	ProgressingRequeueAfter    time.Duration
 	ReconciliationRequeueAfter time.Duration
 
 	// releasePlans overrides defaultTenantReleasePlans in tests.
@@ -73,7 +85,12 @@ type NetEyeTenantReconciler struct {
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;create;update;delete
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get;list;watch;create;update
 
@@ -155,13 +172,14 @@ func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *ne
 		return failed(fmt.Sprintf("display name %q is already used by tenant %s; choose another display name", tenant.Spec.DisplayName, holder))
 	}
 
-	graph, err := newLifecycleGraph([]lifecycleNode{{ID: tenantNamespaceComponentID}})
+	graph, err := newLifecycleGraph(tenantLifecycleNodes(tenant))
 	if err != nil {
 		setTenantPhase(tenant, neteye.PhaseFailed, err.Error())
 		return ctrl.Result{}, fmt.Errorf("construct tenant component lifecycle graph: %w", err)
 	}
 	operations := map[componentID]componentOperation{
 		tenantNamespaceComponentID: func() (componentResult, error) { return r.reconcileNamespace(ctx, tenant) },
+		tenantAlyvixRDPComponentID: func() (componentResult, error) { return r.reconcileAlyvixRDP(ctx, tenant) },
 	}
 	if procedure != lifecycleSteady && tenant.Spec.EffectiveUseProcedureGates() {
 		present, err := listProcedureGates(ctx, r.Client, tenant.Namespace, version)
@@ -223,6 +241,18 @@ func (r *NetEyeTenantReconciler) netEyeCompleted(ctx context.Context, version st
 	return false, nil
 }
 
+// tenantLifecycleNodes declares what each tenant component waits for. The RDP
+// access waits for the namespace only while the tenant enables Alyvix: its
+// removal must not wait for the namespace baseline, so a disabled RDP access
+// is removed on every pass.
+func tenantLifecycleNodes(tenant *neteye.NetEyeTenant) []lifecycleNode {
+	rdp := lifecycleNode{ID: tenantAlyvixRDPComponentID}
+	if tenant.Spec.AlyvixEnabled() {
+		rdp.Dependencies = []componentID{tenantNamespaceComponentID}
+	}
+	return []lifecycleNode{{ID: tenantNamespaceComponentID}, rdp}
+}
+
 func invalidTenantReason(tenant *neteye.NetEyeTenant) string {
 	if !tenantNamePattern.MatchString(tenant.Name) {
 		return fmt.Sprintf("tenant name %q does not match %s", tenant.Name, neteye.TenantNamePattern)
@@ -251,12 +281,98 @@ func (r *NetEyeTenantReconciler) reconcileNamespace(ctx context.Context, tenant 
 	switch {
 	case err != nil:
 		return degradedResult(tenantNamespaceComponentID, "NamespacePolicyCheckFailed", fmt.Sprintf("failed to check the tenant namespace admission policy: %v", err), r.failureRequeue(), err)
-	case state == tenantNamespacePolicyConflict:
+	case state == tenantPolicyConflict:
 		return degradedResult(tenantNamespaceComponentID, "NamespacePolicyConflict", message, r.failureRequeue(), fmt.Errorf("%s", message))
-	case state == tenantNamespacePolicyMissing:
+	case state == tenantPolicyMissing:
 		return progressingResult(tenantNamespaceComponentID, "WaitingForNamespacePolicy", message, r.failureRequeue())
 	}
 	return readyResult(tenantNamespaceComponentID, "Available", "Tenant namespace is ready")
+}
+
+// reconcileAlyvixRDP deploys the RDP access to the Alyvix sessions in the
+// tenant namespace while the tenant enables the Alyvix feature module, and
+// removes it otherwise. The images come from the NetEye version of the NetEye
+// resource, which also names the Gateway.
+func (r *NetEyeTenantReconciler) reconcileAlyvixRDP(ctx context.Context, tenant *neteye.NetEyeTenant) (componentResult, error) {
+	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
+	if !tenant.Spec.AlyvixEnabled() || r.RDPComponent == nil {
+		if r.RDPComponent != nil {
+			if err := r.RDPComponent.Delete(ctx, tenant.Namespace, owner); err != nil {
+				return degradedResult(tenantAlyvixRDPComponentID, "DeleteFailed", fmt.Sprintf("failed to remove the RDP access: %v", err), r.failureRequeue(), err)
+			}
+		}
+		return readyResult(tenantAlyvixRDPComponentID, "Disabled", "The Alyvix feature module is not enabled for the tenant")
+	}
+	ne, err := r.netEye(ctx)
+	if err != nil {
+		return degradedResult(tenantAlyvixRDPComponentID, "NetEyeUnavailable", fmt.Sprintf("failed to read the NetEye resource: %v", err), r.failureRequeue(), err)
+	}
+	if ne == nil {
+		return progressingResult(tenantAlyvixRDPComponentID, "WaitingForNetEye", fmt.Sprintf("waiting for the NetEye resource in namespace %q, which selects the images and the Gateway", neteye.NetEyeNamespace), r.progressingRequeue())
+	}
+	components, ok := neteye.ComponentsForVersion(ne.Spec.Version)
+	if !ok {
+		message := fmt.Sprintf("unsupported NetEye version '%s'; supported versions are: %v", ne.Spec.Version, neteye.SupportedVersions())
+		return degradedResult(tenantAlyvixRDPComponentID, "UnsupportedVersion", message, r.failureRequeue(), fmt.Errorf("%s", message))
+	}
+	var gateway *resources.GatewayRef
+	if ne.Spec.Gateway.EffectiveManaged() {
+		gateway = &resources.GatewayRef{Namespace: ne.Namespace, Name: ne.Spec.Gateway.Name}
+	}
+	outcome := r.RDPComponent.Ensure(ctx, alyvix.RDPInputs{
+		Namespace:      tenant.Namespace,
+		GuacamoleImage: components.GuacamoleImage,
+		GuacdImage:     components.GuacdImage,
+		Ports:          tenant.Spec.Alyvix.EffectiveRDPPorts(),
+		Gateway:        gateway,
+	}, owner)
+	if gateway != nil && outcome.Phase != alyvix.PhaseDegraded {
+		if result, waiting, err := r.waitForTenantRoutePolicy(ctx); waiting {
+			return result, err
+		}
+	}
+	switch outcome.Phase {
+	case alyvix.PhaseReady:
+		return readyResult(tenantAlyvixRDPComponentID, outcome.Reason, outcome.Message)
+	case alyvix.PhaseProgressing:
+		return progressingResult(tenantAlyvixRDPComponentID, outcome.Reason, outcome.Message, r.progressingRequeue())
+	default:
+		return degradedResult(tenantAlyvixRDPComponentID, outcome.Reason, outcome.Message, r.failureRequeue(), outcome.Err)
+	}
+}
+
+// waitForTenantRoutePolicy reports the RDP access not ready while the API
+// server does not enforce the route policy. The listener of the RDP access is
+// shared by the tenants, so without the policy whoever can write the routes of
+// a tenant namespace can serve the hostname of another tenant.
+func (r *NetEyeTenantReconciler) waitForTenantRoutePolicy(ctx context.Context) (componentResult, bool, error) {
+	state, message, err := checkTenantAdmissionPolicy(ctx, r.Client, tenantRoutePolicy())
+	switch {
+	case err != nil:
+		result, err := degradedResult(tenantAlyvixRDPComponentID, "RoutePolicyCheckFailed", fmt.Sprintf("failed to check the tenant route admission policy: %v", err), r.failureRequeue(), err)
+		return result, true, err
+	case state == tenantPolicyConflict:
+		result, err := degradedResult(tenantAlyvixRDPComponentID, "RoutePolicyConflict", message, r.failureRequeue(), fmt.Errorf("%s", message))
+		return result, true, err
+	case state == tenantPolicyMissing:
+		result, err := progressingResult(tenantAlyvixRDPComponentID, "WaitingForRoutePolicy", message, r.failureRequeue())
+		return result, true, err
+	}
+	return componentResult{}, false, nil
+}
+
+// netEye returns the NetEye resource, the singleton in the shared namespace,
+// or nil when there is none.
+func (r *NetEyeTenantReconciler) netEye(ctx context.Context) (*neteye.NetEye, error) {
+	list := &neteye.NetEyeList{}
+	if err := r.List(ctx, list, client.InNamespace(neteye.NetEyeNamespace)); err != nil {
+		return nil, err
+	}
+	if len(list.Items) == 0 {
+		return nil, nil
+	}
+	sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
+	return &list.Items[0], nil
 }
 
 // ensureNamespaceMetadata marks the namespace as the namespace of the tenant
@@ -418,6 +534,13 @@ func (r *NetEyeTenantReconciler) failureRequeue() time.Duration {
 	return DefaultFailureRequeueAfter
 }
 
+func (r *NetEyeTenantReconciler) progressingRequeue() time.Duration {
+	if r.ProgressingRequeueAfter > 0 {
+		return r.ProgressingRequeueAfter
+	}
+	return DefaultWaitForProgressingRequeueAfter
+}
+
 func (r *NetEyeTenantReconciler) reconciliationRequeue() time.Duration {
 	if r.ReconciliationRequeueAfter > 0 {
 		return r.ReconciliationRequeueAfter
@@ -426,14 +549,17 @@ func (r *NetEyeTenantReconciler) reconciliationRequeue() time.Duration {
 }
 
 // SetupWithManager registers the controller. Besides the tenant, it watches
-// the network policies the tenant owns and the tenant namespaces, so drift in
-// either is corrected at once instead of at the next periodic reconciliation,
-// and the procedure gates in the tenant namespaces, so an install or an
-// upgrade continues as soon as a gate it waits for exists. A NetEye resource
-// that completes a version reconciles every tenant, because their upgrades
-// wait for it.
-// It also watches the admission policy that protects the tenant metadata and
-// its binding, so the readiness of every tenant follows their state at once.
+// the objects the tenant owns and the tenant namespaces, so drift in either is
+// corrected at once instead of at the next periodic reconciliation, and the
+// procedure gates in the tenant namespaces, so an install or an upgrade
+// continues as soon as a gate it waits for exists. A NetEye resource that
+// completes a version reconciles every tenant, because their upgrades wait for
+// it, and so does a change of its spec, which selects the images and the
+// Gateway of the tenant components. Routes are not watched, so a
+// cluster without the Gateway API can still start the controller; their status
+// is read again at the next requeue.
+// It also watches the admission policies of the tenant namespaces and their
+// bindings, so the readiness of every tenant follows their state at once.
 func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	networkPolicy := &unstructured.Unstructured{}
 	networkPolicy.SetGroupVersionKind(resources.NetworkPolicyGVK())
@@ -441,22 +567,24 @@ func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	admissionPolicy.SetGroupVersionKind(validatingAdmissionPolicyGVK)
 	admissionPolicyBinding := &unstructured.Unstructured{}
 	admissionPolicyBinding.SetGroupVersionKind(validatingAdmissionPolicyBindingGVK)
-	onlyTheTenantNamespacePolicy := builder.WithPredicates(predicate.NewPredicateFuncs(func(object client.Object) bool {
-		return object.GetName() == TenantNamespacePolicyName
+	onlyTheTenantPolicies := builder.WithPredicates(predicate.NewPredicateFuncs(func(object client.Object) bool {
+		return object.GetName() == TenantNamespacePolicyName || object.GetName() == TenantRoutePolicyName
 	}))
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&neteye.NetEyeTenant{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).
 		Owns(networkPolicy).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(tenantForNamespace)).
 		Watches(&neteye.NetEyeProcedureGate{}, handler.EnqueueRequestsFromMapFunc(tenantForProcedureGate)).
-		Watches(&neteye.NetEye{}, handler.EnqueueRequestsFromMapFunc(r.allTenants), builder.WithPredicates(netEyeCurrentVersionChanged)).
-		Watches(admissionPolicy, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantNamespacePolicy).
-		Watches(admissionPolicyBinding, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantNamespacePolicy).
+		Watches(&neteye.NetEye{}, handler.EnqueueRequestsFromMapFunc(r.allTenants), builder.WithPredicates(predicate.Or(netEyeCurrentVersionChanged, reconcileOnSpecOrDeletionChange))).
+		Watches(admissionPolicy, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantPolicies).
+		Watches(admissionPolicyBinding, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantPolicies).
 		Complete(r)
 }
 
-// allTenants maps a change of the shared admission policy to every tenant,
-// because all tenants depend on it.
+// allTenants maps a change of the shared admission policy, or of the NetEye
+// resource, to every tenant, because all tenants depend on them.
 func (r *NetEyeTenantReconciler) allTenants(ctx context.Context, _ client.Object) []reconcile.Request {
 	tenants := &neteye.NetEyeTenantList{}
 	if err := r.List(ctx, tenants); err != nil {

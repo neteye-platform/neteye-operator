@@ -21,6 +21,7 @@ import (
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/controllers"
+	"github.com/neteye-platform/neteye-operator/internal/alyvix"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
 )
@@ -193,8 +194,10 @@ func main() {
 		Log:                        ctrl.Log.WithName("neteye-tenant-reconciler"),
 		Scheme:                     mgr.GetScheme(),
 		APIReader:                  mgr.GetAPIReader(),
+		RDPComponent:               alyvix.NewRDPComponent(mgr.GetClient()),
 		OperatorUsername:           operatorUsername,
 		FailureRequeueAfter:        failureRequeue,
+		ProgressingRequeueAfter:    waitForProgressingRequeue,
 		ReconciliationRequeueAfter: reconciliationRequeue,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create NetEyeTenant controller")

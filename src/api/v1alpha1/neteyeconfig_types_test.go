@@ -6,6 +6,7 @@ package v1alpha1
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -524,5 +525,37 @@ func TestGeneratedCRDDefaultsUseProcedureGates(t *testing.T) {
 	}
 	if value != true {
 		t.Errorf("useProcedureGates default = %v, want true", value)
+	}
+}
+
+func TestComponentsForVersionGuacamoleImageOverrides(t *testing.T) {
+	t.Setenv(RelatedImageGuacamoleEnv, "registry.example/guacamole:dev")
+	t.Setenv(RelatedImageGuacdEnv, "registry.example/guacd:dev")
+
+	components, ok := ComponentsForVersion(CurrentNetEyeVersion)
+	if !ok {
+		t.Fatalf("ComponentsForVersion(%q) not found", CurrentNetEyeVersion)
+	}
+	if got, want := components.GuacamoleImage, "registry.example/guacamole:dev"; got != want {
+		t.Errorf("GuacamoleImage = %q, want %q", got, want)
+	}
+	if got, want := components.GuacdImage, "registry.example/guacd:dev"; got != want {
+		t.Errorf("GuacdImage = %q, want %q", got, want)
+	}
+}
+
+func TestComponentsForVersionPinsTheGuacamoleImagesByDigest(t *testing.T) {
+	// The defaults, not an override that the test process inherits.
+	t.Setenv(RelatedImageGuacamoleEnv, "")
+	t.Setenv(RelatedImageGuacdEnv, "")
+	components, ok := ComponentsForVersion(CurrentNetEyeVersion)
+	if !ok {
+		t.Fatalf("ComponentsForVersion(%q) not found", CurrentNetEyeVersion)
+	}
+	digest := regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
+	for name, image := range map[string]string{"guacamole": components.GuacamoleImage, "guacd": components.GuacdImage} {
+		if !digest.MatchString(image) {
+			t.Errorf("%s image %q is not pinned by a SHA-256 digest", name, image)
+		}
 	}
 }

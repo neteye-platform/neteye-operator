@@ -19,6 +19,12 @@ type NetEyeComponents struct {
 	OTelCollectorImage string
 	// Full image reference for the EDOT Gateway container.
 	EDOTGatewayImage string
+	// Full image reference for the Apache Guacamole web application container
+	// of the Alyvix RDP access.
+	GuacamoleImage string
+	// Full image reference for the Apache Guacamole proxy daemon (guacd)
+	// container of the Alyvix RDP access.
+	GuacdImage string
 }
 
 // NetEyeSecretKeySelector identifies one key inside a Secret in the NetEye CR
@@ -450,7 +456,7 @@ func (s *NetEyeGatewaySpec) EffectiveManaged() bool {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.10@sha256:686311bbb1b8f557d09cd04c5c0d2a1cabf85c2dd9a68e97075d77f238f4b47c", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.10@sha256:686311bbb1b8f557d09cd04c5c0d2a1cabf85c2dd9a68e97075d77f238f4b47c", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1", GuacamoleImage: "docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40", GuacdImage: "docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f"},
 }
 
 const (
@@ -460,6 +466,10 @@ const (
 	RelatedImageOTelCollectorEnv = "RELATED_IMAGE_OTEL_COLLECTOR"
 	// RelatedImageEDOTGatewayEnv overrides the EDOT Gateway image packaged with the operator.
 	RelatedImageEDOTGatewayEnv = "RELATED_IMAGE_EDOT_GATEWAY"
+	// RelatedImageGuacamoleEnv overrides the Apache Guacamole image packaged with the operator.
+	RelatedImageGuacamoleEnv = "RELATED_IMAGE_GUACAMOLE"
+	// RelatedImageGuacdEnv overrides the Apache Guacamole proxy daemon image packaged with the operator.
+	RelatedImageGuacdEnv = "RELATED_IMAGE_GUACD"
 	// DefaultCABundleConfigMapName and DefaultCABundleKey select the optional
 	// CA bundle when spec.caBundle is unset.
 	DefaultCABundleConfigMapName = "neteye-ca-bundle"
@@ -485,6 +495,12 @@ func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	}
 	if image := strings.TrimSpace(os.Getenv(RelatedImageEDOTGatewayEnv)); image != "" {
 		c.EDOTGatewayImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageGuacamoleEnv)); image != "" {
+		c.GuacamoleImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageGuacdEnv)); image != "" {
+		c.GuacdImage = image
 	}
 	return c, ok
 }

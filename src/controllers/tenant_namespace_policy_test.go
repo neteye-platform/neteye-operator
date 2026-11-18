@@ -219,7 +219,7 @@ func TestTenantNamespacePolicyRestoresAChangedBinding(t *testing.T) {
 	if result, err := p.Reconcile(ctx, reconcile.Request{}); err != nil || result.RequeueAfter != time.Hour {
 		t.Fatalf("reconcile = %v, %v", result, err)
 	}
-	if state, message, err := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); err != nil || state != tenantNamespacePolicyEnforced {
+	if state, message, err := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); err != nil || state != tenantPolicyEnforced {
 		t.Fatalf("policy state on a real API server = %v %q %v, want enforced", state, message, err)
 	}
 	binding := &unstructured.Unstructured{}
@@ -233,13 +233,13 @@ func TestTenantNamespacePolicyRestoresAChangedBinding(t *testing.T) {
 	if err := admin.Update(ctx, binding); err != nil {
 		t.Fatal(err)
 	}
-	if state, _, _ := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); state != tenantNamespacePolicyMissing {
+	if state, _, _ := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); state != tenantPolicyMissing {
 		t.Errorf("a binding that only warns counts as enforced")
 	}
 	if _, err := p.Reconcile(ctx, reconcile.Request{}); err != nil {
 		t.Fatal(err)
 	}
-	if state, message, _ := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); state != tenantNamespacePolicyEnforced {
+	if state, message, _ := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); state != tenantPolicyEnforced {
 		t.Errorf("binding not restored: %q", message)
 	}
 }
@@ -260,7 +260,7 @@ func TestTenantNamespacePolicyCountsANarrowedScopeAsNotEnforced(t *testing.T) {
 			if err := p.Ensure(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if state, message, err := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); err != nil || state != tenantNamespacePolicyEnforced {
+			if state, message, err := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); err != nil || state != tenantPolicyEnforced {
 				t.Fatalf("policy state = %v %q %v, want enforced", state, message, err)
 			}
 			live := &unstructured.Unstructured{}
@@ -274,7 +274,7 @@ func TestTenantNamespacePolicyCountsANarrowedScopeAsNotEnforced(t *testing.T) {
 			if err := admin.Update(ctx, live); err != nil {
 				t.Fatal(err)
 			}
-			if state, _, _ := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); state != tenantNamespacePolicyMissing {
+			if state, _, _ := checkTenantNamespacePolicy(ctx, admin, testOperatorUsername); state != tenantPolicyMissing {
 				t.Errorf("a narrowed %s counts as enforced", name)
 			}
 		})

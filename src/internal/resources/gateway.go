@@ -39,6 +39,9 @@ type GatewayListener struct {
 	TLSSecretName string
 	// RouteKind is the single route kind allowed on this listener.
 	RouteKind string
+	// RouteNamespaceSelector selects the namespaces whose routes may attach to
+	// this listener. When nil, only routes in the Gateway namespace attach.
+	RouteNamespaceSelector map[string]any
 }
 
 // EnsureGateway ensures a Gateway API Gateway exists. It exposes the cleartext
@@ -60,16 +63,18 @@ func EnsureGateway(ctx context.Context, client client.Client, namespace string, 
 		},
 	}
 	for _, listener := range listeners {
+		namespaces := map[string]any{"from": "Same"}
+		if listener.RouteNamespaceSelector != nil {
+			namespaces = map[string]any{"from": "Selector", "selector": listener.RouteNamespaceSelector}
+		}
 		desiredListeners = append(desiredListeners, map[string]any{
 			"name":     listener.Name,
 			"protocol": "HTTPS",
 			"port":     int64(443),
 			"hostname": listener.Hostname,
 			"allowedRoutes": map[string]any{
-				"namespaces": map[string]any{
-					"from": "Same",
-				},
-				"kinds": routeKinds(listener.RouteKind),
+				"namespaces": namespaces,
+				"kinds":      routeKinds(listener.RouteKind),
 			},
 			"tls": map[string]any{
 				"mode": "Terminate",

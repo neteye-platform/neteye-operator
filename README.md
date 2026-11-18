@@ -38,6 +38,52 @@ only required while the Gateway is managed. Route traffic yourself to the
 `neteye-kc-service` Service (port 8080) and the `otel-collector-service` Service
 (4317 for gRPC, 4318 for HTTP) in the `neteye-tenant-shared` namespace.
 
+### Alyvix RDP access
+
+The Alyvix feature module is enabled per tenant. A `NetEyeTenant` with
+`spec.alyvix.enabled: true` gets an Apache Guacamole web application and
+proxy daemon (guacd) in its namespace. The Alyvix module opens RDP sessions
+to the Alyvix nodes through them:
+
+```yaml
+spec:
+  displayName: Default
+  alyvix:
+    enabled: true
+    rdp:
+      # TCP ports of RDP on the Alyvix nodes; the default is 3389.
+      ports: [3389]
+```
+
+The images come from the release data of the `NetEye` resource, which also
+names the Gateway. The Gateway gets the listener of the RDP access while at
+least one tenant enables Alyvix.
+
+- The Guacamole JSON authentication key of a tenant is generated once, in the
+  Secret `alyvix-rdp-json-auth` (key `json-secret-key`, 32 hexadecimal
+  characters) of the tenant namespace. The Alyvix module needs the same key.
+  The key stays when the access is disabled; delete the Secret to get a new
+  one.
+- The Gateway serves the web application of each tenant on
+  `<tenant>.guacamole.neteyelocal`, with a wildcard certificate of the
+  internal issuer. The route matches only the paths that the module and the
+  browser use: `POST /guacamole/api/tokens`, `DELETE /guacamole/api/session`,
+  `GET /guacamole/websocket-tunnel` and
+  `GET /guacamole/guacamole-common-js/all.min.js`.
+- The listener is shared by the tenants, so the ValidatingAdmissionPolicy
+  `neteye-tenant-route-hostnames` refuses an HTTPRoute of a tenant namespace
+  that attaches to it, with or without `sectionName`, unless every hostname
+  of the route is the hostname of its own tenant. The policy has no
+  exemption, and the RDP access of a tenant is not ready until the API server
+  enforces it.
+- The egress policies are not a destination allowlist: both workloads may
+  send DNS queries (TCP and UDP ports 53 and 5353) to any address, and guacd
+  may connect to the RDP ports on any address. Apart from DNS, the web
+  application reaches only guacd on TCP port 4822.
+
+With `spec.gateway.managed: false` no route is created: route traffic to the
+`alyvix-guacamole` Service (port 8080) of the tenant namespace yourself.
+
 ### Procedure gates
 
 Parts of NetEye still run on the legacy infrastructure and are installed and
