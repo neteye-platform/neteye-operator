@@ -255,16 +255,43 @@ func TestNetEyeTenantReportsAForeignNamespaceAdmissionPolicy(t *testing.T) {
 	}
 }
 
-func TestNetEyeTenantAcceptsDefaultsThatTheAPIServerAdds(t *testing.T) {
-	objects := tenantNamespacePolicyObjects()
-	policy := objects[1].(*unstructured.Unstructured)
-	spec := tenantNamespacePolicySpec(testOperatorUsername)
-	spec["futureDefault"] = "value"
-	spec["matchConstraints"].(map[string]any)["futureDefault"] = "value"
-	policy.Object["spec"] = spec
-	r, c := newTenantReconcilerWithoutPolicy(t, append(objects, plainNamespace(testTenant), tenantResource())...)
-	reconcileTenant(t, r)
-	assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseReady, "")
+func TestTenantNamespacePolicyCheckAcceptsDefaultsOutsideTheScope(t *testing.T) {
+	// The check works on the specs directly: a fake client drops the fields
+	// that its scheme does not know, so a test through it would not see them.
+	desired := tenantNamespacePolicySpec(testOperatorUsername)
+	live := tenantNamespacePolicySpec(testOperatorUsername)
+	live["futureDefault"] = "value"
+	live["validations"].([]any)[0].(map[string]any)["futureDefault"] = "value"
+	if !containsSpec(live, desired) || !sameScope(live, desired) {
+		t.Error("a policy with defaults outside the scope does not count as enforced")
+	}
+}
+
+func TestTenantNamespacePolicyCheckRefusesAnyChangeOfTheScope(t *testing.T) {
+	for name, change := range map[string]func(map[string]any){
+		"default added to the match constraints": func(spec map[string]any) {
+			spec["matchConstraints"].(map[string]any)["futureDefault"] = "value"
+		},
+		"narrowed namespace selector": func(spec map[string]any) {
+			spec["matchConstraints"].(map[string]any)["namespaceSelector"] = map[string]any{"matchLabels": map[string]any{"protected": "true"}}
+		},
+		"parameter kind": func(spec map[string]any) {
+			spec["paramKind"] = map[string]any{"apiVersion": "v1", "kind": "ConfigMap"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			live := tenantNamespacePolicySpec(testOperatorUsername)
+			change(live)
+			if sameScope(live, tenantNamespacePolicySpec(testOperatorUsername)) {
+				t.Error("the changed policy counts as enforced")
+			}
+		})
+	}
+	binding := tenantNamespacePolicyBindingSpec()
+	binding["paramRef"] = map[string]any{"name": "params", "parameterNotFoundAction": "Allow"}
+	if sameScope(binding, tenantNamespacePolicyBindingSpec()) {
+		t.Error("a binding with a parameter reference counts as enforced")
+	}
 }
 
 func TestNetEyeTenantReportsAPolicyOfAnEarlierCRD(t *testing.T) {

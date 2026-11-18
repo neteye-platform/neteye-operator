@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -69,6 +70,7 @@ type NetEyeTenantReconciler struct {
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyetenants/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyetenants/finalizers,verbs=update
 // +kubebuilder:rbac:groups=neteye.cloud,resources=neteyeproceduregates,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=neteye.cloud,resources=neteyes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;create;update;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update
@@ -125,6 +127,18 @@ func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *ne
 	if invalid := invalidTenantReason(tenant); invalid != "" {
 		return failed(invalid)
 	}
+	if procedure == lifecycleUpgrade {
+		completed, err := r.netEyeCompleted(ctx, version)
+		if err != nil {
+			setTenantPhase(tenant, neteye.PhaseFailed, err.Error())
+			log.Error(err, "unable to read the NetEye resource", "requeueAfter", r.failureRequeue())
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
+		if !completed {
+			setTenantPhase(tenant, neteye.PhaseUpgrading, fmt.Sprintf("Upgrading the tenant to NetEye %s; waiting for the NetEye resource to complete NetEye %s", version, version))
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
+	}
 	if controllerutil.AddFinalizer(tenant, NetEyeTenantFinalizer) {
 		if err := r.Update(ctx, tenant); err != nil {
 			setTenantPhase(tenant, neteye.PhaseFailed, fmt.Sprintf("failed to add the finalizer: %v", err))
@@ -179,7 +193,34 @@ func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *ne
 	if requeueAfter == 0 {
 		requeueAfter = r.reconciliationRequeue()
 	}
+	// The namespace reconciliation shows the display name on the namespace, so
+	// the names that the tenant no longer shows can go now.
+	held, err := r.heldDisplayNameLeases(ctx, tenant)
+	if err == nil {
+		err = r.releaseDisplayNames(ctx, tenant, held)
+	}
+	if err != nil {
+		log.Error(err, "unable to release the old display names of the tenant", "requeueAfter", r.failureRequeue())
+		requeueAfter = min(requeueAfter, r.failureRequeue())
+	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// netEyeCompleted reports whether the NetEye resource has completed version.
+// A tenant upgrade waits for it, so the shared components are at the new
+// version before the tenant changes. A tenant install does not wait: it has
+// no state of an older version to keep consistent.
+func (r *NetEyeTenantReconciler) netEyeCompleted(ctx context.Context, version string) (bool, error) {
+	installations := &neteye.NetEyeList{}
+	if err := r.List(ctx, installations); err != nil {
+		return false, fmt.Errorf("list NetEye resources: %w", err)
+	}
+	for i := range installations.Items {
+		if installations.Items[i].Status.CurrentVersion == version {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func invalidTenantReason(tenant *neteye.NetEyeTenant) string {
@@ -262,7 +303,7 @@ func (r *NetEyeTenantReconciler) reconcileDelete(ctx context.Context, tenant *ne
 		ctrl.LoggerFrom(ctx).Error(err, "unable to remove the tenant metadata from the namespace", "requeueAfter", r.failureRequeue())
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
-	if err := r.releaseDisplayNames(ctx, tenant, ""); err != nil {
+	if err := r.releaseDisplayNames(ctx, tenant, nil); err != nil {
 		ctrl.LoggerFrom(ctx).Error(err, "unable to release the display name of the tenant", "requeueAfter", r.failureRequeue())
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 	}
@@ -388,7 +429,9 @@ func (r *NetEyeTenantReconciler) reconciliationRequeue() time.Duration {
 // the network policies the tenant owns and the tenant namespaces, so drift in
 // either is corrected at once instead of at the next periodic reconciliation,
 // and the procedure gates in the tenant namespaces, so an install or an
-// upgrade continues as soon as a gate it waits for exists.
+// upgrade continues as soon as a gate it waits for exists. A NetEye resource
+// that completes a version reconciles every tenant, because their upgrades
+// wait for it.
 // It also watches the admission policy that protects the tenant metadata and
 // its binding, so the readiness of every tenant follows their state at once.
 func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -406,6 +449,7 @@ func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(networkPolicy).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(tenantForNamespace)).
 		Watches(&neteye.NetEyeProcedureGate{}, handler.EnqueueRequestsFromMapFunc(tenantForProcedureGate)).
+		Watches(&neteye.NetEye{}, handler.EnqueueRequestsFromMapFunc(r.allTenants), builder.WithPredicates(netEyeCurrentVersionChanged)).
 		Watches(admissionPolicy, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantNamespacePolicy).
 		Watches(admissionPolicyBinding, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantNamespacePolicy).
 		Complete(r)
@@ -443,4 +487,17 @@ func tenantForProcedureGate(_ context.Context, gate client.Object) []reconcile.R
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: gate.GetNamespace(), Name: gate.GetNamespace()}}}
+}
+
+// netEyeCurrentVersionChanged passes a NetEye resource whose
+// status.currentVersion changed.
+var netEyeCurrentVersionChanged = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		before, beforeOK := e.ObjectOld.(*neteye.NetEye)
+		after, afterOK := e.ObjectNew.(*neteye.NetEye)
+		return beforeOK && afterOK && before.Status.CurrentVersion != after.Status.CurrentVersion
+	},
+	CreateFunc:  func(event.CreateEvent) bool { return true },
+	DeleteFunc:  func(event.DeleteEvent) bool { return false },
+	GenericFunc: func(event.GenericEvent) bool { return false },
 }

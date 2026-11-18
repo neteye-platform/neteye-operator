@@ -194,40 +194,43 @@ func TestNetEyeTenantValidatorRefusesAVersionNewerThanNetEye(t *testing.T) {
 	}
 }
 
-func TestNetEyeValidatorRefusesAnUpgradeWhileATenantHasNotCompletedItsVersion(t *testing.T) {
+func TestNetEyeValidatorRefusesAnUpgradeWhileATenantIsAtAnotherVersion(t *testing.T) {
 	done := testTenant("neteye-tenant-aaaaaaaa", "neteye-tenant-aaaaaaaa", "Done")
 	done.Spec.Version = PreviousNetEyeVersion
 	done.Status.CurrentVersion = PreviousNetEyeVersion
-	installing := testTenant("neteye-tenant-bbbbbbbb", "neteye-tenant-bbbbbbbb", "Installing")
-	installing.Spec.Version = PreviousNetEyeVersion
-	deleting := testTenant("neteye-tenant-cccccccc", "neteye-tenant-cccccccc", "Deleting")
+	behind := testTenant("neteye-tenant-bbbbbbbb", "neteye-tenant-bbbbbbbb", "Behind")
+	behind.Spec.Version = PreviousNetEyeVersion
+	behind.Status.CurrentVersion = "4.49"
+	// A tenant that never completed a version installs the version that it is
+	// set to, so it does not hold the upgrade back.
+	neverInstalled := testTenant("neteye-tenant-cccccccc", "neteye-tenant-cccccccc", "Never installed")
+	neverInstalled.Spec.Version = PreviousNetEyeVersion
+	deleting := testTenant("neteye-tenant-dddddddd", "neteye-tenant-dddddddd", "Deleting")
+	deleting.Status.CurrentVersion = "4.49"
 	now := metav1.Now()
 	deleting.DeletionTimestamp = &now
 	deleting.Finalizers = []string{"neteye.cloud/neteye-tenant"}
 
-	upgrade := func(objects ...client.Object) error {
+	validator := func(objects ...client.Object) *NetEyeValidator {
 		scheme := runtime.NewScheme()
 		if err := AddToScheme(scheme); err != nil {
 			t.Fatal(err)
 		}
-		v := &NetEyeValidator{reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()}
-		_, err := v.ValidateUpdate(context.Background(), netEyeWithVersion(PreviousNetEyeVersion), netEyeWithVersion(CurrentNetEyeVersion))
+		return &NetEyeValidator{reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()}
+	}
+	upgrade := func(objects ...client.Object) error {
+		_, err := validator(objects...).ValidateUpdate(context.Background(), netEyeWithVersion(PreviousNetEyeVersion), netEyeWithVersion(CurrentNetEyeVersion))
 		return err
 	}
-	err := upgrade(done, installing, deleting)
-	if err == nil || !strings.Contains(err.Error(), `neteye-tenant-bbbbbbbb (current version "")`) || strings.Contains(err.Error(), "neteye-tenant-cccccccc") {
-		t.Errorf("upgrade with a tenant that has not completed NetEye %s: error = %v", PreviousNetEyeVersion, err)
+	err := upgrade(done, behind, neverInstalled, deleting)
+	if err == nil || !strings.Contains(err.Error(), `neteye-tenant-bbbbbbbb (current version "4.49")`) || strings.Contains(err.Error(), "neteye-tenant-cccccccc") || strings.Contains(err.Error(), "neteye-tenant-dddddddd") {
+		t.Errorf("upgrade with a tenant at another version: error = %v", err)
 	}
-	if err := upgrade(done, deleting); err != nil {
-		t.Errorf("upgrade with every tenant at NetEye %s rejected: %v", PreviousNetEyeVersion, err)
+	if err := upgrade(done, neverInstalled, deleting); err != nil {
+		t.Errorf("upgrade with every installed tenant at NetEye %s rejected: %v", PreviousNetEyeVersion, err)
 	}
 	// An update that keeps the version is not an upgrade.
-	scheme := runtime.NewScheme()
-	if err := AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	v := &NetEyeValidator{reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(installing).Build()}
-	if _, err := v.ValidateUpdate(context.Background(), netEyeWithVersion(CurrentNetEyeVersion), netEyeWithVersion(CurrentNetEyeVersion)); err != nil {
+	if _, err := validator(behind).ValidateUpdate(context.Background(), netEyeWithVersion(CurrentNetEyeVersion), netEyeWithVersion(CurrentNetEyeVersion)); err != nil {
 		t.Errorf("update that keeps the version rejected: %v", err)
 	}
 }

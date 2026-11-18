@@ -1041,9 +1041,9 @@ func TestAPIServerValidatesNetEyeTenantSchema(t *testing.T) {
 	for name, test := range map[string]struct {
 		name, version, displayName, want string
 	}{
-		"missing version":      {testTenant, "", "Default", "spec.version"},
+		"empty version":        {testTenant, "", "Default", "spec.version"},
 		"version format":       {testTenant, "4.51.0", "Default", "spec.version"},
-		"missing display name": {testTenant, "4.51", "", "spec.displayName"},
+		"empty display name":   {testTenant, "4.51", "", "spec.displayName"},
 		"too long":             {testTenant, "4.51", strings.Repeat("x", 64), "spec.displayName"},
 		"surrounding spaces":   {testTenant, "4.51", " Default", "surrounding whitespace"},
 		"control character":    {testTenant, "4.51", "De\nfault", "control or format characters"},
@@ -1051,6 +1051,10 @@ func TestAPIServerValidatesNetEyeTenantSchema(t *testing.T) {
 		"line separator":       {testTenant, "4.51", "Acme\u2028Corp", "line or paragraph separators"},
 		"only a blank symbol":  {testTenant, "4.51", "\u2800", "at least one letter or digit"},
 		"only punctuation":     {testTenant, "4.51", "---", "at least one letter or digit"},
+		"Hangul filler":        {testTenant, "4.51", "\u3164", "at least one letter or digit"},
+		"choseong filler":      {testTenant, "4.51", "\u115f", "at least one letter or digit"},
+		"jungseong filler":     {testTenant, "4.51", "\u1160", "at least one letter or digit"},
+		"half-width filler":    {testTenant, "4.51", "\uffa0\uffa0", "at least one letter or digit"},
 		"64 characters":        {testTenant, "4.51", strings.Repeat("ü", 64), "spec.displayName"},
 		"id too short":         {"neteye-tenant-abc", "4.51", "Default", "metadata.name must be"},
 		"look-alike character": {"neteye-tenant-2bh46bf0", "4.51", "Default", "metadata.name must be"},
@@ -1064,10 +1068,29 @@ func TestAPIServerValidatesNetEyeTenantSchema(t *testing.T) {
 		})
 	}
 
+	// A request without a required field is refused, not only one with an
+	// empty value.
+	for _, field := range []string{"version", "displayName"} {
+		spec := map[string]any{"version": neteye.CurrentNetEyeVersion, "displayName": "Default"}
+		delete(spec, field)
+		omitted := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": neteye.GroupVersion.String(),
+			"kind":       "NetEyeTenant",
+			"metadata":   map[string]any{"namespace": testTenant, "name": testTenant},
+			"spec":       spec,
+		}}
+		if err := c.Create(ctx, omitted, client.DryRunAll); err == nil || !strings.Contains(err.Error(), "spec."+field+": Required value") {
+			t.Errorf("tenant without spec.%s: error = %v, want a required value", field, err)
+		}
+	}
+
 	// The length counts characters, not bytes: 63 two-byte characters fit.
-	longest := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: strings.Repeat("ü", 63)}}
-	if err := c.Create(ctx, longest, client.DryRunAll); err != nil {
-		t.Fatalf("display name of 63 characters rejected: %v", err)
+	// A real letter or a digit is enough, also next to a Hangul filler.
+	for _, displayName := range []string{strings.Repeat("ü", 63), "한국", "\u3164A", "42"} {
+		valid := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: displayName}}
+		if err := c.Create(ctx, valid, client.DryRunAll); err != nil {
+			t.Errorf("display name %q rejected: %v", displayName, err)
+		}
 	}
 	tenant := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: "Würth Italy"}}
 	if err := c.Create(ctx, tenant); err != nil {
