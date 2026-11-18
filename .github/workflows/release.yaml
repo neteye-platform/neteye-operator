@@ -20,15 +20,13 @@ on:
   check_run:
     types: [completed]
 
-permissions:
-  contents: read
-  packages: write
+permissions: {}
 
 jobs:
-  bump-and-tag:
-    name: Bump version and push release tag
+  plan:
+    name: Check for releasable changes
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     # proceed for a manual dispatch, the NetEye release pipeline, or a successful PAC E2E check
     if: >-
       github.event_name == 'workflow_dispatch' ||
@@ -36,6 +34,88 @@ jobs:
       (github.event.check_run.app.slug == 'wp-pipeline-as-code' &&
        startsWith(github.event.check_run.name, 'TektonCI / neteye-operator-e2e') &&
        github.event.check_run.conclusion == 'success')
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      baseline-tag: ${{ steps.baseline.outputs.tag }}
+      release: ${{ steps.commit.outputs.tested == 'true' && steps.releasable.outputs.release || 'false' }}
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Capture previous stable release tag
+        id: baseline
+        run: |
+          last_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | head -n1)"
+          if [[ -z "$last_tag" ]]; then
+            echo "error: no previous stable release tag found" >&2
+            exit 1
+          fi
+          echo "tag=$last_tag" >> "$GITHUB_OUTPUT"
+
+      # An automatic release may only tag the commit its E2E check ran against;
+      # if main has moved on, the next nightly tests and releases it.
+      - name: Resolve release commit
+        id: commit
+        env:
+          TESTED_SHA: ${{ github.event.check_run.head_sha }}
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"
+          echo "sha=$head" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_EVENT_NAME" == check_run && "$TESTED_SHA" != "$head" ]]; then
+            echo "::warning::E2E passed for $TESTED_SHA but main is at $head; skipping release."
+            echo "tested=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tested=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Automatic (E2E-triggered) releases need at least one merged PR that is
+      # not labelled only "ci" and/or "documentation"; unlabelled PRs count.
+      # Manual and NetEye releases always proceed.
+      - name: Check merged PRs for releasable changes
+        id: releasable
+        if: ${{ steps.commit.outputs.tested == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != check_run ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          since="$(git log -1 --format=%aI "$BASELINE_TAG")"
+          releasable="$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base main \
+            --search "merged:>=${since}" --limit 1000 --json number,labels \
+            --jq '[.[] | select(.labels | map(.name)
+                    | length == 0 or any(.[]; IN("ci", "documentation") | not))
+                  | "#\(.number)"] | join(" ")')"
+          if [[ -z "$releasable" ]]; then
+            echo "::notice::No releasable PRs merged since $BASELINE_TAG (only ci/documentation); skipping release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasable PRs since $BASELINE_TAG: $releasable"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  bump-and-tag:
+    name: Bump version and push release tag
+    needs: plan
+    if: ${{ needs.plan.outputs.release == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Create write token
         id: release-token
@@ -49,10 +129,12 @@ jobs:
           permission-pull-requests: write
           permission-checks: read
 
+      # pinned to the commit vetted by plan; the bump commit is created with it
+      # as expectedHeadOid, so a concurrent push to main fails the release
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ needs.plan.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -67,18 +149,6 @@ jobs:
         run: |
           git config user.name "neteye-steward[bot]"
           git config user.email "265889471+neteye-steward[bot]@users.noreply.github.com"
-
-      - name: Capture previous stable release tag
-        id: baseline
-        run: |
-          last_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-            | head -n1)"
-          if [[ -z "$last_tag" ]]; then
-            echo "error: no previous stable release tag found" >&2
-            exit 1
-          fi
-          echo "tag=$last_tag" >> "$GITHUB_OUTPUT"
 
       - name: Prepare and merge NetEye support PR
         if: ${{ github.event_name == 'repository_dispatch' && github.event.action == 'neteye-release' }}
@@ -168,7 +238,7 @@ jobs:
         if: ${{ steps.input.outputs.version == '' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
+          BASELINE_TAG: ${{ needs.plan.outputs.baseline-tag }}
           EVENT_ACTION: ${{ github.event.action }}
         run: |
           IFS='.' read -r major minor patch <<<"${BASELINE_TAG#v}"
@@ -457,7 +527,7 @@ jobs:
           GH_TOKEN: ${{ steps.release-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
           VERSION: ${{ steps.input.outputs.version != '' && steps.input.outputs.version || steps.version.outputs.version }}
-          BASELINE_TAG: ${{ steps.baseline.outputs.tag }}
+          BASELINE_TAG: ${{ needs.plan.outputs.baseline-tag }}
         run: |
           gh release create "v$VERSION" --repo "$REPOSITORY" \
             --verify-tag \
