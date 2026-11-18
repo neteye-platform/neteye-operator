@@ -113,6 +113,33 @@ func readyCertificate() *unstructured.Unstructured {
 	return certificate
 }
 
+// sharedGateway is the shared Gateway with the status of the RDP listener.
+func sharedGateway(generation, observed int64, programmed string) *unstructured.Unstructured {
+	gateway := &unstructured.Unstructured{}
+	gateway.SetGroupVersionKind(schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway"})
+	gateway.SetNamespace(testSharedNamespace)
+	gateway.SetName("neteye")
+	gateway.SetGeneration(generation)
+	gateway.Object["status"] = map[string]any{"listeners": []any{
+		map[string]any{"name": "keycloak", "conditions": []any{map[string]any{"type": "Programmed", "status": "True", "observedGeneration": generation}}},
+		map[string]any{"name": GatewayListenerName, "conditions": []any{map[string]any{"type": "Programmed", "status": programmed, "observedGeneration": observed}}},
+	}}
+	return gateway
+}
+
+// setListenerProgrammed sets the Gateway generation to 2 and the Programmed
+// condition of the RDP listener.
+func setListenerProgrammed(t *testing.T, c client.Client, observed int64, status string) {
+	t.Helper()
+	gateway := unstructuredObject(t, c, schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway"}, testSharedNamespace, "neteye")
+	updated := sharedGateway(2, observed, status)
+	gateway.SetGeneration(2)
+	gateway.Object["status"] = updated.Object["status"]
+	if err := c.Update(context.Background(), gateway); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func markRouteAccepted(t *testing.T, c client.Client) {
 	t.Helper()
 	route := unstructuredObject(t, c, httpRouteGVK, testTenant, HTTPRouteName)
@@ -202,20 +229,21 @@ func TestRDPRouteExposesOnlyThePathsOfTheModuleAndTheBrowser(t *testing.T) {
 		t.Fatalf("rules = %v, want one rule", rules)
 	}
 	rule := rules[0].(map[string]any)
-	got := map[string]string{}
+	// Every pair, in order: an extra match for a path must make the test fail.
+	got := []string{}
 	for _, raw := range rule["matches"].([]any) {
 		match := raw.(map[string]any)
 		path := match["path"].(map[string]any)
-		if path["type"] != "Exact" {
-			t.Errorf("match %v, want an exact path", match)
+		if path["type"] != "Exact" || len(match) != 2 {
+			t.Errorf("match %v, want only an exact path and a method", match)
 		}
-		got[path["value"].(string)] = match["method"].(string)
+		got = append(got, match["method"].(string)+" "+path["value"].(string))
 	}
-	want := map[string]string{
-		"/guacamole/api/tokens":                     "POST",
-		"/guacamole/api/session":                    "DELETE",
-		"/guacamole/websocket-tunnel":               "GET",
-		"/guacamole/guacamole-common-js/all.min.js": "GET",
+	want := []string{
+		"POST /guacamole/api/tokens",
+		"DELETE /guacamole/api/session",
+		"GET /guacamole/websocket-tunnel",
+		"GET /guacamole/guacamole-common-js/all.min.js",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("route matches = %v, want %v", got, want)
@@ -352,6 +380,36 @@ func TestRDPAccessIsReadyWhenTheWorkloadsTheCertificateAndTheRouteAreReady(t *te
 		t.Fatal(err)
 	}
 	outcome = component.Ensure(context.Background(), inputs(true), owner())
+	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonListenerNotProgrammed {
+		t.Fatalf("outcome = %+v, want waiting for the Gateway to program the listener", outcome)
+	}
+	// The route can be accepted before the listener is programmed.
+	markRouteAccepted(t, c)
+	gateway := sharedGateway(1, 0, "False")
+	if err := c.Create(context.Background(), gateway); err != nil {
+		t.Fatal(err)
+	}
+	outcome = component.Ensure(context.Background(), inputs(true), owner())
+	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonListenerNotProgrammed {
+		t.Fatalf("outcome = %+v, want waiting for a listener that is not programmed", outcome)
+	}
+	setListenerProgrammed(t, c, 1, "True")
+	outcome = component.Ensure(context.Background(), inputs(true), owner())
+	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonListenerNotProgrammed {
+		t.Fatalf("outcome = %+v, want waiting for a status of the current Gateway generation", outcome)
+	}
+	setListenerProgrammed(t, c, 2, "True")
+	outcome = component.Ensure(context.Background(), inputs(true), owner())
+	if outcome.Phase != PhaseReady {
+		t.Fatalf("outcome = %+v, want ready", outcome)
+	}
+	// The route is checked too.
+	route := unstructuredObject(t, c, httpRouteGVK, testTenant, HTTPRouteName)
+	unstructured.RemoveNestedField(route.Object, "status")
+	if err := c.Update(context.Background(), route); err != nil {
+		t.Fatal(err)
+	}
+	outcome = component.Ensure(context.Background(), inputs(true), owner())
 	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonRouteNotReady {
 		t.Fatalf("outcome = %+v, want waiting for the route", outcome)
 	}
@@ -376,8 +434,13 @@ func TestRDPAccessWithAnUnmanagedGatewayHasNoRoute(t *testing.T) {
 	}
 	markDeploymentReady(t, c, GuacdName)
 	markDeploymentReady(t, c, GuacamoleName)
-	if outcome := component.Ensure(context.Background(), inputs(false), owner()); outcome.Phase != PhaseReady {
+	outcome := component.Ensure(context.Background(), inputs(false), owner())
+	if outcome.Phase != PhaseReady {
 		t.Errorf("outcome = %+v, want ready without a route", outcome)
+	}
+	// The hostname is not served by the operator: the message does not claim it.
+	if strings.Contains(outcome.Message, "ready on") || !strings.Contains(outcome.Message, "yourself") {
+		t.Errorf("message %q, want the workloads ready and the routing left to the administrator", outcome.Message)
 	}
 }
 
@@ -431,6 +494,37 @@ func TestRDPDeleteKeepsTheKeyAndObjectsOfOthers(t *testing.T) {
 	}
 	if got := jsonAuthKey(t, c); got != key {
 		t.Errorf("key = %q after Delete, want %q kept", got, key)
+	}
+}
+
+func TestRDPDeleteOnlyDeletesTheObjectThatPassedTheOwnershipCheck(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	preconditions := map[string]types.UID{}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(ctx context.Context, inner client.WithWatch, object client.Object, opts ...client.DeleteOption) error {
+			options := &client.DeleteOptions{}
+			options.ApplyOptions(opts)
+			if options.Preconditions != nil && options.Preconditions.UID != nil {
+				preconditions[object.GetObjectKind().GroupVersionKind().Kind+"/"+object.GetName()] = *options.Preconditions.UID
+			}
+			return inner.Delete(ctx, object, opts...)
+		},
+	}).Build()
+	component := NewRDPComponent(c)
+	component.Ensure(context.Background(), inputs(true), owner())
+	uids := map[string]types.UID{}
+	for _, resource := range resourceInventory() {
+		uids[resource.gvk.Kind+"/"+resource.name] = unstructuredObject(t, c, resource.gvk, testTenant, resource.name).GetUID()
+	}
+
+	if err := component.Delete(context.Background(), testTenant, owner()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(preconditions, uids) {
+		t.Errorf("delete preconditions = %v, want the UID of each object read = %v", preconditions, uids)
 	}
 }
 

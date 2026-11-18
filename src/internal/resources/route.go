@@ -56,7 +56,11 @@ func RouteReady(ctx context.Context, c client.Client, namespace, routeName, kind
 		if parentKind == "" {
 			parentKind = "Gateway"
 		}
+		// An omitted namespace is the namespace of the route.
 		parentNamespace, _, _ := unstructured.NestedString(ref, "namespace")
+		if parentNamespace == "" {
+			parentNamespace = namespace
+		}
 		parentName, _, _ := unstructured.NestedString(ref, "name")
 		section, _, _ := unstructured.NestedString(ref, "sectionName")
 		if group != expectedGroup || parentKind != expected.Kind || parentNamespace != expected.Namespace || parentName != expected.Name || section != expected.Section {
@@ -97,4 +101,55 @@ func RouteReady(ctx context.Context, c client.Client, namespace, routeName, kind
 		return true, "", nil
 	}
 	return false, fmt.Sprintf("waiting for Gateway %s/%s to accept %s %s", expected.Namespace, expected.Name, kind, routeName), nil
+}
+
+// GatewayListenerProgrammed reports whether the Gateway reports the listener
+// programmed for its current generation, so the data plane serves it. A route
+// can be accepted before the listener is programmed. It does not wait; callers
+// requeue.
+func GatewayListenerProgrammed(ctx context.Context, c client.Client, gateway GatewayRef, listener string) (bool, string, error) {
+	object := &unstructured.Unstructured{}
+	object.SetGroupVersionKind(gatewayGVK())
+	if err := c.Get(ctx, types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}, object); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, fmt.Sprintf("Gateway %s/%s is not created", gateway.Namespace, gateway.Name), nil
+		}
+		return false, "", err
+	}
+	listeners, _, err := unstructured.NestedSlice(object.Object, "status", "listeners")
+	if err != nil {
+		return false, "", err
+	}
+	waiting := fmt.Sprintf("waiting for Gateway %s/%s to program listener %s", gateway.Namespace, gateway.Name, listener)
+	for _, raw := range listeners {
+		status, ok := raw.(map[string]any)
+		if !ok || status["name"] != listener {
+			continue
+		}
+		conditions, _, err := unstructured.NestedSlice(status, "conditions")
+		if err != nil {
+			return false, "", err
+		}
+		for _, rawCondition := range conditions {
+			condition, ok := rawCondition.(map[string]any)
+			if !ok || condition["type"] != "Programmed" {
+				continue
+			}
+			observed, found, err := unstructured.NestedInt64(condition, "observedGeneration")
+			if err != nil {
+				return false, "", err
+			}
+			if found && observed < object.GetGeneration() {
+				return false, waiting, nil
+			}
+			if condition["status"] != "True" {
+				if message, _, _ := unstructured.NestedString(condition, "message"); message != "" {
+					return false, message, nil
+				}
+				return false, waiting, nil
+			}
+			return true, "", nil
+		}
+	}
+	return false, waiting, nil
 }

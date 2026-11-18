@@ -111,6 +111,7 @@ const (
 	ReasonDeploymentNotAvailable = "DeploymentNotAvailable"
 	ReasonDeploymentStalled      = "DeploymentStalled"
 	ReasonCertificateNotReady    = "CertificateNotReady"
+	ReasonListenerNotProgrammed  = "ListenerNotProgrammed"
 	ReasonRouteNotReady          = "RouteNotReady"
 	ReasonReconcileFailed        = "ReconcileFailed"
 )
@@ -233,10 +234,11 @@ func (c *RDPComponent) Ensure(ctx context.Context, in RDPInputs, owner metav1.Ow
 			return *outcome
 		}
 	}
-	if in.Gateway != nil {
-		if outcome := c.gatewayOutcome(ctx, in.Namespace, *in.Gateway); outcome != nil {
-			return *outcome
-		}
+	if in.Gateway == nil {
+		return readyOutcome(fmt.Sprintf("Guacamole and guacd are ready; the Gateway is managed outside the operator, so route %s to the Service %s yourself", Hostname(in.Namespace), GuacamoleName))
+	}
+	if outcome := c.gatewayOutcome(ctx, in.Namespace, *in.Gateway); outcome != nil {
+		return *outcome
 	}
 	return readyOutcome(fmt.Sprintf("RDP access is ready on %s", Hostname(in.Namespace)))
 }
@@ -257,7 +259,11 @@ func (c *RDPComponent) Delete(ctx context.Context, namespace string, owner metav
 		if !controlledBy(object, owner) {
 			continue
 		}
-		if err := c.client.Delete(ctx, object); err != nil && !apierrors.IsNotFound(err) {
+		// Delete only the object that passed the ownership check: if it was
+		// replaced in between, the precondition fails and the next pass checks
+		// the new one.
+		uid := object.GetUID()
+		if err := c.client.Delete(ctx, object, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}
@@ -543,8 +549,9 @@ func deploymentOutcome(ctx context.Context, c client.Client, namespace, name str
 	return &outcome
 }
 
-// gatewayOutcome waits for the certificate of the listener and for the Gateway
-// to accept the route.
+// gatewayOutcome waits for the certificate of the listener, for the Gateway to
+// program the listener, and for the Gateway to accept the route. The Gateway
+// can accept the route before the listener is programmed.
 func (c *RDPComponent) gatewayOutcome(ctx context.Context, namespace string, gateway resources.GatewayRef) *Outcome {
 	ready, message, err := resources.IsCertificateReady(ctx, c.client, gateway.Namespace, TLSCertificateName)
 	if err != nil {
@@ -553,6 +560,15 @@ func (c *RDPComponent) gatewayOutcome(ctx context.Context, namespace string, gat
 	}
 	if !ready {
 		outcome := progressingOutcome(ReasonCertificateNotReady, message)
+		return &outcome
+	}
+	ready, message, err = resources.GatewayListenerProgrammed(ctx, c.client, gateway, GatewayListenerName)
+	if err != nil {
+		outcome := degradedOutcome(ReasonReconcileFailed, message, err)
+		return &outcome
+	}
+	if !ready {
+		outcome := progressingOutcome(ReasonListenerNotProgrammed, message)
 		return &outcome
 	}
 	ready, message, err = resources.RouteReady(ctx, c.client, namespace, HTTPRouteName, resources.RouteKindHTTP, resources.RouteParent{Group: "gateway.networking.k8s.io", Kind: "Gateway", Namespace: gateway.Namespace, Name: gateway.Name, Section: GatewayListenerName})
