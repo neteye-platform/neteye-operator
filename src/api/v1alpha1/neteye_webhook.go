@@ -106,9 +106,11 @@ func validateVersionOnUpdate(oldVersion, newVersion string) *field.Error {
 }
 
 // validateTenantsCompleted refuses an upgrade of the NetEye resource while a
-// tenant has not completed the version that the NetEye resource leaves. A
-// tenant is then never more than one version behind the NetEye resource. A
-// tenant that is being deleted does not count.
+// tenant has completed a version other than the one that the NetEye resource
+// leaves. A tenant is then never more than one version behind the NetEye
+// resource. A tenant that never completed a version does not count: it has
+// nothing to upgrade, and it installs the version that it is set to. A tenant
+// that is being deleted does not count either.
 func (v *NetEyeValidator) validateTenantsCompleted(ctx context.Context, obj *NetEye, fromVersion string) error {
 	if v.reader == nil {
 		return nil
@@ -120,7 +122,7 @@ func (v *NetEyeValidator) validateTenantsCompleted(ctx context.Context, obj *Net
 	var behind []string
 	for i := range tenants.Items {
 		tenant := &tenants.Items[i]
-		if tenant.DeletionTimestamp.IsZero() && tenant.Status.CurrentVersion != fromVersion {
+		if tenant.DeletionTimestamp.IsZero() && tenant.Status.CurrentVersion != "" && tenant.Status.CurrentVersion != fromVersion {
 			behind = append(behind, fmt.Sprintf("%s (current version %q)", tenant.Name, tenant.Status.CurrentVersion))
 		}
 	}
@@ -131,7 +133,7 @@ func (v *NetEyeValidator) validateTenantsCompleted(ctx context.Context, obj *Net
 	return apierrors.NewInvalid(
 		GroupVersion.WithKind("NetEye").GroupKind(),
 		obj.Name,
-		field.ErrorList{field.Forbidden(field.NewPath("spec", "version"), fmt.Sprintf("every NetEyeTenant must complete NetEye %s before the upgrade; not completed: %s", fromVersion, strings.Join(behind, ", ")))},
+		field.ErrorList{field.Forbidden(field.NewPath("spec", "version"), fmt.Sprintf("every NetEyeTenant must complete NetEye %s before the upgrade; at another version: %s", fromVersion, strings.Join(behind, ", ")))},
 	)
 }
 

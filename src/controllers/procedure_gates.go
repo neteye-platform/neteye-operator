@@ -127,7 +127,9 @@ func (r *NetEyeReconciler) ensureProcedureGate(ctx context.Context, ne *neteye.N
 }
 
 // signalProcedureGate creates the gate for version in namespace, owned by
-// owner, unless it is already present.
+// owner, unless it is already present. An existing object with the name of
+// the gate counts only when it records the same gate: the name of a gate is
+// not bound to its spec, and consumers read the spec.
 func signalProcedureGate(ctx context.Context, c client.Client, namespace, version, gate string, owner metav1.OwnerReference, present map[string]struct{}) error {
 	if _, ok := present[gate]; ok {
 		return nil
@@ -140,7 +142,18 @@ func signalProcedureGate(ctx context.Context, c client.Client, namespace, versio
 		},
 		Spec: neteye.NetEyeProcedureGateSpec{Version: version, Gate: gate, Producer: neteye.ProcedureGateProducerOperator},
 	}
-	if err := c.Create(ctx, object); err != nil && !apierrors.IsAlreadyExists(err) {
+	err := c.Create(ctx, object)
+	if apierrors.IsAlreadyExists(err) {
+		existing := &neteye.NetEyeProcedureGate{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(object), existing); err != nil {
+			return fmt.Errorf("get NetEye procedure gate %q: %w", object.Name, err)
+		}
+		if existing.Spec.Version != version || existing.Spec.Gate != gate {
+			return fmt.Errorf("NetEye procedure gate %q records gate %q of version %q, not gate %q of version %q", object.Name, existing.Spec.Gate, existing.Spec.Version, gate, version)
+		}
+		err = nil
+	}
+	if err != nil {
 		return fmt.Errorf("create NetEye procedure gate %q: %w", object.Name, err)
 	}
 	present[gate] = struct{}{}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -132,8 +133,8 @@ func TestTenantNamespacePolicyAgainstAPIServer(t *testing.T) {
 		"remove the tenant label": func(ns *corev1.Namespace) { delete(ns.Labels, neteye.TenantLabel) },
 		"change the tenant label": func(ns *corev1.Namespace) { ns.Labels[neteye.TenantLabel] = "neteye-tenant-aaaaaaaa" },
 	} {
-		if err := patchNamespace(admin, testTenant, change); err == nil {
-			t.Errorf("a user could %s of a tenant namespace", name)
+		if err := patchNamespace(admin, testTenant, change); !deniedByTenantNamespacePolicy(err) {
+			t.Errorf("a user could %s of a tenant namespace: %v", name, err)
 		}
 	}
 	// The API server applies metadata changes sent to the status and finalize
@@ -144,23 +145,23 @@ func TestTenantNamespacePolicyAgainstAPIServer(t *testing.T) {
 			t.Fatal(err)
 		}
 		ns.Labels[neteye.TenantLabel] = "neteye-tenant-hijacked"
-		if err := admin.SubResource(subresource).Update(ctx, ns); err == nil {
-			t.Errorf("a user changed the tenant label through the %s subresource", name)
+		if err := admin.SubResource(subresource).Update(ctx, ns); !deniedByTenantNamespacePolicy(err) {
+			t.Errorf("a user changed the tenant label through the %s subresource: %v", name, err)
 		}
 	}
-	if err := patchNamespace(admin, "unrelated", func(ns *corev1.Namespace) { ns.Labels[neteye.TenantLabel] = "unrelated" }); err == nil {
-		t.Error("a user turned an existing namespace into a tenant namespace")
+	if err := patchNamespace(admin, "unrelated", func(ns *corev1.Namespace) { ns.Labels[neteye.TenantLabel] = "unrelated" }); !deniedByTenantNamespacePolicy(err) {
+		t.Errorf("a user turned an existing namespace into a tenant namespace: %v", err)
 	}
-	if err := admin.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "spoofed", Labels: map[string]string{neteye.TenantLabel: "spoofed"}}}); err == nil {
-		t.Error("a user created a namespace with the tenant label")
+	if err := admin.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "spoofed", Labels: map[string]string{neteye.TenantLabel: "spoofed"}}}); !deniedByTenantNamespacePolicy(err) {
+		t.Errorf("a user created a namespace with the tenant label: %v", err)
 	}
 	// An empty value is a value: a selector on the key alone matches it.
 	for name, metadata := range map[string]metav1.ObjectMeta{
 		"label":      {Name: "empty-label", Labels: map[string]string{neteye.TenantLabel: ""}},
 		"annotation": {Name: "empty-annotation", Annotations: map[string]string{neteye.TenantDisplayNameAnnotation: ""}},
 	} {
-		if err := admin.Create(ctx, &corev1.Namespace{ObjectMeta: metadata}); err == nil {
-			t.Errorf("a user created a namespace with an empty tenant %s", name)
+		if err := admin.Create(ctx, &corev1.Namespace{ObjectMeta: metadata}); !deniedByTenantNamespacePolicy(err) {
+			t.Errorf("a user created a namespace with an empty tenant %s: %v", name, err)
 		}
 	}
 	for name, change := range map[string]func(*corev1.Namespace){
@@ -172,8 +173,8 @@ func TestTenantNamespacePolicyAgainstAPIServer(t *testing.T) {
 			ns.Annotations[neteye.TenantDisplayNameAnnotation] = ""
 		},
 	} {
-		if err := patchNamespace(admin, "unrelated", change); err == nil {
-			t.Errorf("a user added an empty tenant %s to an existing namespace", name)
+		if err := patchNamespace(admin, "unrelated", change); !deniedByTenantNamespacePolicy(err) {
+			t.Errorf("a user added an empty tenant %s to an existing namespace: %v", name, err)
 		}
 	}
 
@@ -195,6 +196,12 @@ func TestTenantNamespacePolicyAgainstAPIServer(t *testing.T) {
 	}); err != nil {
 		t.Errorf("the operator could not remove the tenant metadata: %v", err)
 	}
+}
+
+// deniedByTenantNamespacePolicy reports whether the API server refused a
+// write because of the tenant namespace policy, and not for another reason.
+func deniedByTenantNamespacePolicy(err error) bool {
+	return apierrors.IsForbidden(err) && strings.Contains(err.Error(), TenantNamespacePolicyName)
 }
 
 func TestTenantNamespacePolicyReconcileRetriesAFailureSooner(t *testing.T) {

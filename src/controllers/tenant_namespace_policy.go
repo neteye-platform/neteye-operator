@@ -228,8 +228,10 @@ func containsSpec(live, desired any) bool {
 	}
 }
 
-// scopeFields select the requests that the policy and its binding check.
-var scopeFields = []string{"matchConstraints", "matchResources"}
+// scopeFields select the requests that the policy and its binding check. The
+// parameter fields are compared too: the operator sets none, and a parameter
+// that is missing at run time can make the API server skip the validation.
+var scopeFields = []string{"matchConstraints", "matchResources", "paramKind", "paramRef"}
 
 // sameScope reports whether live and desired have the same scopeFields. The
 // operator writes every default of these fields, and it writes no

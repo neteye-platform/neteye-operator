@@ -16,8 +16,10 @@ _Avoid_: Realm (the Keycloak mechanism a tenant maps to)
 
 **Display name**:
 The `spec.displayName` of a tenant, the name that people see and can change at
-any time. No two tenants have the same display name. Derived names use
-`metadata.name`, which never changes.
+any time. Only one tenant holds a display name: admission refuses a name
+that another tenant uses, and when two writes pass admission at the same
+time, the operator gives the name to one tenant and reports the other one as
+`Failed`. Derived names use `metadata.name`, which never changes.
 _Avoid_: Tenant name, when the stable `metadata.name` is meant
 
 ### Keycloak identity
@@ -64,5 +66,7 @@ The NetEye release whose install or upgrade has completed, reported in
 `status.currentVersion` of the `NetEye` resource and of every tenant. Empty
 means the operator is installing; a value different from `spec.version` means
 it is upgrading. The `NetEye` resource upgrades first, and only when every
-tenant has completed its version; then the tenants upgrade.
+tenant that completed a version is at the version that it leaves. A tenant
+upgrade then waits until the `NetEye` resource has completed the new
+version.
 _Avoid_: Installed version (it is set only once every component is ready)

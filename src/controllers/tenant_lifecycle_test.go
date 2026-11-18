@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -79,10 +80,42 @@ func TestNetEyeTenantRefusesVersionsThatTheOperatorDoesNotHandle(t *testing.T) {
 	}
 }
 
+// netEyeAt is the NetEye resource after it completed version.
+func netEyeAt(version string) *neteye.NetEye {
+	return &neteye.NetEye{ObjectMeta: metav1.ObjectMeta{Namespace: neteye.NetEyeNamespace, Name: "neteye"}, Spec: neteye.NetEyeSpec{Version: version}, Status: neteye.NetEyeStatus{CurrentVersion: version}}
+}
+
+func TestNetEyeTenantUpgradeWaitsForTheNetEyeResource(t *testing.T) {
+	for name, installation := range map[string]*neteye.NetEye{
+		"no NetEye resource":    nil,
+		"NetEye still upgrades": {ObjectMeta: metav1.ObjectMeta{Namespace: neteye.NetEyeNamespace, Name: "neteye"}, Spec: neteye.NetEyeSpec{Version: neteye.CurrentNetEyeVersion}, Status: neteye.NetEyeStatus{CurrentVersion: neteye.PreviousNetEyeVersion}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tenant := tenantResource()
+			tenant.Status.CurrentVersion = neteye.PreviousNetEyeVersion
+			objects := []client.Object{plainNamespace(testTenant), tenant}
+			if installation != nil {
+				objects = append(objects, installation)
+			}
+			r, c := newTenantReconciler(t, objects...)
+			reconcileTenant(t, r)
+
+			stored := getTenant(t, c, testTenant, testTenant)
+			assertTenantPhase(t, stored, neteye.PhaseUpgrading, "waiting for the NetEye resource to complete NetEye "+neteye.CurrentNetEyeVersion)
+			if stored.Status.CurrentVersion != neteye.PreviousNetEyeVersion {
+				t.Errorf("current version = %q, want the previous version while NetEye upgrades", stored.Status.CurrentVersion)
+			}
+			if labels := getNamespace(t, c, testTenant).Labels; labels[neteye.TenantLabel] != "" {
+				t.Error("the tenant upgrade changed the namespace before NetEye completed the version")
+			}
+		})
+	}
+}
+
 func TestNetEyeTenantRecordsTheUpgradeOnceReady(t *testing.T) {
 	tenant := tenantResource()
 	tenant.Status.CurrentVersion = neteye.PreviousNetEyeVersion
-	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenant)
+	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenant, netEyeAt(neteye.CurrentNetEyeVersion))
 	reconcileTenant(t, r)
 
 	stored := getTenant(t, c, testTenant, testTenant)
@@ -149,6 +182,25 @@ func TestNetEyeTenantHonorsItsProcedureGates(t *testing.T) {
 
 		assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseReady, "All components are ready")
 	})
+}
+
+func TestNetEyeTenantRefusesAForeignGateWithTheNameOfAProducedGate(t *testing.T) {
+	plans := map[string]tenantReleasePlan{neteye.CurrentNetEyeVersion: {
+		Install: tenantGatePlan{tenantNamespaceComponentID: {Produces: []string{"tenant-namespace-ready"}}},
+	}}
+	foreign := &neteye.NetEyeProcedureGate{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: procedureGateName(neteye.CurrentNetEyeVersion, "tenant-namespace-ready")},
+		Spec:       neteye.NetEyeProcedureGateSpec{Version: neteye.CurrentNetEyeVersion, Gate: "other-gate", Producer: neteye.ProcedureGateProducerAnsible},
+	}
+	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenantResource(), foreign)
+	r.releasePlans = plans
+	reconcileTenant(t, r)
+
+	stored := getTenant(t, c, testTenant, testTenant)
+	assertTenantPhase(t, stored, neteye.PhaseFailed, `records gate "other-gate"`)
+	if stored.Status.CurrentVersion != "" {
+		t.Errorf("current version = %q, want none while the produced gate is missing", stored.Status.CurrentVersion)
+	}
 }
 
 func TestTenantForProcedureGateMapsTheTenantOfTheNamespace(t *testing.T) {
@@ -227,6 +279,33 @@ func TestNetEyeTenantTakesOverAStaleDisplayName(t *testing.T) {
 				t.Errorf("display name lease = %#v, want it taken over", lease)
 			}
 		})
+	}
+}
+
+func TestNetEyeTenantKeepsItsOldDisplayNameUntilTheNamespaceShowsTheNewOne(t *testing.T) {
+	// The holder was renamed, but its namespace still shows the old name, for
+	// example because the patch of the namespace failed.
+	holder := tenantNamed(otherTenant, "other-uid", "Renamed")
+	holderNamespace := plainNamespace(otherTenant)
+	holderNamespace.Labels = map[string]string{neteye.TenantLabel: otherTenant}
+	holderNamespace.Annotations = map[string]string{neteye.TenantDisplayNameAnnotation: "Default"}
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Namespace: neteye.NetEyeNamespace, Name: tenantDisplayNameLeaseName("Default"), Labels: map[string]string{neteye.TenantLabel: otherTenant}},
+		Spec:       coordinationv1.LeaseSpec{HolderIdentity: ptr.To("other-uid")},
+	}
+	r, c := newTenantReconciler(t, plainNamespace(testTenant), tenantResource(), holder, holderNamespace, lease)
+	reconcileTenant(t, r)
+	assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseFailed, "is already used by tenant "+otherTenant)
+
+	// Once the namespace of the holder shows the new name, the old one is free.
+	holderNamespace = getNamespace(t, c, otherTenant)
+	holderNamespace.Annotations[neteye.TenantDisplayNameAnnotation] = "Renamed"
+	if err := c.Update(context.Background(), holderNamespace); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTenant(t, r)
+	if stored := getTenant(t, c, testTenant, testTenant); strings.Contains(stored.Status.Message, "already used") {
+		t.Errorf("phase = %q: %s, want the display name", stored.Status.Phase, stored.Status.Message)
 	}
 }
 

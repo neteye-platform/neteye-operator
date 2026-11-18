@@ -52,14 +52,18 @@ type NetEyeTenantSpec struct {
 	// DisplayName is the name of the tenant that people see and use. It can
 	// change at any time; resources derived from the tenant use metadata.name,
 	// which never changes. It has at least one letter or digit, so a name made
-	// only of blank characters is refused. The length counts characters, not
-	// bytes. No two tenants have the same display name.
+	// only of blank characters is refused; the Hangul fillers, which are
+	// letters that show nothing, do not count. The length counts characters,
+	// not bytes. Only one tenant holds a display name: the webhook refuses a
+	// name that another tenant uses, and when two writes pass the webhook at
+	// the same time, the operator gives the name to one tenant and reports the
+	// other one as Failed until it gets another display name.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:XValidation:rule="self == self.trim()",message="must not contain surrounding whitespace"
 	// +kubebuilder:validation:XValidation:rule="!self.matches('[\\\\p{Cc}\\\\p{Cf}\\\\p{Zl}\\\\p{Zp}]')",message="must not contain control or format characters, or line or paragraph separators"
-	// +kubebuilder:validation:XValidation:rule="self.matches('[\\\\p{L}\\\\p{N}]')",message="must contain at least one letter or digit"
+	// +kubebuilder:validation:XValidation:rule="self.matches('[^\\\\P{L}\\\\x{115F}\\\\x{1160}\\\\x{3164}\\\\x{FFA0}]|\\\\p{N}')",message="must contain at least one letter or digit"
 	DisplayName string `json:"displayName"`
 
 	// CABundle selects the optional ConfigMap with extra PEM CA certificates
