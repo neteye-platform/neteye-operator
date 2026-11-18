@@ -72,6 +72,12 @@ func NetworkPolicyPorts(protocol string, ports ...int64) []any {
 	return entries
 }
 
+// DNSEgressRule allows DNS to any destination: the resolver's namespace,
+// labels and port (53, or 5353 on OpenShift) differ between distributions.
+func DNSEgressRule() map[string]any {
+	return map[string]any{"ports": append(NetworkPolicyPorts("UDP", 53, 5353), NetworkPolicyPorts("TCP", 53, 5353)...)}
+}
+
 // NetworkPolicyGVK identifies the native Kubernetes network policies the
 // operator manages.
 func NetworkPolicyGVK() schema.GroupVersionKind {

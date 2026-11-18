@@ -19,6 +19,12 @@ type NetEyeComponents struct {
 	OTelCollectorImage string
 	// Full image reference for the EDOT Gateway container.
 	EDOTGatewayImage string
+	// Full image reference for the Apache Guacamole web application container
+	// of the Alyvix RDP access.
+	GuacamoleImage string
+	// Full image reference for the Apache Guacamole proxy daemon (guacd)
+	// container of the Alyvix RDP access.
+	GuacdImage string
 }
 
 // NetEyeSecretKeySelector identifies one key inside a Secret in the NetEye CR
@@ -272,6 +278,56 @@ type NetEyeElasticStackSpec struct {
 	Telemetry *NetEyeTelemetrySpec `json:"telemetry,omitempty"`
 }
 
+// NetEyeAlyvixSpec configures the services of the Alyvix feature module.
+type NetEyeAlyvixSpec struct {
+	// RDP configures the RDP access to the Alyvix sessions through Apache
+	// Guacamole.
+	// +kubebuilder:validation:Optional
+	RDP *NetEyeAlyvixRDPSpec `json:"rdp,omitempty"`
+}
+
+// NetEyeAlyvixRDPSpec configures the RDP access to the Alyvix sessions. When
+// it is enabled, every tenant runs its own Apache Guacamole web application
+// and proxy daemon (guacd) in the tenant namespace, and the shared Gateway
+// exposes the web application of each tenant on its own hostname. The
+// Guacamole JSON authentication key of a tenant is generated once, in a Secret
+// of the tenant namespace.
+type NetEyeAlyvixRDPSpec struct {
+	// Enabled deploys the RDP access in every tenant namespace.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// Ports lists the TCP ports of the RDP service on the Alyvix nodes. The
+	// proxy daemon may open connections to these ports on any address. The
+	// default is 3389.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:Minimum=1
+	// +kubebuilder:validation:items:Maximum=65535
+	// +listType=set
+	Ports []int32 `json:"ports,omitempty"`
+}
+
+// DefaultAlyvixRDPPort is the TCP port of the RDP service on the Alyvix nodes
+// when spec.alyvix.rdp.ports is unset.
+const DefaultAlyvixRDPPort int32 = 3389
+
+// AlyvixRDPEnabled reports whether the RDP access to the Alyvix sessions is
+// part of the desired state.
+func (s *NetEyeSpec) AlyvixRDPEnabled() bool {
+	return s != nil && s.Alyvix != nil && s.Alyvix.RDP != nil && s.Alyvix.RDP.Enabled
+}
+
+// EffectivePorts returns the RDP ports, applying the default for an unset
+// list.
+func (s *NetEyeAlyvixRDPSpec) EffectivePorts() []int32 {
+	if s == nil || len(s.Ports) == 0 {
+		return []int32{DefaultAlyvixRDPPort}
+	}
+	return append([]int32(nil), s.Ports...)
+}
+
 // NetEyeTelemetrySpec configures the shared telemetry components. Both
 // components are reconciled whenever NetEyeElasticStackSpec.Enabled is true.
 type NetEyeTelemetrySpec struct {
@@ -450,7 +506,7 @@ func (s *NetEyeGatewaySpec) EffectiveManaged() bool {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1", GuacamoleImage: "docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40", GuacdImage: "docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f"},
 }
 
 const (
@@ -460,6 +516,10 @@ const (
 	RelatedImageOTelCollectorEnv = "RELATED_IMAGE_OTEL_COLLECTOR"
 	// RelatedImageEDOTGatewayEnv overrides the EDOT Gateway image packaged with the operator.
 	RelatedImageEDOTGatewayEnv = "RELATED_IMAGE_EDOT_GATEWAY"
+	// RelatedImageGuacamoleEnv overrides the Apache Guacamole image packaged with the operator.
+	RelatedImageGuacamoleEnv = "RELATED_IMAGE_GUACAMOLE"
+	// RelatedImageGuacdEnv overrides the Apache Guacamole proxy daemon image packaged with the operator.
+	RelatedImageGuacdEnv = "RELATED_IMAGE_GUACD"
 	// DefaultCABundleConfigMapName and DefaultCABundleKey select the optional
 	// CA bundle when spec.caBundle is unset.
 	DefaultCABundleConfigMapName = "neteye-ca-bundle"
@@ -485,6 +545,12 @@ func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	}
 	if image := strings.TrimSpace(os.Getenv(RelatedImageEDOTGatewayEnv)); image != "" {
 		c.EDOTGatewayImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageGuacamoleEnv)); image != "" {
+		c.GuacamoleImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageGuacdEnv)); image != "" {
+		c.GuacdImage = image
 	}
 	return c, ok
 }
@@ -548,6 +614,11 @@ type NetEyeSpec struct {
 	// OTel Collector and EDOT Gateway. Images are resolved from release data.
 	// +kubebuilder:validation:Optional
 	ElasticStack *NetEyeElasticStackSpec `json:"elasticStack,omitempty"`
+
+	// Alyvix configures the services of the Alyvix feature module that run in
+	// the cluster. Images are resolved from release data.
+	// +kubebuilder:validation:Optional
+	Alyvix *NetEyeAlyvixSpec `json:"alyvix,omitempty"`
 
 	// CABundle selects the optional ConfigMap with extra PEM CA certificates
 	// that Keycloak and the OpenTelemetry Collector trust in addition to their

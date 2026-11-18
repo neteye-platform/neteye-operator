@@ -15,8 +15,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -143,7 +141,7 @@ func (c *OTelCollectorComponent) gatewayResourcesReady(ctx context.Context, name
 		}
 	}
 	for _, route := range []struct{ name, kind, section string }{{GRPCRouteName, "GRPCRoute", GRPCListenerName}, {HTTPRouteName, "HTTPRoute", CrossTenantListenerName}} {
-		ready, message, err := routeReady(ctx, c.client, namespace, route.name, route.kind, expectedParent{group: "gateway.networking.k8s.io", kind: "Gateway", namespace: gateway.Namespace, name: gateway.Name, section: route.section})
+		ready, message, err := resources.RouteReady(ctx, c.client, namespace, route.name, route.kind, resources.RouteParent{Group: "gateway.networking.k8s.io", Kind: "Gateway", Namespace: gateway.Namespace, Name: gateway.Name, Section: route.section})
 		if err != nil {
 			return degradedOutcome(ReasonReconcileFailed, message, err), true
 		}
@@ -236,10 +234,8 @@ func appSelector(app string) map[string]any {
 	return map[string]any{"matchLabels": map[string]any{"app": app}}
 }
 
-// dnsEgress allows DNS to any destination: the resolver's namespace, labels and
-// port (53, or 5353 on OpenShift) differ between distributions.
 func dnsEgress() map[string]any {
-	return map[string]any{"ports": append(resources.NetworkPolicyPorts("UDP", 53, 5353), resources.NetworkPolicyPorts("TCP", 53, 5353)...)}
+	return resources.DNSEgressRule()
 }
 
 func requiredSecretResourceVersion(ctx context.Context, c client.Client, namespace, name, key string) (string, error) {
@@ -278,88 +274,6 @@ const (
 	rootCAMountPath = "/etc/neteye/root-ca"
 	userCAMountPath = "/etc/neteye/user-ca"
 )
-
-type expectedParent struct{ group, kind, namespace, name, section string }
-
-func routeReady(ctx context.Context, c client.Client, namespace, routeName, kind string, expected expectedParent) (bool, string, error) {
-	route := &unstructured.Unstructured{}
-	route.SetGroupVersionKind(schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: kind})
-	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: routeName}, route); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, fmt.Sprintf("%s %s is not created", kind, routeName), nil
-		}
-		return false, "", err
-	}
-	parents, found, err := unstructured.NestedSlice(route.Object, "status", "parents")
-	if err != nil {
-		return false, "", err
-	}
-	if !found || len(parents) == 0 {
-		return false, fmt.Sprintf("waiting for Gateway %s/%s to report %s %s status", expected.namespace, expected.name, kind, routeName), nil
-	}
-	expectedGroup := expected.group
-	if expectedGroup == "" {
-		expectedGroup = "gateway.networking.k8s.io"
-	}
-	for _, rawParent := range parents {
-		parent, ok := rawParent.(map[string]any)
-		if !ok {
-			continue
-		}
-		ref, ok := parent["parentRef"].(map[string]any)
-		if !ok {
-			continue
-		}
-		group, _, _ := unstructured.NestedString(ref, "group")
-		if group == "" {
-			group = "gateway.networking.k8s.io"
-		}
-		parentKind, _, _ := unstructured.NestedString(ref, "kind")
-		if parentKind == "" {
-			parentKind = "Gateway"
-		}
-		parentNamespace, _, _ := unstructured.NestedString(ref, "namespace")
-		parentName, _, _ := unstructured.NestedString(ref, "name")
-		section, _, _ := unstructured.NestedString(ref, "sectionName")
-		if group != expectedGroup || parentKind != expected.kind || parentNamespace != expected.namespace || parentName != expected.name || section != expected.section {
-			continue
-		}
-		conditions, _, err := unstructured.NestedSlice(parent, "conditions")
-		if err != nil {
-			return false, "", err
-		}
-		for _, conditionType := range []string{"Accepted", "ResolvedRefs"} {
-			var condition map[string]any
-			for _, rawCondition := range conditions {
-				candidate, ok := rawCondition.(map[string]any)
-				if ok && candidate["type"] == conditionType {
-					condition = candidate
-					break
-				}
-			}
-			if condition == nil {
-				return false, fmt.Sprintf("waiting for %s %s %s condition from Gateway %s/%s", kind, routeName, conditionType, expected.namespace, expected.name), nil
-			}
-			observed, found, err := unstructured.NestedInt64(condition, "observedGeneration")
-			if err != nil {
-				return false, "", err
-			}
-			if found && observed < route.GetGeneration() {
-				return false, fmt.Sprintf("%s %s %s status is stale", kind, routeName, conditionType), nil
-			}
-			status, _, _ := unstructured.NestedString(condition, "status")
-			if status != "True" {
-				message, _, _ := unstructured.NestedString(condition, "message")
-				if message == "" {
-					message = fmt.Sprintf("waiting for %s %s %s condition from Gateway %s/%s", kind, routeName, conditionType, expected.namespace, expected.name)
-				}
-				return false, message, nil
-			}
-		}
-		return true, "", nil
-	}
-	return false, fmt.Sprintf("waiting for Gateway %s/%s to accept %s %s", expected.namespace, expected.name, kind, routeName), nil
-}
 
 type prerequisiteError struct{ reason, message string }
 

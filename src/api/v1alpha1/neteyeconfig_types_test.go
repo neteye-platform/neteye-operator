@@ -6,6 +6,7 @@ package v1alpha1
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -524,5 +525,58 @@ func TestGeneratedCRDDefaultsUseProcedureGates(t *testing.T) {
 	}
 	if value != true {
 		t.Errorf("useProcedureGates default = %v, want true", value)
+	}
+}
+
+func TestComponentsForVersionGuacamoleImageOverrides(t *testing.T) {
+	t.Setenv(RelatedImageGuacamoleEnv, "registry.example/guacamole:dev")
+	t.Setenv(RelatedImageGuacdEnv, "registry.example/guacd:dev")
+
+	components, ok := ComponentsForVersion(CurrentNetEyeVersion)
+	if !ok {
+		t.Fatalf("ComponentsForVersion(%q) not found", CurrentNetEyeVersion)
+	}
+	if got, want := components.GuacamoleImage, "registry.example/guacamole:dev"; got != want {
+		t.Errorf("GuacamoleImage = %q, want %q", got, want)
+	}
+	if got, want := components.GuacdImage, "registry.example/guacd:dev"; got != want {
+		t.Errorf("GuacdImage = %q, want %q", got, want)
+	}
+}
+
+func TestComponentsForVersionPinsTheGuacamoleImagesByDigest(t *testing.T) {
+	components, ok := ComponentsForVersion(CurrentNetEyeVersion)
+	if !ok {
+		t.Fatalf("ComponentsForVersion(%q) not found", CurrentNetEyeVersion)
+	}
+	for name, image := range map[string]string{"guacamole": components.GuacamoleImage, "guacd": components.GuacdImage} {
+		if !strings.Contains(image, "@sha256:") {
+			t.Errorf("%s image %q is not pinned by digest", name, image)
+		}
+	}
+}
+
+func TestAlyvixRDPEnabledAndEffectivePorts(t *testing.T) {
+	var spec *NetEyeSpec
+	if spec.AlyvixRDPEnabled() {
+		t.Error("a nil spec enables the RDP access")
+	}
+	for name, alyvix := range map[string]*NetEyeAlyvixSpec{"no alyvix": nil, "no rdp": {}, "disabled": {RDP: &NetEyeAlyvixRDPSpec{}}} {
+		if (&NetEyeSpec{Alyvix: alyvix}).AlyvixRDPEnabled() {
+			t.Errorf("%s: RDP access enabled", name)
+		}
+	}
+	enabled := &NetEyeSpec{Alyvix: &NetEyeAlyvixSpec{RDP: &NetEyeAlyvixRDPSpec{Enabled: true}}}
+	if !enabled.AlyvixRDPEnabled() {
+		t.Error("RDP access not enabled")
+	}
+	if got := enabled.Alyvix.RDP.EffectivePorts(); len(got) != 1 || got[0] != 3389 {
+		t.Errorf("default ports = %v, want [3389]", got)
+	}
+	configured := &NetEyeAlyvixRDPSpec{Ports: []int32{3390}}
+	ports := configured.EffectivePorts()
+	ports[0] = 1
+	if configured.Ports[0] != 3390 {
+		t.Error("EffectivePorts returns the spec slice")
 	}
 }
