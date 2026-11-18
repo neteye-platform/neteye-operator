@@ -61,6 +61,39 @@ spec:
           spec:
             description: NetEyeSpec defines the desired state of NetEyeConfig.
             properties:
+              alyvix:
+                description: |-
+                  Alyvix configures the services of the Alyvix feature module that run in
+                  the cluster. Images are resolved from release data.
+                properties:
+                  rdp:
+                    description: |-
+                      RDP configures the RDP access to the Alyvix sessions through Apache
+                      Guacamole.
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled deploys the RDP access in every tenant
+                          namespace.
+                        type: boolean
+                      ports:
+                        description: |-
+                          Ports lists the TCP ports of the RDP service on the Alyvix nodes. The
+                          proxy daemon may open connections to these ports on any address. The
+                          default is 3389.
+                        items:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        maxItems: 16
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-type: set
+                    required:
+                    - enabled
+                    type: object
+                type: object
               caBundle:
                 description: |-
                   CABundle selects the optional ConfigMap with extra PEM CA certificates

@@ -25,6 +25,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
+	"github.com/neteye-platform/neteye-operator/internal/alyvix"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
@@ -439,6 +440,11 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure cert-manager Issuer '%q' exists in namespace %q: %v", issuerRef.Name, keycloak.WorkloadNamespace, err))
 		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("ensure issuer exists: %w", err)
 	}
+	if err := r.reconcileAlyvixRDPCertificate(ctx, ne, issuerRef, owner); err != nil {
+		log.Error(err, "failed to reconcile the certificate of the Alyvix RDP access", "namespace", keycloak.WorkloadNamespace, "requeueAfter", r.failureRequeue())
+		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to reconcile the certificate of the Alyvix RDP access in namespace %q: %v", keycloak.WorkloadNamespace, err))
+		return ctrl.Result{RequeueAfter: r.failureRequeue()}, fmt.Errorf("reconcile Alyvix RDP certificate: %w", err)
+	}
 	if err := resources.EnsureGateway(ctx, r.Client, keycloak.WorkloadNamespace, gateway.Name, gateway.ClassName, gateway.Annotations, gatewayListeners(ne), owner); err != nil {
 		log.Error(err, "failed to ensure gateway exists", "namespace", keycloak.WorkloadNamespace, "gatewayName", gateway.Name, "requeueAfter", r.failureRequeue())
 		setPhase(ne, neteye.PhaseFailed, fmt.Sprintf("failed to ensure gateway '%q' exists in namespace %q: %v", gateway.Name, keycloak.WorkloadNamespace, err))
@@ -452,10 +458,23 @@ func (r *NetEyeReconciler) reconcileBaseResources(ctx context.Context, ne *netey
 	return ctrl.Result{}, nil
 }
 
+// reconcileAlyvixRDPCertificate keeps the wildcard certificate of the Gateway
+// listener of the Alyvix RDP access while the access is enabled. The tenant
+// components create the workloads and the routes in the tenant namespaces.
+func (r *NetEyeReconciler) reconcileAlyvixRDPCertificate(ctx context.Context, ne *neteye.NetEye, issuerRef resources.CertificateIssuerRef, owner metav1.OwnerReference) error {
+	if !ne.Spec.AlyvixRDPEnabled() {
+		return resources.DeleteCertificate(ctx, r.Client, keycloak.WorkloadNamespace, alyvix.TLSCertificateName, owner)
+	}
+	return resources.EnsureCertificate(ctx, r.Client, keycloak.WorkloadNamespace, alyvix.TLSCertificateName, alyvix.TLSSecretName, alyvix.GatewayListenerHostname, []string{alyvix.GatewayListenerHostname}, issuerRef, &owner)
+}
+
 // deleteGateway removes the redirect route and every Gateway this NetEye
 // controls, whatever spec.gateway.name now says.
 func deleteGateway(ctx context.Context, c client.Client, owner metav1.OwnerReference) error {
 	if err := resources.DeleteHTTPRoute(ctx, c, keycloak.WorkloadNamespace, resources.HTTPToHTTPSRedirectRouteName, owner); err != nil {
+		return err
+	}
+	if err := resources.DeleteCertificate(ctx, c, keycloak.WorkloadNamespace, alyvix.TLSCertificateName, owner); err != nil {
 		return err
 	}
 	return resources.DeleteOwnedGateways(ctx, c, keycloak.WorkloadNamespace, owner)
@@ -472,7 +491,8 @@ func gatewayRefFor(ne *neteye.NetEye) *resources.GatewayRef {
 
 // gatewayListeners returns the per-component HTTPS listeners exposed on the
 // shared Gateway. The identity listener is always present; the Elastic Stack
-// listeners are only added when the feature module is enabled.
+// and Alyvix RDP listeners are only added when their feature module is
+// enabled.
 func gatewayListeners(ne *neteye.NetEye) []resources.GatewayListener {
 	listeners := []resources.GatewayListener{
 		{Name: keycloak.GatewayListenerName, Hostname: keycloak.RouteHostname, TLSSecretName: keycloak.TLSSecretName, RouteKind: resources.RouteKindHTTP},
@@ -482,6 +502,9 @@ func gatewayListeners(ne *neteye.NetEye) []resources.GatewayListener {
 			resources.GatewayListener{Name: elasticstack.GRPCListenerName, Hostname: elasticstack.GRPCRouteHostname, TLSSecretName: elasticstack.GRPCTLSSecretName, RouteKind: resources.RouteKindGRPC},
 			resources.GatewayListener{Name: elasticstack.CrossTenantListenerName, Hostname: elasticstack.CrossTenantRouteHostname, TLSSecretName: elasticstack.CrossTenantTLSSecretName, RouteKind: resources.RouteKindHTTP},
 		)
+	}
+	if ne.Spec.AlyvixRDPEnabled() {
+		listeners = append(listeners, alyvix.GatewayListener())
 	}
 	return listeners
 }
