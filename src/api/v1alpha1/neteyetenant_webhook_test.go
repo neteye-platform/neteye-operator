@@ -252,3 +252,50 @@ func TestNetEyeTenantSpecDefaults(t *testing.T) {
 		t.Errorf("CA bundle = %#v, want the name that was set and the default key", got)
 	}
 }
+
+// The rules that tie the Classis Server to the database of the tenant live in the
+// webhook: OLM refuses a CRD upgrade that adds them to spec as CEL.
+func TestNetEyeTenantValidatorChecksTheDatabaseOfTheClassisServer(t *testing.T) {
+	external := &ClassisServerDatabaseSpec{External: &ClassisServerExternalDatabaseSpec{}}
+	cases := []struct {
+		name     string
+		database *TenantDatabaseSpec
+		server   *ClassisServerDatabaseSpec
+		want     string
+	}{
+		{name: "no database", want: "classisServer needs database"},
+		{name: "external without its database", database: &TenantDatabaseSpec{Type: TenantDatabaseExternal}, want: "required when spec.database.type is external"},
+		{name: "local with an external database", database: &TenantDatabaseSpec{Type: TenantDatabaseLocal}, server: external, want: "must not be set when spec.database.type is local"},
+		{name: "external with its database", database: &TenantDatabaseSpec{Type: TenantDatabaseExternal}, server: external},
+		{name: "local", database: &TenantDatabaseSpec{Type: TenantDatabaseLocal}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tenant := testTenant("neteye-tenant-2bh46bfv", "neteye-tenant-2bh46bfv", "Default")
+			tenant.Spec.Database = tc.database
+			tenant.Spec.ClassisServer = &NetEyeClassisServerSpec{Database: tc.server}
+			_, created := tenantValidator(t).ValidateCreate(context.Background(), tenant)
+			_, updated := tenantValidator(t).ValidateUpdate(context.Background(), tenant.DeepCopy(), tenant)
+			for verb, err := range map[string]error{"create": created, "update": updated} {
+				switch {
+				case tc.want == "" && err != nil:
+					t.Errorf("%s: valid tenant rejected: %v", verb, err)
+				case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+					t.Errorf("%s: error = %v, want %q", verb, err, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// A tenant that is being deleted is accepted whatever its spec, so that its
+// finalizer can be removed.
+func TestNetEyeTenantValidatorAcceptsAnInvalidTenantBeingDeleted(t *testing.T) {
+	tenant := testTenant("neteye-tenant-2bh46bfv", "neteye-tenant-2bh46bfv", "Default")
+	tenant.Spec.ClassisServer = &NetEyeClassisServerSpec{}
+	now := metav1.Now()
+	tenant.DeletionTimestamp = &now
+	if _, err := tenantValidator(t).ValidateUpdate(context.Background(), tenant.DeepCopy(), tenant); err != nil {
+		t.Fatalf("tenant being deleted rejected: %v", err)
+	}
+}

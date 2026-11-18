@@ -37,7 +37,7 @@ linters:
           pattern: "(?i)passwd|password|pwd|token|bearer|private[_-]?key"
     misspell:
       locale: US
-      # Classis is the name of the fleet server product.
+      # Classis is the name of the product.
       ignore-rules:
         - classis
     revive:
