@@ -12,4 +12,5 @@ metadata:
   name: neteye-tenant-2bh46bfv
   namespace: neteye-tenant-2bh46bfv
 spec:
+  version: "4.51"
   displayName: Default

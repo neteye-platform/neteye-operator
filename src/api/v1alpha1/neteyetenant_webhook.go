@@ -33,8 +33,9 @@ func SetupNetEyeTenantWebhookWithManager(mgr ctrl.Manager) error {
 // +kubebuilder:object:generate=false
 
 // NetEyeTenantValidator validates the NetEyeTenant rules that the CRD schema
-// cannot express: the namespace of a tenant, and a display name that is unique
-// among tenants. The CRD validates everything that depends on one field only.
+// cannot express: the version transitions, the namespace of a tenant, and a
+// display name that is unique among tenants. The CRD validates everything
+// that depends on one field only.
 type NetEyeTenantValidator struct {
 	reader client.Reader
 }
@@ -42,29 +43,50 @@ type NetEyeTenantValidator struct {
 // ValidateCreate validates NetEyeTenant resources on creation.
 func (v *NetEyeTenantValidator) ValidateCreate(ctx context.Context, obj *NetEyeTenant) (admission.Warnings, error) {
 	errors := ValidateTenantNamespace(obj)
+	if err := validateVersionOnCreate(obj.Spec.Version); err != nil {
+		errors = append(errors, err)
+	}
 	if len(errors) == 0 {
-		uniqueness, err := v.validateUniqueDisplayName(ctx, obj)
+		checks, err := v.validateNotNewerThanNetEye(ctx, obj)
 		if err != nil {
 			return nil, err
 		}
-		errors = append(errors, uniqueness...)
+		errors = append(errors, checks...)
+		if checks, err = v.validateUniqueDisplayName(ctx, obj); err != nil {
+			return nil, err
+		}
+		errors = append(errors, checks...)
 	}
 	return nil, tenantInvalid(obj, errors)
 }
 
 // ValidateUpdate validates NetEyeTenant resources on update. The name and the
-// namespace of a resource never change, so only a new display name is checked.
-// Every other update is accepted, so that an existing conflict never blocks
-// unrelated changes such as the removal of a finalizer.
+// namespace of a resource never change. The version follows the rules of the
+// NetEye resource, and a new display name must be unique. An update of a
+// tenant that is being deleted, such as the removal of its finalizer, is
+// always accepted.
 func (v *NetEyeTenantValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *NetEyeTenant) (admission.Warnings, error) {
-	if !newObj.DeletionTimestamp.IsZero() || sameDisplayName(oldObj.Spec.DisplayName, newObj.Spec.DisplayName) {
+	if !newObj.DeletionTimestamp.IsZero() {
 		return nil, nil
 	}
-	uniqueness, err := v.validateUniqueDisplayName(ctx, newObj)
-	if err != nil {
-		return nil, err
+	var errors field.ErrorList
+	if err := validateVersionOnUpdate(oldObj.Spec.Version, newObj.Spec.Version); err != nil {
+		errors = append(errors, err)
+	} else if oldObj.Spec.Version != newObj.Spec.Version {
+		checks, err := v.validateNotNewerThanNetEye(ctx, newObj)
+		if err != nil {
+			return nil, err
+		}
+		errors = append(errors, checks...)
 	}
-	return nil, tenantInvalid(newObj, uniqueness)
+	if !sameDisplayName(oldObj.Spec.DisplayName, newObj.Spec.DisplayName) {
+		checks, err := v.validateUniqueDisplayName(ctx, newObj)
+		if err != nil {
+			return nil, err
+		}
+		errors = append(errors, checks...)
+	}
+	return nil, tenantInvalid(newObj, errors)
 }
 
 // ValidateDelete allows NetEyeTenant deletion.
@@ -83,14 +105,34 @@ func ValidateTenantNamespace(tenant *NetEyeTenant) field.ErrorList {
 	return field.ErrorList{field.Invalid(field.NewPath("metadata", "namespace"), tenant.Namespace, "must equal metadata.name: a tenant lives in its own namespace, which has the same name")}
 }
 
+// validateNotNewerThanNetEye refuses a tenant version that is newer than the
+// version of the NetEye resource: the NetEye resource upgrades first, then its
+// tenants. Without a NetEye resource there is nothing to compare.
+func (v *NetEyeTenantValidator) validateNotNewerThanNetEye(ctx context.Context, tenant *NetEyeTenant) (field.ErrorList, error) {
+	if v.reader == nil {
+		return nil, nil
+	}
+	resources := &NetEyeList{}
+	if err := v.reader.List(ctx, resources); err != nil {
+		return nil, apierrors.NewInternalError(fmt.Errorf("list NetEye resources: %w", err))
+	}
+	for i := range resources.Items {
+		if version := resources.Items[i].Spec.Version; version == PreviousNetEyeVersion && tenant.Spec.Version == CurrentNetEyeVersion {
+			return field.ErrorList{field.Forbidden(field.NewPath("spec", "version"), fmt.Sprintf("the NetEye resource is at version %s: upgrade it to %s before the tenant", version, tenant.Spec.Version))}, nil
+		}
+	}
+	return nil, nil
+}
+
 // validateUniqueDisplayName refuses a display name that another tenant already
 // uses. Names that differ only in case, in Unicode normalization or
 // compatibility forms (for example ligatures and full-width letters), or in
 // the spaces between words are the same name. Characters of different scripts
 // that look alike are not detected. A tenant that is being deleted keeps its
 // name until it is gone, because its namespace still shows the name. The check
-// reads the existing tenants before the write, so two concurrent creates can
-// still both pass; it prevents mistakes, it is not a guarantee.
+// reads the existing tenants before the write, so two concurrent writes can
+// both pass it. The controller then gives the name to only one of them: see
+// TenantDisplayNameKey.
 func (v *NetEyeTenantValidator) validateUniqueDisplayName(ctx context.Context, tenant *NetEyeTenant) (field.ErrorList, error) {
 	if v.reader == nil {
 		return nil, nil
@@ -114,13 +156,16 @@ func (v *NetEyeTenantValidator) validateUniqueDisplayName(ctx context.Context, t
 }
 
 func sameDisplayName(a, b string) bool {
-	return displayNameKey(a) == displayNameKey(b)
+	return TenantDisplayNameKey(a) == TenantDisplayNameKey(b)
 }
 
-// displayNameKey is the form of a display name that the uniqueness check
-// compares: compatibility normalization, full Unicode case folding, and one
-// space between words.
-func displayNameKey(name string) string {
+// TenantDisplayNameKey is the form of a display name that the uniqueness
+// check compares: compatibility normalization, full Unicode case folding, and
+// one space between words. The controller claims this key with a Lease in the
+// shared NetEye namespace before it reconciles a tenant, so only one tenant
+// can hold a display name even when two writes pass the admission check at
+// the same time.
+func TenantDisplayNameKey(name string) string {
 	folded := norm.NFKC.String(cases.Fold().String(norm.NFKC.String(name)))
 	return strings.Join(strings.Fields(folded), " ")
 }
