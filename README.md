@@ -70,8 +70,10 @@ least one tenant enables Alyvix.
   browser use: `POST /guacamole/api/tokens`, `DELETE /guacamole/api/session`,
   `GET /guacamole/websocket-tunnel` and
   `GET /guacamole/guacamole-common-js/all.min.js`.
-- guacd may connect to the RDP ports on any address; the web application
-  reaches only guacd.
+- The egress policies are not a destination allowlist: both workloads may
+  send DNS queries (TCP and UDP ports 53 and 5353) to any address, and guacd
+  may connect to the RDP ports on any address. Apart from DNS, the web
+  application reaches only guacd on TCP port 4822.
 
 With `spec.gateway.managed: false` no route is created: route traffic to the
 `alyvix-guacamole` Service (port 8080) of the tenant namespace yourself.

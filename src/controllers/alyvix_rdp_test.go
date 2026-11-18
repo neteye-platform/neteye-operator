@@ -5,7 +5,9 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -14,16 +16,20 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/alyvix"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
+	"github.com/neteye-platform/neteye-operator/internal/resources"
 )
 
 // rdpNetEye is the NetEye resource that selects the images and the Gateway of
@@ -184,6 +190,40 @@ func TestNetEyeTenantRemovesTheRDPAccessAndKeepsItsKeyWhenDisabled(t *testing.T)
 	}
 }
 
+// The removal of a disabled RDP access does not wait for the namespace
+// baseline: here the admission policy is missing.
+func TestNetEyeTenantRemovesADisabledRDPAccessWithoutTheNamespacePolicy(t *testing.T) {
+	r, c := newTenantReconcilerWithRDP(t, plainNamespace(testTenant), alyvixTenant(testTenant, true), rdpNetEye())
+	reconcileTenant(t, r)
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.GuacamoleName}, &appsv1.Deployment{}); err != nil {
+		t.Fatalf("guacamole Deployment before disable: %v", err)
+	}
+
+	for _, object := range tenantNamespacePolicyObjects() {
+		if err := c.Delete(context.Background(), object); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tenant := getTenant(t, c, testTenant, testTenant)
+	tenant.Spec.Alyvix.Enabled = false
+	if err := c.Update(context.Background(), tenant); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTenant(t, r)
+
+	// The namespace is not ready without the policy, and the disabled RDP
+	// access is removed all the same: it is not among the components that the
+	// tenant waits for.
+	tenant = getTenant(t, c, testTenant, testTenant)
+	assertTenantPhase(t, tenant, neteye.PhaseFailed, "namespace: ")
+	if strings.Contains(tenant.Status.Message, string(tenantAlyvixRDPComponentID)) {
+		t.Errorf("message = %q, want the disabled RDP access not reported", tenant.Status.Message)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.GuacamoleName}, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Errorf("guacamole Deployment err = %v, want deleted", err)
+	}
+}
+
 func TestNetEyeTenantRDPAccessUsesThePortsOfTheTenant(t *testing.T) {
 	tenant := alyvixTenant(testTenant, true)
 	tenant.Spec.Alyvix.RDP = &neteye.NetEyeAlyvixRDPSpec{Ports: []int32{3390}}
@@ -312,6 +352,95 @@ func TestReconcileAlyvixRDPAddsTheTenantListenerAndCertificate(t *testing.T) {
 	}
 	if err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: alyvix.TLSCertificateName}, newUnstructured(certificateGVK, ns, alyvix.TLSCertificateName)); !apierrors.IsNotFound(err) {
 		t.Errorf("certificate err = %v, want deleted after disable", err)
+	}
+}
+
+// A Certificate of another controller with the name of the RDP certificate
+// must not stop the Gateway and the other components.
+func TestReconcileAlyvixRDPCertificateFailureDoesNotStopTheOtherResources(t *testing.T) {
+	c, s := startEnvtest(t)
+	ctx := context.Background()
+	ns := keycloak.WorkloadNamespace
+	for _, name := range []string{ns, testTenant} {
+		if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}); err != nil {
+			t.Fatalf("create namespace %s: %v", name, err)
+		}
+	}
+	if err := c.Create(ctx, newUnstructured(issuerGVK, ns, "internal-issuer")); err != nil {
+		t.Fatalf("create issuer: %v", err)
+	}
+	foreign := newUnstructured(certificateGVK, ns, alyvix.TLSCertificateName)
+	foreign.Object["spec"] = map[string]any{"secretName": "other", "dnsNames": []any{"other.example.com"}, "issuerRef": map[string]any{"name": "internal-issuer"}}
+	foreign.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other-uid", Controller: ptr.To(true)}})
+	if err := c.Create(ctx, foreign); err != nil {
+		t.Fatalf("create foreign certificate: %v", err)
+	}
+	ne := rdpNetEye()
+	if err := c.Create(ctx, ne); err != nil {
+		t.Fatalf("create neteye: %v", err)
+	}
+	tenant := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Name: testTenant, Namespace: testTenant}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: "Default", Alyvix: &neteye.NetEyeAlyvixSpec{Enabled: true}}}
+	if err := c.Create(ctx, tenant); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	r := &NetEyeReconciler{
+		Client:                 c,
+		Log:                    logr.Discard(),
+		Scheme:                 s,
+		KeycloakComponent:      keycloak.NewComponent(c, logr.Discard()),
+		OTelCollectorComponent: elasticstack.NewOTelCollectorComponent(c),
+		EDOTGatewayComponent:   elasticstack.NewEDOTGatewayComponent(c),
+	}
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ne)})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if result.RequeueAfter <= 0 || result.RequeueAfter > DefaultFailureRequeueAfter {
+		t.Errorf("requeueAfter = %v, want a retry within %v", result.RequeueAfter, DefaultFailureRequeueAfter)
+	}
+	gateway := requireExists(ctx, t, c, gatewayGVK, ns, "neteye")
+	listeners, _, _ := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
+	gatewayListenerByName(t, listeners, keycloak.GatewayListenerName)
+	gatewayListenerByName(t, listeners, alyvix.GatewayListenerName)
+	requireExists(ctx, t, c, httpRouteGVK, ns, resources.HTTPToHTTPSRedirectRouteName)
+
+	current := &neteye.NetEye{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ne), current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.Phase == neteye.PhaseReady || !strings.Contains(current.Status.Message, "Alyvix RDP") {
+		t.Errorf("phase = %q, message = %q, want the Alyvix certificate failure reported", current.Status.Phase, current.Status.Message)
+	}
+	if owners := requireExists(ctx, t, c, certificateGVK, ns, alyvix.TLSCertificateName).GetOwnerReferences(); len(owners) != 1 || owners[0].UID != "other-uid" {
+		t.Errorf("certificate owners = %#v, want the other controller kept", owners)
+	}
+}
+
+func TestDeleteGatewayRunsEveryDeletion(t *testing.T) {
+	scheme := tenantScheme(t)
+	owner := metav1.OwnerReference{APIVersion: "neteye.cloud/v1alpha1", Kind: "NetEye", Name: "neteye", UID: "neteye-uid", Controller: ptr.To(true)}
+	owned := func(gvk schema.GroupVersionKind, name string) *unstructured.Unstructured {
+		object := newUnstructured(gvk, keycloak.WorkloadNamespace, name)
+		object.SetOwnerReferences([]metav1.OwnerReference{owner})
+		return object
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(owned(httpRouteGVK, resources.HTTPToHTTPSRedirectRouteName), owned(certificateGVK, alyvix.TLSCertificateName), owned(gatewayGVK, "neteye")).
+		WithInterceptorFuncs(interceptor.Funcs{Delete: func(ctx context.Context, inner client.WithWatch, object client.Object, opts ...client.DeleteOption) error {
+			if object.GetObjectKind().GroupVersionKind().Kind == "Certificate" {
+				return errors.New("certificate deletion failed")
+			}
+			return inner.Delete(ctx, object, opts...)
+		}}).Build()
+
+	err := deleteGateway(context.Background(), c, owner)
+	if err == nil || !strings.Contains(err.Error(), "certificate deletion failed") {
+		t.Errorf("err = %v, want the certificate failure", err)
+	}
+	for _, object := range []*unstructured.Unstructured{newUnstructured(httpRouteGVK, keycloak.WorkloadNamespace, resources.HTTPToHTTPSRedirectRouteName), newUnstructured(gatewayGVK, keycloak.WorkloadNamespace, "neteye")} {
+		if err := c.Get(context.Background(), client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
+			t.Errorf("%s %s err = %v, want deleted although the certificate deletion failed", object.GetKind(), object.GetName(), err)
+		}
 	}
 }
 

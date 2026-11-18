@@ -172,10 +172,7 @@ func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *ne
 		return failed(fmt.Sprintf("display name %q is already used by tenant %s; choose another display name", tenant.Spec.DisplayName, holder))
 	}
 
-	graph, err := newLifecycleGraph([]lifecycleNode{
-		{ID: tenantNamespaceComponentID},
-		{ID: tenantAlyvixRDPComponentID, Dependencies: []componentID{tenantNamespaceComponentID}},
-	})
+	graph, err := newLifecycleGraph(tenantLifecycleNodes(tenant))
 	if err != nil {
 		setTenantPhase(tenant, neteye.PhaseFailed, err.Error())
 		return ctrl.Result{}, fmt.Errorf("construct tenant component lifecycle graph: %w", err)
@@ -242,6 +239,18 @@ func (r *NetEyeTenantReconciler) netEyeCompleted(ctx context.Context, version st
 		}
 	}
 	return false, nil
+}
+
+// tenantLifecycleNodes declares what each tenant component waits for. The RDP
+// access waits for the namespace only while the tenant enables Alyvix: its
+// removal must not wait for the namespace baseline, so a disabled RDP access
+// is removed on every pass.
+func tenantLifecycleNodes(tenant *neteye.NetEyeTenant) []lifecycleNode {
+	rdp := lifecycleNode{ID: tenantAlyvixRDPComponentID}
+	if tenant.Spec.AlyvixEnabled() {
+		rdp.Dependencies = []componentID{tenantNamespaceComponentID}
+	}
+	return []lifecycleNode{{ID: tenantNamespaceComponentID}, rdp}
 }
 
 func invalidTenantReason(tenant *neteye.NetEyeTenant) string {
