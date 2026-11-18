@@ -61,8 +61,9 @@ spec:
           spec:
             description: |-
               NetEyeTenantSpec defines the desired state of a NetEye tenant. The rules
-              that tie classisServer to database are checked by the validating webhook, not
-              by CEL: OLM refuses a CRD upgrade that adds a validation rule to spec.
+              that tie classisServer to database and objectStorage are checked by the
+              validating webhook, not by CEL: OLM refuses a CRD upgrade that adds a
+              validation rule to spec.
             properties:
               caBundle:
                 description: |-
@@ -88,7 +89,7 @@ spec:
               classisServer:
                 description: |-
                   ClassisServer is the Classis Server of the tenant. When it is not
-                  set, the tenant has none. It needs database.
+                  set, the tenant has none. It needs database and objectStorage.
                 properties:
                   adminUsersSecretName:
                     description: |-
@@ -102,106 +103,60 @@ spec:
                     maxLength: 253
                     minLength: 1
                     type: string
-                  blobs:
-                    description: Blobs is the S3 bucket that holds the package artifacts.
-                    properties:
-                      bucket:
-                        maxLength: 63
-                        minLength: 3
-                        type: string
-                      credentialsSecretName:
-                        description: |-
-                          CredentialsSecretName names a Secret with the access-key-id and
-                          secret-access-key keys.
-                        maxLength: 253
-                        minLength: 1
-                        type: string
-                      endpoint:
-                        description: |-
-                          Endpoint is the https URL of the S3 service. When a private CA signs its
-                          certificate, the tenant's spec.caBundle holds that CA.
-                        maxLength: 512
-                        pattern: ^https://.+
-                        type: string
-                      prefix:
-                        description: |-
-                          Prefix is the key prefix the server owns. At startup the server deletes
-                          the objects under it that no package names, so no other writer may share
-                          it.
-                        maxLength: 512
-                        type: string
-                      region:
-                        default: us-east-1
-                        maxLength: 63
-                        type: string
-                    required:
-                    - bucket
-                    - credentialsSecretName
-                    - endpoint
-                    type: object
-                  database:
+                  dbConnection:
                     description: |-
-                      Database tunes the database of the server. Where it lives is the
-                      tenant's spec.database.
+                      DBConnection is how the server connects to the PostgreSQL of the tenant.
+                      With a local database the operator creates the database and its role,
+                      and generates the credentials in the Secret classis-db-credentials, so
+                      only dbName may be set. With an external database the database and the
+                      role must exist, and usernameSecret and passwordSecret are required.
                     properties:
-                      external:
+                      dbName:
+                        default: classis
                         description: |-
-                          External names the database and the credentials on an external
-                          PostgreSQL. Required when spec.database.type is external.
+                          DBName is the database of the server. On a local database it is also the
+                          name of the role the operator creates.
+                        maxLength: 63
+                        minLength: 1
+                        pattern: ^[a-z_][a-z0-9_]*$
+                        type: string
+                      passwordSecret:
+                        description: |-
+                          PasswordSecret references the Secret key that holds the password. Only
+                          for an external database.
                         properties:
-                          credentialsSecretName:
-                            description: |-
-                              CredentialsSecretName names a Secret with the password key, and the ca.crt
-                              key of the CA that signs the server certificate.
-                            maxLength: 253
+                          key:
+                            description: Key is the key inside the Secret containing
+                              the referenced value.
                             minLength: 1
                             type: string
-                          dbname:
-                            maxLength: 63
-                            minLength: 1
-                            type: string
-                          user:
-                            maxLength: 63
+                          name:
+                            description: Name is the name of the Secret containing
+                              the referenced value.
                             minLength: 1
                             type: string
                         required:
-                        - credentialsSecretName
-                        - dbname
-                        - user
+                        - key
+                        - name
                         type: object
-                      internal:
-                        description: Internal tunes the CloudNativePG cluster of a
-                          local database.
+                      usernameSecret:
+                        description: |-
+                          UsernameSecret references the Secret key that holds the user name. Only
+                          for an external database.
                         properties:
-                          imageName:
-                            default: ghcr.io/cloudnative-pg/postgresql:18
-                            description: ImageName is the PostgreSQL image of the
-                              cluster.
-                            maxLength: 512
+                          key:
+                            description: Key is the key inside the Secret containing
+                              the referenced value.
+                            minLength: 1
                             type: string
-                          instances:
-                            default: 2
-                            description: |-
-                              Instances is the number of PostgreSQL instances. The instances never
-                              share a node (required pod anti-affinity on the node name): with two
-                              instances on a cluster that has a single worker node, the second instance
-                              stays Pending, so set it to 1 there.
-                            format: int32
-                            maximum: 5
-                            minimum: 1
-                            type: integer
-                          storageClassName:
-                            description: |-
-                              StorageClassName is the storage class of the volumes. When empty, the
-                              default class is used.
-                            maxLength: 253
+                          name:
+                            description: Name is the name of the Secret containing
+                              the referenced value.
+                            minLength: 1
                             type: string
-                          storageSize:
-                            default: 5Gi
-                            description: StorageSize is the size of the volume of
-                              each instance.
-                            maxLength: 32
-                            type: string
+                        required:
+                        - key
+                        - name
                         type: object
                     type: object
                   enabled:
@@ -210,11 +165,6 @@ spec:
                       Enabled runs the server. When false, the operator removes the Deployment
                       and leaves the database, the Service and the policies in place.
                     type: boolean
-                  image:
-                    description: Image is the container image of the Classis Server.
-                    maxLength: 512
-                    minLength: 1
-                    type: string
                   logFormat:
                     default: json
                     description: |-
@@ -243,45 +193,115 @@ spec:
                         maxItems: 32
                         type: array
                     type: object
+                  objectStorage:
+                    description: |-
+                      ObjectStorage is the part of the object store of the tenant that the
+                      server owns.
+                    properties:
+                      prefix:
+                        default: classis/
+                        description: |-
+                          Prefix is the key prefix the server owns, ending in a slash. At startup
+                          the server deletes the objects under it that no package names, so no
+                          other writer may share it.
+                        maxLength: 512
+                        minLength: 2
+                        pattern: ^[^/].*/$
+                        type: string
+                    type: object
                 required:
-                - blobs
                 - enabled
-                - image
                 type: object
               database:
-                description: Database says where the PostgreSQL of the tenant lives.
+                description: Database is the PostgreSQL of the tenant, shared by all
+                  its services.
                 properties:
-                  hostname:
-                    description: Hostname is the host of the external PostgreSQL.
-                      Only for type external.
-                    maxLength: 253
-                    minLength: 1
-                    type: string
-                  port:
-                    description: Port is the port of the external PostgreSQL. Only
-                      for type external.
-                    format: int32
-                    maximum: 65535
-                    minimum: 1
-                    type: integer
-                  type:
+                  external:
+                    description: External is where the external PostgreSQL lives.
+                    properties:
+                      caSecret:
+                        description: |-
+                          CASecret references the Secret key of the tenant namespace that holds the
+                          PEM of the CA that signs the certificate of the PostgreSQL.
+                        properties:
+                          key:
+                            description: Key is the key inside the Secret containing
+                              the referenced value.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the name of the Secret containing
+                              the referenced value.
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      host:
+                        description: Host is the DNS name or the IP address of the
+                          PostgreSQL.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      port:
+                        default: 5432
+                        description: Port is the port of the PostgreSQL.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    required:
+                    - caSecret
+                    - host
+                    type: object
+                  local:
+                    description: Local tunes the CloudNativePG cluster of the tenant.
+                    properties:
+                      replicas:
+                        default: 2
+                        description: |-
+                          Replicas is the number of PostgreSQL instances. The instances never share
+                          a node (required pod anti-affinity on the node name): with two replicas on
+                          a cluster that has a single worker node, the second one stays Pending, so
+                          set it to 1 there.
+                        format: int32
+                        maximum: 5
+                        minimum: 1
+                        type: integer
+                      storageClassName:
+                        description: |-
+                          StorageClassName is the storage class of the volumes. When empty, the
+                          default class is used.
+                        maxLength: 253
+                        type: string
+                      storageSize:
+                        default: 5Gi
+                        description: StorageSize is the size of the volume of each
+                          instance.
+                        maxLength: 32
+                        type: string
+                    type: object
+                  provider:
                     description: |-
-                      Type is local for a CloudNativePG cluster of the tenant, or external for a
-                      PostgreSQL that someone else runs.
+                      Provider is local for a CloudNativePG cluster that the operator runs in
+                      the tenant namespace, or external for a PostgreSQL that someone else runs.
                     enum:
                     - local
                     - external
                     type: string
                 required:
-                - type
+                - provider
                 type: object
                 x-kubernetes-validations:
-                - message: hostname and port must not be set when type is local
-                  rule: self.type != 'local' || (!has(self.hostname) && !has(self.port))
-                - message: hostname is required when type is external
-                  rule: self.type != 'external' || has(self.hostname)
-                - message: type is immutable
-                  rule: self.type == oldSelf.type
+                - message: provider is immutable
+                  rule: self.provider == oldSelf.provider
+                - message: external must not be set when provider is local
+                  rule: self.provider != 'local' || !has(self.external)
+                - message: external is required when provider is external
+                  rule: self.provider != 'external' || has(self.external)
+                - message: local must not be set when provider is external
+                  rule: self.provider != 'external' || !has(self.local)
               displayName:
                 description: |-
                   DisplayName is the name of the tenant that people see and use. It can
@@ -305,6 +325,81 @@ spec:
                   rule: '!self.matches(''[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]'')'
                 - message: must contain at least one letter or digit
                   rule: self.matches('[^\\P{L}\\x{115F}\\x{1160}\\x{3164}\\x{FFA0}]|\\p{N}')
+              objectStorage:
+                description: |-
+                  ObjectStorage is the S3 object store of the tenant, shared by all its
+                  services.
+                properties:
+                  external:
+                    description: External is the bucket of the external S3 service.
+                    properties:
+                      bucket:
+                        description: Bucket is the name of the bucket.
+                        maxLength: 63
+                        minLength: 3
+                        type: string
+                      credentialsSecretName:
+                        description: |-
+                          CredentialsSecretName names a Secret of the tenant namespace with the
+                          access-key-id and secret-access-key keys. When empty, the services use
+                          the workload identity of their platform.
+                        maxLength: 253
+                        type: string
+                      endpoint:
+                        description: |-
+                          Endpoint is the https URL of the S3 service. When a private CA signs its
+                          certificate, the tenant's spec.caBundle holds that CA.
+                        maxLength: 512
+                        pattern: ^https://.+
+                        type: string
+                      region:
+                        default: us-east-1
+                        description: |-
+                          Region is the region the requests are signed for. It must be the region
+                          of the bucket on a service that checks it.
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                    required:
+                    - bucket
+                    - endpoint
+                    type: object
+                  local:
+                    description: Local tunes the rustfs instance of the tenant.
+                    properties:
+                      storageClassName:
+                        description: |-
+                          StorageClassName is the storage class of the volume. When empty, the
+                          default class is used.
+                        maxLength: 253
+                        type: string
+                      storageSize:
+                        default: 10Gi
+                        description: StorageSize is the size of the volume.
+                        maxLength: 32
+                        type: string
+                    type: object
+                  provider:
+                    description: |-
+                      Provider is local for a single rustfs instance that the operator runs in
+                      the tenant namespace, or external for an S3 service that someone else
+                      runs.
+                    enum:
+                    - local
+                    - external
+                    type: string
+                required:
+                - provider
+                type: object
+                x-kubernetes-validations:
+                - message: provider is immutable
+                  rule: self.provider == oldSelf.provider
+                - message: external must not be set when provider is local
+                  rule: self.provider != 'local' || !has(self.external)
+                - message: external is required when provider is external
+                  rule: self.provider != 'external' || has(self.external)
+                - message: local must not be set when provider is external
+                  rule: self.provider != 'external' || !has(self.local)
               useProcedureGates:
                 default: true
                 description: |-

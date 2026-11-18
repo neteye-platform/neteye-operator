@@ -37,8 +37,9 @@ const (
 )
 
 // NetEyeTenantSpec defines the desired state of a NetEye tenant. The rules
-// that tie classisServer to database are checked by the validating webhook, not
-// by CEL: OLM refuses a CRD upgrade that adds a validation rule to spec.
+// that tie classisServer to database and objectStorage are checked by the
+// validating webhook, not by CEL: OLM refuses a CRD upgrade that adds a
+// validation rule to spec.
 type NetEyeTenantSpec struct {
 	// Version is the NetEye product version string of the tenant, e.g. "4.51".
 	// The rules are the same as for the version of the NetEye resource: a new
@@ -84,12 +85,17 @@ type NetEyeTenantSpec struct {
 	// +kubebuilder:default=true
 	UseProcedureGates *bool `json:"useProcedureGates,omitempty"`
 
-	// Database says where the PostgreSQL of the tenant lives.
+	// Database is the PostgreSQL of the tenant, shared by all its services.
 	// +kubebuilder:validation:Optional
 	Database *TenantDatabaseSpec `json:"database,omitempty"`
 
+	// ObjectStorage is the S3 object store of the tenant, shared by all its
+	// services.
+	// +kubebuilder:validation:Optional
+	ObjectStorage *TenantObjectStorageSpec `json:"objectStorage,omitempty"`
+
 	// ClassisServer is the Classis Server of the tenant. When it is not
-	// set, the tenant has none. It needs database.
+	// set, the tenant has none. It needs database and objectStorage.
 	// +kubebuilder:validation:Optional
 	ClassisServer *NetEyeClassisServerSpec `json:"classisServer,omitempty"`
 }

@@ -18,7 +18,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 )
@@ -172,58 +171,48 @@ func (r *NetEyeTenantReconciler) getSecretIfPresent(ctx context.Context, namespa
 	return secret, nil
 }
 
-// classisServerSecretsVersions lists the resource version of everything the pod
-// mounts besides its configuration: the users file, the database password and
-// CA, the S3 credentials and the CA bundle. The pod template carries the list,
-// so changing one of them rolls the pod: the server reads those files at
-// startup only. It names resource versions rather than digesting the data, as
-// the collector does, so that no hash of a secret reaches the pod template; a
-// write that changes only the metadata of a Secret rolls the pod too. A source
-// that does not exist is listed as absent.
-func (r *NetEyeTenantReconciler) classisServerSecretsVersions(ctx context.Context, tenant *neteye.NetEyeTenant) (string, error) {
-	spec := tenant.Spec.ClassisServer
-	database := classisServerDatabase(tenant)
-	secretNames := map[string]struct{}{}
-	for _, name := range []string{classisServerAdminUsersSecret(spec), database.PasswordSecret, database.CASecret, spec.Blobs.CredentialsSecretName} {
+// secretVersions lists the resource versions of the Secrets names and of the
+// ConfigMap ca, when given, as one string for a pod template annotation: the
+// pod reads those files at startup only, so a change of one of them rolls the
+// pod. It names resource versions rather than digesting the data, as the
+// collector does, so that no hash of a secret reaches the pod template; a write
+// that changes only the metadata of a Secret rolls the pod too. A source that
+// does not exist is listed as absent.
+func (r *NetEyeTenantReconciler) secretVersions(ctx context.Context, namespace string, secretNames []string, ca *neteye.NetEyeConfigMapKeySelector) (string, error) {
+	unique := map[string]struct{}{}
+	for _, name := range secretNames {
 		if name != "" {
-			secretNames[name] = struct{}{}
+			unique[name] = struct{}{}
 		}
 	}
-	names := make([]string, 0, len(secretNames))
-	for name := range secretNames {
+	names := make([]string, 0, len(unique))
+	for name := range unique {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	versions := make([]string, 0, len(names)+1)
-	version := func(kind, name string, object client.Object) {
-		if object == nil {
-			versions = append(versions, kind+"/"+name+"=absent")
-			return
-		}
-		versions = append(versions, kind+"/"+name+"="+object.GetResourceVersion())
-	}
 	for _, name := range names {
-		secret, err := r.getSecretIfPresent(ctx, tenant.Namespace, name)
+		secret, err := r.getSecretIfPresent(ctx, namespace, name)
 		if err != nil {
 			return "", err
 		}
 		if secret == nil {
-			version("secret", name, nil)
+			versions = append(versions, "secret/"+name+"=absent")
 			continue
 		}
-		version("secret", name, secret)
+		versions = append(versions, "secret/"+name+"="+secret.ResourceVersion)
 	}
-	if ca := tenant.Spec.CABundle; ca != nil {
+	if ca != nil {
 		configMap := &corev1.ConfigMap{}
-		err := r.Get(ctx, types.NamespacedName{Namespace: tenant.Namespace, Name: ca.Name}, configMap)
+		err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ca.Name}, configMap)
 		switch {
 		case apierrors.IsNotFound(err):
-			version("configmap", ca.Name, nil)
+			versions = append(versions, "configmap/"+ca.Name+"=absent")
 		case err != nil:
 			return "", fmt.Errorf("get ConfigMap %q: %w", ca.Name, err)
 		default:
-			version("configmap", ca.Name, configMap)
+			versions = append(versions, "configmap/"+ca.Name+"="+configMap.ResourceVersion)
 		}
 	}
 	return strings.Join(versions, ","), nil
