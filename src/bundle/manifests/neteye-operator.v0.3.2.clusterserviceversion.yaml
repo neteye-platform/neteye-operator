@@ -386,7 +386,7 @@ spec:
               containers:
               - env:
                 - name: RELATED_IMAGE_KEYCLOAK
-                  value: ghcr.io/neteye-platform/neteye-keycloak:1.0.10@sha256:686311bbb1b8f557d09cd04c5c0d2a1cabf85c2dd9a68e97075d77f238f4b47c
+                  value: ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9
                 - name: RELATED_IMAGE_OTEL_COLLECTOR
                   value: docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
                 - name: RELATED_IMAGE_EDOT_GATEWAY
@@ -473,7 +473,7 @@ spec:
     name: Wuerth IT | Italy
     url: https://your.domain
   relatedImages:
-  - image: ghcr.io/neteye-platform/neteye-keycloak:1.0.10@sha256:686311bbb1b8f557d09cd04c5c0d2a1cabf85c2dd9a68e97075d77f238f4b47c
+  - image: ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9
     name: neteye-keycloak
   - image: docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
     name: neteye-otel-collector
