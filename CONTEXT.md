@@ -15,11 +15,12 @@ live in that namespace.
 _Avoid_: Realm (the Keycloak mechanism a tenant maps to)
 
 **Display name**:
-The `spec.displayName` of a tenant, the name that people see and can change at
-any time. Only one tenant holds a display name: admission refuses a name
-that another tenant uses, and when two writes pass admission at the same
-time, the operator gives the name to one tenant and reports the other one as
-`Failed`. Derived names use `metadata.name`, which never changes.
+The `spec.displayName` of a tenant, the name that people see and can change,
+except while the tenant waits for its upgrade. Only one tenant holds a display
+name: admission refuses a name that another tenant uses, and when two writes
+pass admission at the same time, the operator gives the name to one tenant
+and reports the other one as `Failed`. Derived names use `metadata.name`,
+which never changes.
 _Avoid_: Tenant name, when the stable `metadata.name` is meant
 
 ### Keycloak identity

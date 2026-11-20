@@ -50,8 +50,9 @@ type NetEyeTenantSpec struct {
 	Version string `json:"version"`
 
 	// DisplayName is the name of the tenant that people see and use. It can
-	// change at any time; resources derived from the tenant use metadata.name,
-	// which never changes. It has at least one letter or digit, so a name made
+	// change, except while the tenant is at the previous version: then, as for
+	// the NetEye resource, the tenant accepts no change until it upgrades.
+	// Resources derived from the tenant use metadata.name, which never changes. It has at least one letter or digit, so a name made
 	// only of blank characters is refused; the Hangul fillers, which are
 	// letters that show nothing, do not count. The length counts characters,
 	// not bytes. Only one tenant holds a display name: the webhook refuses a

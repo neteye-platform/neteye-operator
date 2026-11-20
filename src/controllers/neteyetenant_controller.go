@@ -260,10 +260,12 @@ func (r *NetEyeTenantReconciler) reconcileNamespace(ctx context.Context, tenant 
 }
 
 // ensureNamespaceMetadata marks the namespace as the namespace of the tenant
-// and shows the tenant display name on it.
+// and shows the tenant display name on it. It reads the namespace from the
+// API server, not from the cache: a stale read would skip a needed patch, and
+// the tenant would report Ready for metadata that the namespace does not show.
 func (r *NetEyeTenantReconciler) ensureNamespaceMetadata(ctx context.Context, tenant *neteye.NetEyeTenant) error {
 	namespace := &corev1.Namespace{}
-	if err := r.Get(ctx, types.NamespacedName{Name: tenant.Namespace}, namespace); err != nil {
+	if err := r.apiReader().Get(ctx, types.NamespacedName{Name: tenant.Namespace}, namespace); err != nil {
 		return fmt.Errorf("get namespace %q: %w", tenant.Namespace, err)
 	}
 	if namespace.Labels[neteye.TenantLabel] == tenant.Name && namespace.Annotations[neteye.TenantDisplayNameAnnotation] == tenant.Spec.DisplayName {

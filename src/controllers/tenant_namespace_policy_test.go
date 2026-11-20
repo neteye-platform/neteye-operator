@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
@@ -42,7 +43,7 @@ func TestTenantNamespacePolicyAgainstAPIServer(t *testing.T) {
 	admin, scheme, cfg := startEnvtestWithConfig(t)
 	operatorConfig := rest.CopyConfig(cfg)
 	operatorConfig.Impersonate = rest.ImpersonationConfig{UserName: testOperatorUsername, Groups: []string{"system:masters", "system:authenticated"}}
-	operator, err := client.New(operatorConfig, client.Options{Scheme: scheme})
+	operator, err := client.NewWithWatch(operatorConfig, client.Options{Scheme: scheme})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,9 +78,31 @@ func TestTenantNamespacePolicyAgainstAPIServer(t *testing.T) {
 			t.Errorf("%s owners = %#v, want the NetEyeTenant CRD", kind, owners)
 		}
 	}
+	// An unchanged policy is not sent again: the API server keeps the
+	// generation of an update that changes nothing, so the writes are counted
+	// too.
 	before := generations()
+	writes := 0
+	p.Client = interceptor.NewClient(operator, interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			writes++
+			return c.Create(ctx, obj, opts...)
+		},
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			writes++
+			return c.Update(ctx, obj, opts...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			writes++
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
 	if err := p.Ensure(ctx); err != nil {
 		t.Fatalf("ensure policy again: %v", err)
+	}
+	p.Client = operator
+	if writes != 0 {
+		t.Errorf("an unchanged policy was sent again: %d writes", writes)
 	}
 	if after := generations(); !maps.Equal(before, after) {
 		t.Errorf("an unchanged policy was rewritten: generations %v -> %v", before, after)
