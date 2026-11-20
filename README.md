@@ -76,6 +76,13 @@ least one tenant enables Alyvix.
   of the route is the hostname of its own tenant. The policy has no
   exemption, and the RDP access of a tenant is not ready until the API server
   enforces it.
+- guacd trusts the CAs of the optional ConfigMap that `spec.caBundle` of the
+  tenant selects (default `neteye-ca-bundle`, key `ca-bundle.pem`, in the
+  tenant namespace) for the RDP certificates of the Alyvix nodes, in addition
+  to the system CAs. A changed bundle applies to the next RDP sessions once
+  the kubelet refreshes the volume; guacd is not restarted, so the open
+  sessions stay. The certificates are verified only for connections that do
+  not ignore them (the Guacamole parameter `ignore-cert`).
 - The egress policies are not a destination allowlist: both workloads may
   send DNS queries (TCP and UDP ports 53 and 5353) to any address, and guacd
   may connect to the RDP ports on any address. Apart from DNS, the web

@@ -89,6 +89,9 @@ const (
 	guacamoleUserID int64 = 1001
 	guacdUserID     int64 = 1000
 
+	// userCAMountPath holds the CA bundle of the tenant in the guacd pod.
+	userCAMountPath = "/etc/neteye/user-ca"
+
 	jsonAuthKeyVersionAnnotation = "neteye.cloud/json-auth-resource-version"
 	partOfLabel                  = "app.kubernetes.io/part-of"
 	partOfValue                  = "alyvix-rdp"
@@ -150,6 +153,10 @@ type RDPInputs struct {
 	GuacdImage     string
 	// Ports are the TCP ports of RDP on the Alyvix nodes.
 	Ports []int32
+	// CABundle is the optional ConfigMap key of the tenant namespace with the
+	// extra PEM CA certificates that guacd trusts for the RDP certificates
+	// of the Alyvix nodes.
+	CABundle resources.CABundleRef
 	// Gateway is the operator-managed Gateway, or nil when the Gateway is
 	// managed outside the operator: then no route is created.
 	Gateway *resources.GatewayRef
@@ -187,6 +194,9 @@ func (c *RDPComponent) Ensure(ctx context.Context, in RDPInputs, owner metav1.Ow
 	if in.GuacamoleImage == "" || in.GuacdImage == "" {
 		return degradedOutcome(ReasonInvalidConfiguration, "the resolved Guacamole and guacd images are required", nil)
 	}
+	if in.CABundle.Name == "" || in.CABundle.Key == "" {
+		return degradedOutcome(ReasonInvalidConfiguration, "the CA bundle ConfigMap name and key are required", nil)
+	}
 	ports, err := validatedPorts(in.Ports)
 	if err != nil {
 		return degradedOutcome(ReasonInvalidConfiguration, err.Error(), nil)
@@ -209,7 +219,7 @@ func (c *RDPComponent) Ensure(ctx context.Context, in RDPInputs, owner metav1.Ow
 	if outcome != nil {
 		return *outcome
 	}
-	if err := resources.EnsureDeployment(ctx, c.client, guacdDeployment(in.Namespace, in.GuacdImage), owner); err != nil {
+	if err := resources.EnsureDeployment(ctx, c.client, guacdDeployment(in.Namespace, in.GuacdImage, in.CABundle), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("apply Deployment %s: %w", GuacdName, err))
 	}
 	if err := resources.EnsureService(ctx, c.client, service(in.Namespace, GuacdName, "guacd", GuacdPort), owner); err != nil {
@@ -468,15 +478,16 @@ func restrictedSecurityContext(userID int64) *corev1.SecurityContext {
 // podSpec has no service account token, and no service environment variables:
 // the image reads GUACD_PORT, which the Service links of a Service named guacd
 // would overwrite.
-func podSpec(container corev1.Container) corev1.PodSpec {
+func podSpec(container corev1.Container, volumes []corev1.Volume) corev1.PodSpec {
 	return corev1.PodSpec{
 		AutomountServiceAccountToken: ptr.To(false),
 		EnableServiceLinks:           ptr.To(false),
 		Containers:                   []corev1.Container{container},
+		Volumes:                      volumes,
 	}
 }
 
-func deployment(namespace, name string, annotations map[string]string, container corev1.Container) *appsv1.Deployment {
+func deployment(namespace, name string, annotations map[string]string, container corev1.Container, volumes ...corev1.Volume) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels(name)},
 		Spec: appsv1.DeploymentSpec{
@@ -486,13 +497,22 @@ func deployment(namespace, name string, annotations map[string]string, container
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels(name), Annotations: annotations},
-				Spec:       podSpec(container),
+				Spec:       podSpec(container, volumes),
 			},
 		},
 	}
 }
 
-func guacdDeployment(namespace, image string) *appsv1.Deployment {
+// guacdDeployment mounts the optional CA bundle of the tenant and points
+// SSL_CERT_FILE to it. FreeRDP verifies the RDP certificate of a node against
+// the default OpenSSL paths: SSL_CERT_FILE replaces only the single-file
+// bundle, the hashed system CA folder stays. A missing ConfigMap leaves the
+// file absent, which OpenSSL ignores.
+//
+// FreeRDP loads the CAs again for every connection, so a changed bundle
+// applies to the next RDP sessions once the kubelet refreshes the volume. The
+// pod is not rolled, which would close the open sessions.
+func guacdDeployment(namespace, image string, caBundle resources.CABundleRef) *appsv1.Deployment {
 	probe := func(period, failures int32) *corev1.Probe {
 		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString("guacd")}}, PeriodSeconds: period, FailureThreshold: failures, TimeoutSeconds: 2}
 	}
@@ -500,11 +520,13 @@ func guacdDeployment(namespace, image string) *appsv1.Deployment {
 		Name:            "guacd",
 		Image:           image,
 		Ports:           []corev1.ContainerPort{{Name: "guacd", ContainerPort: GuacdPort, Protocol: corev1.ProtocolTCP}},
+		Env:             []corev1.EnvVar{{Name: "SSL_CERT_FILE", Value: userCAMountPath + "/" + resources.UserCABundleFile}},
+		VolumeMounts:    []corev1.VolumeMount{{Name: resources.UserCABundleVolumeName, MountPath: userCAMountPath, ReadOnly: true}},
 		StartupProbe:    probe(2, 30),
 		ReadinessProbe:  probe(10, 3),
 		LivenessProbe:   probe(20, 3),
 		SecurityContext: restrictedSecurityContext(guacdUserID),
-	})
+	}, corev1.Volume{Name: resources.UserCABundleVolumeName, VolumeSource: resources.UserCABundleVolumeSource(caBundle)})
 }
 
 func guacamoleDeployment(namespace, image, keyVersion string) *appsv1.Deployment {

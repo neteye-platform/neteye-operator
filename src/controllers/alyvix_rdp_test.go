@@ -81,6 +81,33 @@ func rdpResult(t *testing.T, r *NetEyeTenantReconciler, c client.Client, tenant 
 	return result
 }
 
+func TestNetEyeTenantGivesGuacdTheCABundleOfTheTenant(t *testing.T) {
+	for name, test := range map[string]struct {
+		caBundle *neteye.NetEyeConfigMapKeySelector
+		wantName string
+		wantKey  string
+	}{
+		"default": {wantName: neteye.DefaultCABundleConfigMapName, wantKey: neteye.DefaultCABundleKey},
+		"custom":  {caBundle: &neteye.NetEyeConfigMapKeySelector{Name: "tenant-cas", Key: "cas.pem"}, wantName: "tenant-cas", wantKey: "cas.pem"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tenant := alyvixTenant(testTenant, true)
+			tenant.Spec.CABundle = test.caBundle
+			r, c := newTenantReconcilerWithRDP(t, plainNamespace(testTenant), tenant, rdpNetEye())
+			reconcileTenant(t, r)
+
+			guacd := &appsv1.Deployment{}
+			if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.GuacdName}, guacd); err != nil {
+				t.Fatalf("guacd Deployment: %v", err)
+			}
+			volumes := guacd.Spec.Template.Spec.Volumes
+			if len(volumes) != 1 || volumes[0].ConfigMap == nil || volumes[0].ConfigMap.Name != test.wantName || volumes[0].ConfigMap.Items[0].Key != test.wantKey {
+				t.Errorf("guacd volumes = %+v, want the ConfigMap key %s/%s of the tenant namespace", volumes, test.wantName, test.wantKey)
+			}
+		})
+	}
+}
+
 func TestNetEyeTenantDeploysTheRDPAccessWhenTheTenantEnablesAlyvix(t *testing.T) {
 	r, c := newTenantReconcilerWithRDP(t, plainNamespace(testTenant), alyvixTenant(testTenant, true), rdpNetEye())
 	reconcileTenant(t, r)

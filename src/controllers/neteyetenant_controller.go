@@ -324,6 +324,7 @@ func (r *NetEyeTenantReconciler) reconcileAlyvixRDP(ctx context.Context, tenant 
 		GuacamoleImage: components.GuacamoleImage,
 		GuacdImage:     components.GuacdImage,
 		Ports:          tenant.Spec.Alyvix.EffectiveRDPPorts(),
+		CABundle:       caBundleRefForTenant(tenant),
 		Gateway:        gateway,
 	}, owner)
 	if gateway != nil && outcome.Phase != alyvix.PhaseDegraded {
@@ -339,6 +340,11 @@ func (r *NetEyeTenantReconciler) reconcileAlyvixRDP(ctx context.Context, tenant 
 	default:
 		return degradedResult(tenantAlyvixRDPComponentID, outcome.Reason, outcome.Message, r.failureRequeue(), outcome.Err)
 	}
+}
+
+func caBundleRefForTenant(tenant *neteye.NetEyeTenant) resources.CABundleRef {
+	selector := tenant.Spec.EffectiveCABundle()
+	return resources.CABundleRef{Name: selector.Name, Key: selector.Key}
 }
 
 // waitForTenantRoutePolicy reports the RDP access not ready while the API
