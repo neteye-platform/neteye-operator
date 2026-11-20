@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -91,35 +92,111 @@ func classisServerCABundle(tenant *neteye.NetEyeTenant) *neteye.NetEyeConfigMapK
 	return &bundle
 }
 
-// classisServerConfig renders the TOML configuration. Secrets are paths of the
-// files the Deployment mounts; the database user and the S3 access key are the
-// values that come from the environment.
-func classisServerConfig(tenant *neteye.NetEyeTenant) string {
+// classisServerFile is the TOML configuration file of the server. The order of
+// the fields is the order of the rendered keys and tables.
+type classisServerFile struct {
+	Listen   string                `toml:"listen"`
+	Log      classisServerLog      `toml:"log"`
+	REST     classisServerREST     `toml:"rest"`
+	Database classisServerDatabase `toml:"database"`
+	Blobs    classisServerBlobs    `toml:"blobs"`
+}
+
+type classisServerLog struct {
+	Format string `toml:"format"`
+}
+
+type classisServerREST struct {
+	Listen string                `toml:"listen"`
+	Auth   classisServerRESTAuth `toml:"auth"`
+}
+
+type classisServerRESTAuth struct {
+	BasicUsersFile string `toml:"basic_users_file"`
+}
+
+type classisServerDatabase struct {
+	Store    string                `toml:"store"`
+	Postgres classisServerPostgres `toml:"postgres"`
+}
+
+type classisServerPostgres struct {
+	Host         string `toml:"host"`
+	Port         int32  `toml:"port"`
+	DBName       string `toml:"dbname"`
+	PasswordFile string `toml:"password_file"`
+	CAFile       string `toml:"ca_file"`
+	TLS          bool   `toml:"tls"`
+}
+
+type classisServerBlobs struct {
+	Store string          `toml:"store"`
+	S3    classisServerS3 `toml:"s3"`
+}
+
+type classisServerS3 struct {
+	Endpoint            string `toml:"endpoint"`
+	Bucket              string `toml:"bucket"`
+	Region              string `toml:"region"`
+	Prefix              string `toml:"prefix"`
+	SecretAccessKeyFile string `toml:"secret_access_key_file,omitempty"`
+	CAFile              string `toml:"ca_file,omitempty"`
+}
+
+// classisServerFileOf builds the configuration of the server. Secrets are
+// paths of the files the Deployment mounts; the database user and the S3
+// access key are the values that come from the environment.
+//
+// The server speaks plain HTTP: a reverse proxy in front of it ends TLS and
+// authenticates the agents. The server itself admits every request of the
+// agent plane and refuses an [agents] section, so the file has none.
+func classisServerFileOf(tenant *neteye.NetEyeTenant) classisServerFile {
 	spec := tenant.Spec.ClassisServer
 	database := tenantDatabaseEndpointOf(tenant)
 	storage := tenantObjectStorageEndpointOf(tenant)
-	var b strings.Builder
 	logFormat := spec.LogFormat
 	if logFormat == "" {
 		logFormat = "json"
 	}
-	fmt.Fprintf(&b, "listen = \"0.0.0.0:%d\"\n\n[log]\nformat = %q\n\n", classisServerAgentPort, logFormat)
-	// The server speaks plain HTTP: a reverse proxy in front of it ends TLS and
-	// authenticates the agents. The server itself admits every request of the agent
-	// plane and refuses an [agents] section, so none is rendered.
-	fmt.Fprintf(&b, "[rest]\nlisten = \"0.0.0.0:%d\"\n\n", classisServerAdminPort)
-	fmt.Fprintf(&b, "[rest.auth]\nbasic_users_file = \"%s/basic-users\"\n\n", classisServerMount("admin-users"))
-	fmt.Fprintf(&b, "[database]\nstore = \"postgres\"\n\n[database.postgres]\nhost = %q\nport = %d\ndbname = %q\npassword_file = \"%s/password\"\nca_file = \"%s/ca.crt\"\ntls = true\n\n", database.Host, database.Port, spec.EffectiveDBName(), classisServerMount("db-password"), classisServerMount("db-ca"))
-	fmt.Fprintf(&b, "[blobs]\nstore = \"s3\"\n\n[blobs.s3]\nendpoint = %q\nbucket = %q\nregion = %q\nprefix = %q\n", storage.Endpoint, storage.Bucket, storage.Region, spec.EffectiveObjectStoragePrefix())
+	s3 := classisServerS3{Endpoint: storage.Endpoint, Bucket: storage.Bucket, Region: storage.Region, Prefix: spec.EffectiveObjectStoragePrefix()}
 	if storage.CredentialsSecret != "" {
-		fmt.Fprintf(&b, "secret_access_key_file = \"%s/secret-access-key\"\n", classisServerMount("s3-credentials"))
+		s3.SecretAccessKeyFile = classisServerMount("s3-credentials") + "/secret-access-key"
 	}
 	if storage.CASecret != nil {
-		fmt.Fprintf(&b, "ca_file = \"%s/ca.crt\"\n", classisServerMount("s3-ca"))
+		s3.CAFile = classisServerMount("s3-ca") + "/ca.crt"
 	} else if ca := classisServerCABundle(tenant); ca != nil {
-		fmt.Fprintf(&b, "ca_file = \"%s/%s\"\n", classisServerMount("ca-bundle"), ca.Key)
+		s3.CAFile = classisServerMount("ca-bundle") + "/" + ca.Key
 	}
-	return b.String()
+	return classisServerFile{
+		Listen: fmt.Sprintf("0.0.0.0:%d", classisServerAgentPort),
+		Log:    classisServerLog{Format: logFormat},
+		REST: classisServerREST{
+			Listen: fmt.Sprintf("0.0.0.0:%d", classisServerAdminPort),
+			Auth:   classisServerRESTAuth{BasicUsersFile: classisServerMount("admin-users") + "/basic-users"},
+		},
+		Database: classisServerDatabase{Store: "postgres", Postgres: classisServerPostgres{
+			Host:         database.Host,
+			Port:         database.Port,
+			DBName:       spec.EffectiveDBName(),
+			PasswordFile: classisServerMount("db-password") + "/password",
+			CAFile:       classisServerMount("db-ca") + "/ca.crt",
+			TLS:          true,
+		}},
+		Blobs: classisServerBlobs{Store: "s3", S3: s3},
+	}
+}
+
+// classisServerConfig renders the configuration of the server as TOML. The
+// encoder quotes and escapes every value, so no value of the spec can change
+// the structure of the file.
+func classisServerConfig(tenant *neteye.NetEyeTenant) (string, error) {
+	var b strings.Builder
+	encoder := toml.NewEncoder(&b)
+	encoder.Indent = ""
+	if err := encoder.Encode(classisServerFileOf(tenant)); err != nil {
+		return "", fmt.Errorf("render the Classis Server configuration: %w", err)
+	}
+	return b.String(), nil
 }
 
 func classisServerMount(volume string) string { return "/etc/classis/" + volume }
@@ -386,7 +463,10 @@ func (r *NetEyeTenantReconciler) reconcileClassisServer(ctx context.Context, ten
 		return progressingResult(classisServerComponentID, "WaitingForSecrets", "waiting for Secrets: "+strings.Join(missing, ", "), r.waitForProgressingRequeue())
 	}
 
-	config := classisServerConfig(tenant)
+	config, err := classisServerConfig(tenant)
+	if err != nil {
+		return degradedResult(classisServerComponentID, "ConfigFailed", err.Error(), r.failureRequeue(), err)
+	}
 	configVersion, err := resources.EnsureConfigMap(ctx, r.Client, tenant.Namespace, classisServerName, map[string]string{classisServerConfigFile: config}, owner)
 	if err != nil {
 		return degradedResult(classisServerComponentID, "ConfigFailed", err.Error(), r.failureRequeue(), err)

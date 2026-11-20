@@ -266,7 +266,7 @@ func TestExternalObjectStorageCreatesNothing(t *testing.T) {
 			t.Errorf("%T %q exists for an external store: %v", object, name, err)
 		}
 	}
-	if config := classisServerConfig(classisServerTenant(neteye.TenantStorageExternal)); !strings.Contains(config, `bucket = "tenant"`) {
+	if config := mustClassisServerConfig(t, classisServerTenant(neteye.TenantStorageExternal)); !strings.Contains(config, `bucket = "tenant"`) {
 		t.Errorf("config:\n%s", config)
 	}
 }
