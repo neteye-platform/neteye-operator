@@ -54,7 +54,7 @@ func owner() metav1.OwnerReference {
 }
 
 func inputs(gateway bool) RDPInputs {
-	in := RDPInputs{Namespace: testTenant, GuacamoleImage: "guacamole-image", GuacdImage: "guacd-image", Ports: []int32{3389}}
+	in := RDPInputs{Namespace: testTenant, GuacamoleImage: "guacamole-image", GuacdImage: "guacd-image", Ports: []int32{3389}, CABundle: resources.CABundleRef{Name: "neteye-ca-bundle", Key: "ca-bundle.pem"}}
 	if gateway {
 		in.Gateway = &resources.GatewayRef{Namespace: testSharedNamespace, Name: "neteye"}
 	}
@@ -218,6 +218,44 @@ func TestRDPAccessDeploysGuacamoleAndGuacdInTheTenantNamespace(t *testing.T) {
 	parents, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs")
 	if want := []any{map[string]any{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": testSharedNamespace, "name": "neteye", "sectionName": GatewayListenerName}}; !reflect.DeepEqual(parents, want) {
 		t.Errorf("route parents = %v, want the RDP listener of the shared Gateway", parents)
+	}
+}
+
+func TestRDPGuacdTrustsTheCABundleOfTheTenant(t *testing.T) {
+	c := newClient(t)
+	in := inputs(true)
+	in.CABundle = resources.CABundleRef{Name: "custom-ca", Key: "cas.pem"}
+	NewRDPComponent(c).Ensure(context.Background(), in, owner())
+
+	guacd := &appsv1.Deployment{}
+	getObject(t, c, GuacdName, guacd)
+	pod := guacd.Spec.Template.Spec
+	container := pod.Containers[0]
+	// FreeRDP reads SSL_CERT_FILE in addition to the hashed system CA folder.
+	if env := findEnv(container.Env, "SSL_CERT_FILE"); env == nil || env.Value != userCAMountPath+"/"+resources.UserCABundleFile {
+		t.Errorf("SSL_CERT_FILE = %+v, want the mounted CA bundle", env)
+	}
+	if want := []corev1.VolumeMount{{Name: resources.UserCABundleVolumeName, MountPath: userCAMountPath, ReadOnly: true}}; !reflect.DeepEqual(container.VolumeMounts, want) {
+		t.Errorf("guacd volume mounts = %+v, want %+v", container.VolumeMounts, want)
+	}
+	if want := []corev1.Volume{{Name: resources.UserCABundleVolumeName, VolumeSource: resources.UserCABundleVolumeSource(in.CABundle)}}; !reflect.DeepEqual(pod.Volumes, want) {
+		t.Errorf("guacd volumes = %+v, want %+v", pod.Volumes, want)
+	}
+	source := pod.Volumes[0].ConfigMap
+	if source.Name != "custom-ca" || source.Optional == nil || !*source.Optional || source.Items[0].Key != "cas.pem" {
+		t.Errorf("guacd CA volume = %+v, want the optional ConfigMap key of the tenant", source)
+	}
+	// The pod is not rolled when the bundle changes: FreeRDP loads it for
+	// every connection, and a roll would close the open sessions.
+	if _, ok := guacd.Spec.Template.Annotations[resources.UserCABundleVersionAnnotation]; ok {
+		t.Errorf("guacd annotations = %v, want no CA bundle version", guacd.Spec.Template.Annotations)
+	}
+
+	// The web application opens no TLS connection to the Alyvix nodes.
+	guacamole := &appsv1.Deployment{}
+	getObject(t, c, GuacamoleName, guacamole)
+	if volumes := guacamole.Spec.Template.Spec.Volumes; len(volumes) != 0 {
+		t.Errorf("guacamole volumes = %+v, want none", volumes)
 	}
 }
 
@@ -451,6 +489,8 @@ func TestRDPAccessRefusesAnInvalidConfiguration(t *testing.T) {
 		"no guacamole image": func(in *RDPInputs) { in.GuacamoleImage = "" },
 		"no guacd image":     func(in *RDPInputs) { in.GuacdImage = "" },
 		"no port":            func(in *RDPInputs) { in.Ports = nil },
+		"no CA bundle name":  func(in *RDPInputs) { in.CABundle.Name = "" },
+		"no CA bundle key":   func(in *RDPInputs) { in.CABundle.Key = "" },
 		"invalid port":       func(in *RDPInputs) { in.Ports = []int32{0} },
 	} {
 		t.Run(name, func(t *testing.T) {
