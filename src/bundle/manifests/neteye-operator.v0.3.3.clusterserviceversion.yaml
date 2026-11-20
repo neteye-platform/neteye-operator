@@ -219,8 +219,10 @@ spec:
           resources:
           - issuers
           verbs:
+          - create
           - get
           - list
+          - update
           - watch
         - apiGroups:
           - gateway.networking.k8s.io
@@ -253,6 +255,37 @@ spec:
           verbs:
           - delete
           - get
+        - apiGroups:
+          - postgresql.cnpg.io
+          resources:
+          - clusters
+          - databases
+          - databaseroles
+          verbs:
+          - create
+          - get
+          - list
+          - update
+          - watch
+        - apiGroups:
+          - batch
+          resources:
+          - jobs
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - persistentvolumeclaims
+          verbs:
+          - create
+          - get
+          - list
+          - watch
         - apiGroups:
           - neteye.cloud
           resources:
@@ -441,6 +474,14 @@ spec:
                   value: docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
                 - name: RELATED_IMAGE_EDOT_GATEWAY
                   value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1
+                - name: RELATED_IMAGE_CLASSIS_SERVER
+                  value: ghcr.io/neteye-platform/classis-server:0.7.0
+                - name: RELATED_IMAGE_POSTGRESQL
+                  value: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie@sha256:37fdeea29a4d3ed14570f719488ba55bd21e8975eaea864be5ce74d25a9a13de
+                - name: RELATED_IMAGE_RUSTFS
+                  value: docker.io/rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a
+                - name: RELATED_IMAGE_S3_CLIENT
+                  value: docker.io/amazon/aws-cli:2.41.0@sha256:c5d442efed03350a3c3d7a42b23f42a8e7b76acf5dbb4b021f2641bcd36680ea
                 image: ghcr.io/neteye-platform/neteye-operator:0.3.3
                 imagePullPolicy: Always
                 name: manager
@@ -530,6 +571,14 @@ spec:
     name: neteye-otel-collector
   - image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1
     name: neteye-edot-gateway
+  - image: ghcr.io/neteye-platform/classis-server:0.7.0
+    name: neteye-classis-server
+  - image: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie@sha256:37fdeea29a4d3ed14570f719488ba55bd21e8975eaea864be5ce74d25a9a13de
+    name: neteye-postgresql
+  - image: docker.io/rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a
+    name: neteye-rustfs
+  - image: docker.io/amazon/aws-cli:2.41.0@sha256:c5d442efed03350a3c3d7a42b23f42a8e7b76acf5dbb4b021f2641bcd36680ea
+    name: neteye-s3-client
   version: 0.3.3
   webhookdefinitions:
   - admissionReviewVersions:

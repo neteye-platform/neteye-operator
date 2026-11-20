@@ -19,6 +19,17 @@ type NetEyeComponents struct {
 	OTelCollectorImage string
 	// Full image reference for the EDOT Gateway container.
 	EDOTGatewayImage string
+	// Full image reference for the Classis Server container of a tenant.
+	ClassisServerImage string
+	// Full image reference for the PostgreSQL instances of a local tenant
+	// database (a CloudNativePG operand image).
+	PostgreSQLImage string
+	// Full image reference for the rustfs container of a local tenant object
+	// store.
+	RustFSImage string
+	// Full image reference for the S3 client that creates the bucket of a local
+	// tenant object store.
+	S3ClientImage string
 }
 
 // NetEyeSecretKeySelector identifies one key inside a Secret in the NetEye CR
@@ -450,7 +461,7 @@ func (s *NetEyeGatewaySpec) EffectiveManaged() bool {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1", ClassisServerImage: "ghcr.io/neteye-platform/classis-server:0.7.0", PostgreSQLImage: "ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie@sha256:37fdeea29a4d3ed14570f719488ba55bd21e8975eaea864be5ce74d25a9a13de", RustFSImage: "docker.io/rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a", S3ClientImage: "docker.io/amazon/aws-cli:2.41.0@sha256:c5d442efed03350a3c3d7a42b23f42a8e7b76acf5dbb4b021f2641bcd36680ea"},
 }
 
 const (
@@ -460,6 +471,14 @@ const (
 	RelatedImageOTelCollectorEnv = "RELATED_IMAGE_OTEL_COLLECTOR"
 	// RelatedImageEDOTGatewayEnv overrides the EDOT Gateway image packaged with the operator.
 	RelatedImageEDOTGatewayEnv = "RELATED_IMAGE_EDOT_GATEWAY"
+	// RelatedImageClassisServerEnv overrides the Classis Server image packaged with the operator.
+	RelatedImageClassisServerEnv = "RELATED_IMAGE_CLASSIS_SERVER"
+	// RelatedImagePostgreSQLEnv overrides the PostgreSQL image packaged with the operator.
+	RelatedImagePostgreSQLEnv = "RELATED_IMAGE_POSTGRESQL"
+	// RelatedImageRustFSEnv overrides the rustfs image packaged with the operator.
+	RelatedImageRustFSEnv = "RELATED_IMAGE_RUSTFS"
+	// RelatedImageS3ClientEnv overrides the S3 client image packaged with the operator.
+	RelatedImageS3ClientEnv = "RELATED_IMAGE_S3_CLIENT"
 	// DefaultCABundleConfigMapName and DefaultCABundleKey select the optional
 	// CA bundle when spec.caBundle is unset.
 	DefaultCABundleConfigMapName = "neteye-ca-bundle"
@@ -485,6 +504,18 @@ func ComponentsForVersion(version string) (NetEyeComponents, bool) {
 	}
 	if image := strings.TrimSpace(os.Getenv(RelatedImageEDOTGatewayEnv)); image != "" {
 		c.EDOTGatewayImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageClassisServerEnv)); image != "" {
+		c.ClassisServerImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImagePostgreSQLEnv)); image != "" {
+		c.PostgreSQLImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageRustFSEnv)); image != "" {
+		c.RustFSImage = image
+	}
+	if image := strings.TrimSpace(os.Getenv(RelatedImageS3ClientEnv)); image != "" {
+		c.S3ClientImage = image
 	}
 	return c, ok
 }

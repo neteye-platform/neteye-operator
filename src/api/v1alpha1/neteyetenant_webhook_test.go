@@ -252,3 +252,60 @@ func TestNetEyeTenantSpecDefaults(t *testing.T) {
 		t.Errorf("CA bundle = %#v, want the name that was set and the default key", got)
 	}
 }
+
+// The rules that tie the Classis Server to the database and the object store
+// of the tenant live in the webhook: OLM refuses a CRD upgrade that adds them to
+// spec as CEL.
+func TestNetEyeTenantValidatorChecksTheStoresOfTheClassisServer(t *testing.T) {
+	secret := &NetEyeSecretKeySelector{Name: "classis-db", Key: "password"}
+	local := &TenantDatabaseSpec{Provider: TenantStorageLocal}
+	external := &TenantDatabaseSpec{Provider: TenantStorageExternal, External: &TenantExternalDatabaseSpec{Host: "db.example.com"}}
+	storage := &TenantObjectStorageSpec{Provider: TenantStorageLocal}
+	cases := []struct {
+		name       string
+		database   *TenantDatabaseSpec
+		storage    *TenantObjectStorageSpec
+		connection *ClassisServerDBConnectionSpec
+		want       []string
+	}{
+		{name: "nothing", want: []string{"classisServer needs database", "classisServer needs objectStorage"}},
+		{name: "no object storage", database: local, want: []string{"classisServer needs objectStorage"}},
+		{name: "external without credentials", database: external, storage: storage, want: []string{"usernameSecret", "passwordSecret"}},
+		{name: "local with credentials", database: local, storage: storage, connection: &ClassisServerDBConnectionSpec{UsernameSecret: secret, PasswordSecret: secret}, want: []string{"the operator generates the credentials"}},
+		{name: "external with credentials", database: external, storage: storage, connection: &ClassisServerDBConnectionSpec{UsernameSecret: secret, PasswordSecret: secret}},
+		{name: "local with its database name", database: local, storage: storage, connection: &ClassisServerDBConnectionSpec{DBName: "classis_lab"}},
+		{name: "local", database: local, storage: storage},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tenant := testTenant("neteye-tenant-2bh46bfv", "neteye-tenant-2bh46bfv", "Default")
+			tenant.Spec.Database = tc.database
+			tenant.Spec.ObjectStorage = tc.storage
+			tenant.Spec.ClassisServer = &NetEyeClassisServerSpec{DBConnection: tc.connection}
+			_, created := tenantValidator(t).ValidateCreate(context.Background(), tenant)
+			_, updated := tenantValidator(t).ValidateUpdate(context.Background(), tenant.DeepCopy(), tenant)
+			for verb, err := range map[string]error{"create": created, "update": updated} {
+				if len(tc.want) == 0 && err != nil {
+					t.Errorf("%s: valid tenant rejected: %v", verb, err)
+				}
+				for _, want := range tc.want {
+					if err == nil || !strings.Contains(err.Error(), want) {
+						t.Errorf("%s: error = %v, want %q", verb, err, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+// A tenant that is being deleted is accepted whatever its spec, so that its
+// finalizer can be removed.
+func TestNetEyeTenantValidatorAcceptsAnInvalidTenantBeingDeleted(t *testing.T) {
+	tenant := testTenant("neteye-tenant-2bh46bfv", "neteye-tenant-2bh46bfv", "Default")
+	tenant.Spec.ClassisServer = &NetEyeClassisServerSpec{}
+	now := metav1.Now()
+	tenant.DeletionTimestamp = &now
+	if _, err := tenantValidator(t).ValidateUpdate(context.Background(), tenant.DeepCopy(), tenant); err != nil {
+		t.Fatalf("tenant being deleted rejected: %v", err)
+	}
+}
