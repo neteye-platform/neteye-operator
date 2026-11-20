@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,6 +49,14 @@ var (
 // so that a plain "go test ./..." stays green without them.
 func startEnvtest(t *testing.T) (client.Client, *runtime.Scheme) {
 	t.Helper()
+	c, s, _ := startEnvtestWithConfig(t)
+	return c, s
+}
+
+// startEnvtestWithConfig is startEnvtest for tests that also need the REST
+// configuration, for example to act as another user.
+func startEnvtestWithConfig(t *testing.T) (client.Client, *runtime.Scheme, *rest.Config) {
+	t.Helper()
 
 	s := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(s); err != nil {
@@ -60,6 +71,7 @@ func startEnvtest(t *testing.T) (client.Client, *runtime.Scheme) {
 			Paths: []string{
 				filepath.Join("testdata", "crds"),
 				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_neteyes.yaml"),
+				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_neteyetenants.yaml"),
 				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakclients.yaml"),
 				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakusers.yaml"),
 				filepath.Join("..", "config", "crd", "bases", "neteye.cloud_keycloakauthflows.yaml"),
@@ -81,7 +93,7 @@ func startEnvtest(t *testing.T) (client.Client, *runtime.Scheme) {
 	if err != nil {
 		t.Fatalf("build client: %v", err)
 	}
-	return c, s
+	return c, s, cfg
 }
 
 func TestReconcileElasticStackDisabledDoesNotCreateCollector(t *testing.T) {
@@ -1018,4 +1030,144 @@ func gatewayListenerByName(t *testing.T, listeners []any, name string) map[strin
 	}
 	t.Fatalf("gateway listener %q not found", name)
 	return nil
+}
+
+func TestAPIServerValidatesNetEyeTenantSchema(t *testing.T) {
+	c, _ := startEnvtest(t)
+	ctx := context.Background()
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testTenant}}); err != nil {
+		t.Fatal(err)
+	}
+	for name, test := range map[string]struct {
+		name, version, displayName, want string
+	}{
+		"empty version":        {testTenant, "", "Default", "spec.version"},
+		"version format":       {testTenant, "4.51.0", "Default", "spec.version"},
+		"empty display name":   {testTenant, "4.51", "", "spec.displayName"},
+		"too long":             {testTenant, "4.51", strings.Repeat("x", 64), "spec.displayName"},
+		"surrounding spaces":   {testTenant, "4.51", " Default", "surrounding whitespace"},
+		"control character":    {testTenant, "4.51", "De\nfault", "control or format characters"},
+		"format character":     {testTenant, "4.51", "De\u200bfault", "control or format characters"},
+		"line separator":       {testTenant, "4.51", "Acme\u2028Corp", "line or paragraph separators"},
+		"only a blank symbol":  {testTenant, "4.51", "\u2800", "at least one letter or digit"},
+		"only punctuation":     {testTenant, "4.51", "---", "at least one letter or digit"},
+		"Hangul filler":        {testTenant, "4.51", "\u3164", "at least one letter or digit"},
+		"choseong filler":      {testTenant, "4.51", "\u115f", "at least one letter or digit"},
+		"jungseong filler":     {testTenant, "4.51", "\u1160", "at least one letter or digit"},
+		"half-width filler":    {testTenant, "4.51", "\uffa0\uffa0", "at least one letter or digit"},
+		"64 characters":        {testTenant, "4.51", strings.Repeat("ü", 64), "spec.displayName"},
+		"id too short":         {"neteye-tenant-abc", "4.51", "Default", "metadata.name must be"},
+		"look-alike character": {"neteye-tenant-2bh46bf0", "4.51", "Default", "metadata.name must be"},
+		"shared namespace":     {neteye.NetEyeNamespace, "4.51", "Default", "metadata.name must be"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tenant := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: test.name}, Spec: neteye.NetEyeTenantSpec{Version: test.version, DisplayName: test.displayName}}
+			if err := c.Create(ctx, tenant); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, test.want)
+			}
+		})
+	}
+
+	// A request without a required field is refused, not only one with an
+	// empty value.
+	for _, field := range []string{"version", "displayName"} {
+		spec := map[string]any{"version": neteye.CurrentNetEyeVersion, "displayName": "Default"}
+		delete(spec, field)
+		omitted := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": neteye.GroupVersion.String(),
+			"kind":       "NetEyeTenant",
+			"metadata":   map[string]any{"namespace": testTenant, "name": testTenant},
+			"spec":       spec,
+		}}
+		if err := c.Create(ctx, omitted, client.DryRunAll); err == nil || !strings.Contains(err.Error(), "spec."+field+": Required value") {
+			t.Errorf("tenant without spec.%s: error = %v, want a required value", field, err)
+		}
+	}
+
+	// The length counts characters, not bytes: 63 two-byte characters fit.
+	// A real letter or a digit is enough, also next to a Hangul filler.
+	for _, displayName := range []string{strings.Repeat("ü", 63), "한국", "\u3164A", "42"} {
+		valid := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: displayName}}
+		if err := c.Create(ctx, valid, client.DryRunAll); err != nil {
+			t.Errorf("display name %q rejected: %v", displayName, err)
+		}
+	}
+	tenant := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: testTenant}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: "Würth Italy"}}
+	if err := c.Create(ctx, tenant); err != nil {
+		t.Fatalf("valid tenant rejected: %v", err)
+	}
+	if !tenant.Spec.EffectiveUseProcedureGates() || tenant.Spec.UseProcedureGates == nil {
+		t.Errorf("useProcedureGates = %v, want the default true", tenant.Spec.UseProcedureGates)
+	}
+	tenant.Status = neteye.NetEyeTenantStatus{
+		Phase:              neteye.PhaseReady,
+		Message:            "All components are ready",
+		ObservedGeneration: tenant.Generation,
+		CurrentVersion:     neteye.CurrentNetEyeVersion,
+	}
+	if err := c.Status().Update(ctx, tenant); err != nil {
+		t.Fatalf("status subresource update: %v", err)
+	}
+}
+
+func TestAPIServerGivesADisplayNameToOneTenantOnly(t *testing.T) {
+	c, s := startEnvtest(t)
+	ctx := context.Background()
+	for _, name := range []string{neteye.NetEyeNamespace, testTenant, otherTenant} {
+		if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Without the admission webhook, both tenants are created with the same
+	// display name, as after two concurrent creates.
+	for _, name := range []string{testTenant, otherTenant} {
+		tenant := &neteye.NetEyeTenant{ObjectMeta: metav1.ObjectMeta{Namespace: name, Name: name}, Spec: neteye.NetEyeTenantSpec{Version: neteye.CurrentNetEyeVersion, DisplayName: "Default"}}
+		if err := c.Create(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &NetEyeTenantReconciler{Client: c, Log: logr.Discard(), Scheme: s, OperatorUsername: testOperatorUsername}
+	reconcile := func(name string) *neteye.NetEyeTenant {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: name, Name: name}}); err != nil {
+			t.Fatalf("reconcile %s: %v", name, err)
+		}
+		tenant := &neteye.NetEyeTenant{}
+		if err := c.Get(ctx, types.NamespacedName{Namespace: name, Name: name}, tenant); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			t.Fatal(err)
+		}
+		return tenant
+	}
+
+	if first := reconcile(testTenant); strings.Contains(first.Status.Message, "already used") {
+		t.Fatalf("first tenant = %q: %s", first.Status.Phase, first.Status.Message)
+	}
+	if second := reconcile(otherTenant); second.Status.Phase != neteye.PhaseFailed || !strings.Contains(second.Status.Message, "already used by tenant "+testTenant) {
+		t.Fatalf("second tenant = %q: %s, want it refused", second.Status.Phase, second.Status.Message)
+	}
+
+	// Once the first tenant is gone, the second one gets the display name.
+	first := &neteye.NetEyeTenant{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: testTenant}, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if gone := reconcile(testTenant); gone != nil {
+		t.Fatalf("first tenant still exists after its deletion: %#v", gone.Finalizers)
+	}
+	if second := reconcile(otherTenant); strings.Contains(second.Status.Message, "already used") {
+		t.Fatalf("second tenant = %q: %s, want the display name", second.Status.Phase, second.Status.Message)
+	}
+	lease := &coordinationv1.Lease{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: neteye.NetEyeNamespace, Name: tenantDisplayNameLeaseName("Default")}, lease); err != nil {
+		t.Fatal(err)
+	}
+	if lease.Labels[neteye.TenantLabel] != otherTenant {
+		t.Errorf("display name lease labels = %v, want the second tenant", lease.Labels)
+	}
 }

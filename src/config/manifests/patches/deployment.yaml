@@ -21,7 +21,11 @@ spec:
               verbs: [get, list, watch]
             - apiGroups: [""]
               resources: [namespaces]
-              verbs: [create, delete, get, list, watch]
+              verbs: [create, delete, get, list, patch, watch]
+            - apiGroups: [admissionregistration.k8s.io]
+              resources:
+                [validatingadmissionpolicies, validatingadmissionpolicybindings]
+              verbs: [create, get, list, update, watch]
             - apiGroups: [storage.k8s.io]
               resources: [storageclasses]
               verbs: [get, list, watch]
@@ -68,6 +72,15 @@ spec:
             - apiGroups: [neteye.cloud]
               resources: [neteyeproceduregates]
               verbs: [create, get, list, watch]
+            - apiGroups: [neteye.cloud]
+              resources: [neteyetenants]
+              verbs: [get, list, patch, update, watch]
+            - apiGroups: [neteye.cloud]
+              resources: [neteyetenants/status]
+              verbs: [get, patch, update]
+            - apiGroups: [neteye.cloud]
+              resources: [neteyetenants/finalizers]
+              verbs: [update]
             - apiGroups: [neteye.cloud]
               resources: [keycloakclients]
               verbs: [create, get, list, patch, update, watch]
@@ -125,6 +138,14 @@ spec:
                     imagePullPolicy: Always
                     env:
                       - {
+                        name: POD_NAMESPACE,
+                        valueFrom: { fieldRef: { fieldPath: metadata.namespace } },
+                      }
+                      - {
+                        name: SERVICE_ACCOUNT_NAME,
+                        valueFrom: { fieldRef: { fieldPath: spec.serviceAccountName } },
+                      }
+                      - {
                         name: RELATED_IMAGE_KEYCLOAK,
                         value: ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9,
                       }
@@ -160,7 +181,7 @@ spec:
               verbs: [create, delete, get, list, patch, update, watch]
             - apiGroups: [coordination.k8s.io]
               resources: [leases]
-              verbs: [create, get, list, patch, update, watch]
+              verbs: [create, delete, get, list, patch, update, watch]
             - apiGroups: [""]
               resources: [events]
               verbs: [create, patch]
