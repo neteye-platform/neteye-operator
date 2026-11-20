@@ -146,7 +146,7 @@ func TestTenantNamespacePolicyAgainstAPIServer(t *testing.T) {
 		denial = patchNamespace(admin, testTenant, func(ns *corev1.Namespace) {
 			ns.Annotations[neteye.TenantDisplayNameAnnotation] = fmt.Sprintf("Changed by hand %d", attempt)
 		})
-		return denial != nil && strings.Contains(denial.Error(), TenantNamespacePolicyName), nil
+		return deniedByTenantNamespacePolicy(denial), nil
 	})
 	if pollErr != nil {
 		t.Fatalf("a user changed the display name annotation of a tenant namespace: last error %v", denial)
