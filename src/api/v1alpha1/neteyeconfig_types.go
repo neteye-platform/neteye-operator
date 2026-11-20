@@ -450,7 +450,7 @@ func (s *NetEyeGatewaySpec) EffectiveManaged() bool {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.1.5@sha256:3fe0a76b4625d69fe0552615bb9acbe0748ff84e5d4251d20c4adaf9c0c25806", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1"},
 }
 
 const (
