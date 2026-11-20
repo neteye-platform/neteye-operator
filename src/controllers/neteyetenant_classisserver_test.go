@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -172,7 +173,7 @@ func TestClassisServerDeploymentUsesTheClassisNames(t *testing.T) {
 func TestClassisServerConfigUsesTheStoresOfTheTenant(t *testing.T) {
 	local := classisServerTenant(neteye.TenantStorageLocal)
 	local.Spec.ObjectStorage = &neteye.TenantObjectStorageSpec{Provider: neteye.TenantStorageLocal}
-	config := classisServerConfig(local)
+	config := mustClassisServerConfig(t, local)
 	for _, want := range []string{
 		`host = "neteye-tenant-db-rw"`, "port = 5432", `dbname = "classis"`, `tls = true`,
 		`endpoint = "https://neteye-tenant-s3.` + testTenant + `.svc:9000"`, `bucket = "` + testTenant + `"`, `region = "us-east-1"`, `prefix = "classis/"`,
@@ -192,10 +193,76 @@ func TestClassisServerConfigUsesTheStoresOfTheTenant(t *testing.T) {
 	external.Spec.ObjectStorage.External.Region = "eu-west-1"
 	external.Spec.ClassisServer.DBConnection.DBName = "classis_prod"
 	external.Spec.ClassisServer.ObjectStorage = &neteye.ClassisServerObjectStorageSpec{Prefix: "fleet/"}
-	config = classisServerConfig(external)
+	config = mustClassisServerConfig(t, external)
 	for _, want := range []string{`host = "db.example.com"`, "port = 5433", `dbname = "classis_prod"`, `endpoint = "https://s3.example.com"`, `bucket = "tenant"`, `region = "eu-west-1"`, `prefix = "fleet/"`, `secret_access_key_file = "/etc/classis/s3-credentials/secret-access-key"`} {
 		if !strings.Contains(config, want) {
 			t.Errorf("external config lacks %q:\n%s", want, config)
+		}
+	}
+}
+
+// mustClassisServerConfig renders the configuration of the server and fails the
+// test when it cannot.
+func mustClassisServerConfig(t *testing.T, tenant *neteye.NetEyeTenant) string {
+	t.Helper()
+	config, err := classisServerConfig(tenant)
+	if err != nil {
+		t.Fatalf("render the configuration: %v", err)
+	}
+	return config
+}
+
+// The rendered file is valid TOML and decodes to the settings it was built
+// from, with no key the settings do not know.
+func TestClassisServerConfigDecodesToItsSettings(t *testing.T) {
+	local := classisServerTenant(neteye.TenantStorageLocal)
+	local.Spec.ObjectStorage = &neteye.TenantObjectStorageSpec{Provider: neteye.TenantStorageLocal}
+	workloadIdentity := classisServerTenant(neteye.TenantStorageExternal)
+	workloadIdentity.Spec.ObjectStorage.External.CredentialsSecretName = ""
+	for name, tenant := range map[string]*neteye.NetEyeTenant{"local": local, "external": classisServerTenant(neteye.TenantStorageExternal), "workload identity": workloadIdentity} {
+		config := mustClassisServerConfig(t, tenant)
+		var decoded classisServerFile
+		metadata, err := toml.Decode(config, &decoded)
+		if err != nil {
+			t.Fatalf("%s: the configuration is not valid TOML: %v\n%s", name, err, config)
+		}
+		if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
+			t.Errorf("%s: the configuration holds unknown keys %v", name, undecoded)
+		}
+		if want := classisServerFileOf(tenant); !reflect.DeepEqual(decoded, want) {
+			t.Errorf("%s: the configuration decodes to %+v, want %+v", name, decoded, want)
+		}
+	}
+}
+
+// A value of the spec with quotes, newlines, table headers or control
+// characters stays one string value: it cannot break the file or add keys and
+// tables to it.
+func TestClassisServerConfigEscapesTheValuesOfTheSpec(t *testing.T) {
+	hostile := "x\"\n[agents]\nauth = \"none\"\n\x01\x7f\\"
+	tenant := classisServerTenant(neteye.TenantStorageExternal)
+	tenant.Spec.Database.External.Host = hostile
+	tenant.Spec.ObjectStorage.External.Endpoint = "https://" + hostile
+	tenant.Spec.ObjectStorage.External.Bucket = hostile
+	tenant.Spec.ObjectStorage.External.Region = hostile
+	tenant.Spec.ClassisServer.DBConnection.DBName = hostile
+	tenant.Spec.ClassisServer.ObjectStorage = &neteye.ClassisServerObjectStorageSpec{Prefix: hostile}
+	config := mustClassisServerConfig(t, tenant)
+	var tables map[string]any
+	if _, err := toml.Decode(config, &tables); err != nil {
+		t.Fatalf("the configuration is not valid TOML: %v\n%s", err, config)
+	}
+	if _, ok := tables["agents"]; ok {
+		t.Errorf("a value of the spec added an [agents] table:\n%s", config)
+	}
+	var decoded classisServerFile
+	if _, err := toml.Decode(config, &decoded); err != nil {
+		t.Fatalf("decode the configuration: %v", err)
+	}
+	postgres, s3 := decoded.Database.Postgres, decoded.Blobs.S3
+	for field, got := range map[string]string{"host": postgres.Host, "dbname": postgres.DBName, "bucket": s3.Bucket, "region": s3.Region, "prefix": s3.Prefix, "endpoint": strings.TrimPrefix(s3.Endpoint, "https://")} {
+		if got != hostile {
+			t.Errorf("%s decodes to %q, want %q", field, got, hostile)
 		}
 	}
 }
@@ -205,7 +272,7 @@ func TestClassisServerConfigUsesTheStoresOfTheTenant(t *testing.T) {
 func TestClassisServerUsesTheWorkloadIdentityWithoutS3Credentials(t *testing.T) {
 	tenant := classisServerTenant(neteye.TenantStorageExternal)
 	tenant.Spec.ObjectStorage.External.CredentialsSecretName = ""
-	if config := classisServerConfig(tenant); strings.Contains(config, "secret_access_key_file") {
+	if config := mustClassisServerConfig(t, tenant); strings.Contains(config, "secret_access_key_file") {
 		t.Errorf("config names a key pair:\n%s", config)
 	}
 	d := classisServerDeployment(tenant, "image", "sum", "secrets")
@@ -368,7 +435,7 @@ func TestClassisServerNeedsNoCertificateAndNoAgentKey(t *testing.T) {
 // The configuration has no TLS section and no [agents] section: the Server refuses
 // both, and it admits the agents without checking them.
 func TestClassisServerConfigHasNoTLSAndNoAgentsSection(t *testing.T) {
-	config := classisServerConfig(classisServerTenant(neteye.TenantStorageLocal))
+	config := mustClassisServerConfig(t, classisServerTenant(neteye.TenantStorageLocal))
 	for _, removed := range []string{"[tls]", "[rest.tls]", "[client_ca]", "[enrolment]", "[agents", "jwt", "client_ca_file", "tls.crt"} {
 		if strings.Contains(config, removed) {
 			t.Errorf("config holds %q, the server refuses it or it is gone:\n%s", removed, config)
@@ -434,7 +501,7 @@ func TestClassisServerWaitingComponentsAreRequeuedQuickly(t *testing.T) {
 func TestClassisServerTrustsTheCABundleForAnExternalObjectStore(t *testing.T) {
 	tenant := classisServerTenant(neteye.TenantStorageLocal)
 	tenant.Spec.CABundle = &neteye.NetEyeConfigMapKeySelector{Name: "tenant-ca-bundle", Key: "ca.pem"}
-	if config := classisServerConfig(tenant); !strings.Contains(config, `ca_file = "/etc/classis/ca-bundle/ca.pem"`) {
+	if config := mustClassisServerConfig(t, tenant); !strings.Contains(config, `ca_file = "/etc/classis/ca-bundle/ca.pem"`) {
 		t.Errorf("config has no S3 ca_file:\n%s", config)
 	}
 	if volume := volumeNamed(classisServerDeployment(tenant, "image", "sum", "secrets").Spec.Template.Spec, "ca-bundle"); volume == nil || volume.ConfigMap.Name != "tenant-ca-bundle" {
@@ -442,7 +509,7 @@ func TestClassisServerTrustsTheCABundleForAnExternalObjectStore(t *testing.T) {
 	}
 
 	tenant.Spec.ObjectStorage = &neteye.TenantObjectStorageSpec{Provider: neteye.TenantStorageLocal}
-	if config := classisServerConfig(tenant); strings.Contains(config, "ca-bundle") {
+	if config := mustClassisServerConfig(t, tenant); strings.Contains(config, "ca-bundle") {
 		t.Errorf("a local object store is verified against the CA bundle:\n%s", config)
 	}
 }
