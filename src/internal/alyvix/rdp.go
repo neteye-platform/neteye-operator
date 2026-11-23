@@ -15,8 +15,9 @@
 //     the web server of the NetEye host.
 //   - guacd opens the RDP connection to the Alyvix node.
 //
-// The shared Gateway exposes only the few paths of the web application that
-// the module and the browser use, on a hostname of the tenant.
+// The Gateway of the tenant, in the tenant namespace, exposes only the few
+// paths of the web application that the module and the browser use, on the
+// hostname of the tenant.
 package alyvix
 
 import (
@@ -27,6 +28,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -45,19 +47,29 @@ import (
 )
 
 const (
-	// GatewayListenerName is the HTTPS listener of the shared Gateway that
-	// serves the RDP access of every tenant.
-	GatewayListenerName = "alyvix-rdp"
-	// HostnameSuffix follows the tenant name in the hostname of the RDP access
-	// of a tenant: <tenant>.guacamole.neteyelocal.
-	HostnameSuffix = "guacamole.neteyelocal"
-	// GatewayListenerHostname is the hostname of the listener: it matches the
-	// hostname of every tenant.
-	GatewayListenerHostname = "*." + HostnameSuffix
-	// TLSCertificateName and TLSSecretName are the wildcard certificate of the
-	// listener, in the namespace of the Gateway.
+	// GatewayName is the Gateway of the tenant, in the tenant namespace, and
+	// GatewayListenerName its HTTPS listener of the RDP access. Only the routes
+	// of the tenant namespace attach to it.
+	GatewayName         = "neteye"
+	GatewayListenerName = "guacamole"
+	// ServiceName and HostnameDomain make the hostname of the RDP access of a
+	// tenant: <service>.tenant-<tenant>.neteyelocal, as for every service of
+	// the tenant.
+	ServiceName    = "guacamole"
+	HostnameDomain = "neteyelocal"
+	// TLSCertificateName and TLSSecretName are the certificate of the listener
+	// for the hostname of the tenant, in the tenant namespace. The Issuer
+	// CAIssuerName of the tenant namespace signs it, with the intermediate CA in
+	// the Secret CASecretName.
 	TLSCertificateName = "alyvix-rdp-tls"
 	TLSSecretName      = "alyvix-rdp-tls-secret"
+	CAIssuerName       = "alyvix-rdp-ca"
+	CASecretName       = "alyvix-rdp-ca-secret"
+	// CANamePrefix and the tenant namespace name the intermediate CA of a
+	// tenant, in the shared namespace: the internal issuer signs it, and the
+	// operator copies its Secret into the tenant namespace. The tenant namespace
+	// has the copy, not the key of the root CA.
+	CANamePrefix = "alyvix-rdp-ca-"
 
 	// JSONAuthSecretName holds the Guacamole JSON authentication key of a
 	// tenant, under JSONAuthSecretKey: 32 hexadecimal characters (128 bits).
@@ -114,6 +126,7 @@ const (
 	ReasonDeploymentNotAvailable = "DeploymentNotAvailable"
 	ReasonDeploymentStalled      = "DeploymentStalled"
 	ReasonCertificateNotReady    = "CertificateNotReady"
+	ReasonSharedGatewayNotReady  = "SharedGatewayNotReady"
 	ReasonListenerNotProgrammed  = "ListenerNotProgrammed"
 	ReasonRouteNotReady          = "RouteNotReady"
 	ReasonReconcileFailed        = "ReconcileFailed"
@@ -157,28 +170,47 @@ type RDPInputs struct {
 	// extra PEM CA certificates that guacd trusts for the RDP certificates
 	// of the Alyvix nodes.
 	CABundle resources.CABundleRef
-	// Gateway is the operator-managed Gateway, or nil when the Gateway is
-	// managed outside the operator: then no route is created.
-	Gateway *resources.GatewayRef
+	// Gateway is the Gateway of the tenant, which the operator manages, or nil
+	// when the Gateways are managed outside the operator: then the operator
+	// creates neither the Gateway nor its certificate nor the route.
+	Gateway *GatewayInputs
 }
 
-// Hostname returns the hostname of the RDP access of a tenant.
-func Hostname(tenant string) string {
-	return tenant + "." + HostnameSuffix
+// GatewayInputs is the Gateway of a tenant.
+type GatewayInputs struct {
+	// ClassName is the GatewayClass of the Gateway.
+	ClassName string
+	// IssuerName is the Issuer of the shared namespace that signs the
+	// intermediate CA of the tenant.
+	IssuerName string
+	// Shared is the shared Gateway of the NetEye resource. It can ask the load
+	// balancer pool for a fixed address, so the Gateway of the tenant is created
+	// only after the shared Gateway has its address: otherwise the pool could
+	// give that address to the Gateway of the tenant.
+	Shared resources.GatewayRef
 }
 
-// GatewayListener returns the listener of the shared Gateway for the RDP
-// access. Only routes of tenant namespaces attach to it: the operator alone
-// sets the tenant label.
-func GatewayListener() resources.GatewayListener {
+// Hostname returns the hostname of the RDP access of a tenant namespace:
+// guacamole.tenant-<tenant>.neteyelocal, where the tenant is the name of the
+// namespace without the prefix "neteye-tenant-".
+func Hostname(namespace string) string {
+	return ServiceName + ".tenant-" + strings.TrimPrefix(namespace, neteye.TenantNamePrefix) + "." + HostnameDomain
+}
+
+// sharedCAName is the name of the intermediate CA of a tenant, in the shared
+// namespace.
+func sharedCAName(namespace string) string {
+	return CANamePrefix + namespace
+}
+
+// gatewayListener is the HTTPS listener of the Gateway of the tenant, for the
+// hostname of the tenant. Only routes of the tenant namespace attach to it.
+func gatewayListener(namespace string) resources.GatewayListener {
 	return resources.GatewayListener{
 		Name:          GatewayListenerName,
-		Hostname:      GatewayListenerHostname,
+		Hostname:      Hostname(namespace),
 		TLSSecretName: TLSSecretName,
 		RouteKind:     resources.RouteKindHTTP,
-		RouteNamespaceSelector: map[string]any{
-			"matchExpressions": []any{map[string]any{"key": neteye.TenantLabel, "operator": "Exists"}},
-		},
 	}
 }
 
@@ -231,12 +263,18 @@ func (c *RDPComponent) Ensure(ctx context.Context, in RDPInputs, owner metav1.Ow
 	if err := resources.EnsureService(ctx, c.client, service(in.Namespace, GuacamoleName, "http", GuacamolePort), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("apply Service %s: %w", GuacamoleName, err))
 	}
+	// The Gateway of the tenant needs the certificate, which needs the CA of the
+	// tenant. While the CA is not ready, the workloads still start.
+	var waiting *Outcome
 	if in.Gateway == nil {
-		if err := resources.DeleteHTTPRoute(ctx, c.client, in.Namespace, HTTPRouteName, owner); err != nil {
-			return degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("delete HTTPRoute %s: %w", HTTPRouteName, err))
+		if err := c.deleteGatewayObjects(ctx, in.Namespace, owner); err != nil {
+			return degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("delete the Gateway of the tenant: %w", err))
 		}
-	} else if err := resources.EnsureHTTPRouteRules(ctx, c.client, in.Namespace, HTTPRouteName, *in.Gateway, GatewayListenerName, []string{Hostname(in.Namespace)}, routeRules(), &owner); err != nil {
-		return degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("apply HTTPRoute %s: %w", HTTPRouteName, err))
+	} else if outcome := c.ensureGateway(ctx, in, owner); outcome != nil {
+		if outcome.Phase == PhaseDegraded {
+			return *outcome
+		}
+		waiting = outcome
 	}
 
 	for _, name := range []string{GuacdName, GuacamoleName} {
@@ -247,10 +285,89 @@ func (c *RDPComponent) Ensure(ctx context.Context, in RDPInputs, owner metav1.Ow
 	if in.Gateway == nil {
 		return readyOutcome(fmt.Sprintf("Guacamole and guacd are ready; the Gateway is managed outside the operator, so route %s to the Service %s yourself", Hostname(in.Namespace), GuacamoleName))
 	}
-	if outcome := c.gatewayOutcome(ctx, in.Namespace, *in.Gateway); outcome != nil {
+	if waiting != nil {
+		return *waiting
+	}
+	if outcome := c.gatewayOutcome(ctx, in.Namespace); outcome != nil {
 		return *outcome
 	}
 	return readyOutcome(fmt.Sprintf("RDP access is ready on %s", Hostname(in.Namespace)))
+}
+
+// ensureGateway applies the Gateway of the tenant, with the certificate of its
+// listener and the route. It returns nil when it applied them all. While the
+// intermediate CA of the tenant is not ready, it returns a progressing outcome
+// and applies nothing: a Gateway without the certificate cannot serve.
+func (c *RDPComponent) ensureGateway(ctx context.Context, in RDPInputs, owner metav1.OwnerReference) *Outcome {
+	gateway := in.Gateway
+	if gateway.ClassName == "" || gateway.IssuerName == "" || gateway.Shared.Name == "" {
+		outcome := degradedOutcome(ReasonInvalidConfiguration, "the Gateway, its GatewayClass and the internal certificate Issuer of the NetEye resource are required for the Gateway of the tenant", nil)
+		return &outcome
+	}
+	if outcome := c.ensureCA(ctx, in.Namespace, gateway.IssuerName, owner); outcome != nil {
+		return outcome
+	}
+	if address, err := resources.GatewayAddress(ctx, c.client, gateway.Shared); err != nil {
+		outcome := degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("read the address of the Gateway %s/%s: %w", gateway.Shared.Namespace, gateway.Shared.Name, err))
+		return &outcome
+	} else if address == "" {
+		outcome := progressingOutcome(ReasonSharedGatewayNotReady, fmt.Sprintf("waiting for the Gateway %s/%s to get its address before the Gateway of the tenant asks the load balancer pool for one", gateway.Shared.Namespace, gateway.Shared.Name))
+		return &outcome
+	}
+	hostname := Hostname(in.Namespace)
+	if err := resources.EnsureCAIssuer(ctx, c.client, in.Namespace, CAIssuerName, CASecretName, owner); err != nil {
+		outcome := degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("apply Issuer %s: %w", CAIssuerName, err))
+		return &outcome
+	}
+	if err := resources.EnsureCertificate(ctx, c.client, in.Namespace, TLSCertificateName, TLSSecretName, hostname, []string{hostname}, resources.CertificateIssuerRef{Name: CAIssuerName}, &owner); err != nil {
+		outcome := degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("apply Certificate %s: %w", TLSCertificateName, err))
+		return &outcome
+	}
+	// The Gateway of the tenant gets its address from the load balancer pool,
+	// so it does not take the annotations of the shared Gateway, which can ask
+	// for an address. It has only the HTTPS listener: nothing redirects HTTP.
+	if err := resources.EnsureHTTPSGateway(ctx, c.client, in.Namespace, GatewayName, gateway.ClassName, []resources.GatewayListener{gatewayListener(in.Namespace)}, owner); err != nil {
+		outcome := degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("apply Gateway %s: %w", GatewayName, err))
+		return &outcome
+	}
+	if err := resources.EnsureHTTPRouteRules(ctx, c.client, in.Namespace, HTTPRouteName, resources.GatewayRef{Namespace: in.Namespace, Name: GatewayName}, GatewayListenerName, []string{hostname}, routeRules(), &owner); err != nil {
+		outcome := degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("apply HTTPRoute %s: %w", HTTPRouteName, err))
+		return &outcome
+	}
+	return nil
+}
+
+// ensureCA keeps the intermediate CA of the tenant: a Certificate of the shared
+// namespace, which the internal Issuer signs, and the copy of its Secret in the
+// tenant namespace. The Issuer of the tenant signs with the copy, so the tenant
+// namespace never holds the key of the root CA, and the CA of the tenant
+// signs only the certificates that the operator asks for.
+// It returns nil when the copy is current.
+func (c *RDPComponent) ensureCA(ctx context.Context, namespace, issuerName string, owner metav1.OwnerReference) *Outcome {
+	name := sharedCAName(namespace)
+	if err := resources.EnsureCACertificate(ctx, c.client, neteye.NetEyeNamespace, name, name, namespace, resources.CertificateIssuerRef{Name: issuerName}); err != nil {
+		outcome := degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("apply the CA Certificate %s/%s: %w", neteye.NetEyeNamespace, name, err))
+		return &outcome
+	}
+	ready, message, err := resources.IsCertificateReady(ctx, c.client, neteye.NetEyeNamespace, name)
+	if err != nil {
+		outcome := degradedOutcome(ReasonReconcileFailed, message, err)
+		return &outcome
+	}
+	if !ready {
+		outcome := progressingOutcome(ReasonCertificateNotReady, message)
+		return &outcome
+	}
+	copied, message, err := resources.CopyTLSSecret(ctx, c.client, client.ObjectKey{Namespace: neteye.NetEyeNamespace, Name: name}, client.ObjectKey{Namespace: namespace, Name: CASecretName}, owner)
+	if err != nil {
+		outcome := degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("copy the CA Secret into %s: %w", namespace, err))
+		return &outcome
+	}
+	if !copied {
+		outcome := progressingOutcome(ReasonCertificateNotReady, message)
+		return &outcome
+	}
+	return nil
 }
 
 // Delete removes the RDP access of a tenant. The Secret with the JSON
@@ -261,12 +378,49 @@ func (c *RDPComponent) Ensure(ctx context.Context, in RDPInputs, owner metav1.Ow
 // deleted does not keep the workloads that serve it.
 func (c *RDPComponent) Delete(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
 	var errs []error
-	for _, resource := range resourceInventory() {
+	if err := c.deleteGatewayObjects(ctx, namespace, owner); err != nil {
+		errs = append(errs, err)
+	}
+	for _, resource := range workloadInventory() {
 		if err := c.deleteOwned(ctx, namespace, resource, owner); err != nil {
 			errs = append(errs, fmt.Errorf("delete %s %s: %w", resource.gvk.Kind, resource.name, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// deleteGatewayObjects removes what exposes the RDP access: the route, the
+// Gateway of the tenant, its certificate, its Issuer and the intermediate CA,
+// with the copy of its key in the tenant namespace. Every object is tried even
+// if another one fails.
+func (c *RDPComponent) deleteGatewayObjects(ctx context.Context, namespace string, owner metav1.OwnerReference) error {
+	var errs []error
+	for _, resource := range gatewayInventory() {
+		if err := c.deleteOwned(ctx, namespace, resource, owner); err != nil {
+			errs = append(errs, fmt.Errorf("delete %s %s: %w", resource.gvk.Kind, resource.name, err))
+		}
+	}
+	if err := resources.DeleteManagedCertificate(ctx, c.client, namespace, TLSCertificateName, TLSSecretName); err != nil {
+		errs = append(errs, fmt.Errorf("delete Certificate %s: %w", TLSCertificateName, err))
+	}
+	if err := resources.DeleteOwnedSecret(ctx, c.client, namespace, CASecretName, owner); err != nil {
+		errs = append(errs, fmt.Errorf("delete Secret %s: %w", CASecretName, err))
+	}
+	if err := c.DeleteSharedCA(ctx, namespace); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// DeleteSharedCA removes the intermediate CA of a tenant from the shared
+// namespace, with its Secret. Its objects are not in the tenant namespace, so
+// the garbage collector does not remove them with the tenant.
+func (c *RDPComponent) DeleteSharedCA(ctx context.Context, namespace string) error {
+	name := sharedCAName(namespace)
+	if err := resources.DeleteManagedCertificate(ctx, c.client, neteye.NetEyeNamespace, name, name); err != nil {
+		return fmt.Errorf("delete the CA Certificate %s/%s: %w", neteye.NetEyeNamespace, name, err)
+	}
+	return nil
 }
 
 func (c *RDPComponent) deleteOwned(ctx context.Context, namespace string, resource managedResource, owner metav1.OwnerReference) error {
@@ -296,11 +450,21 @@ type managedResource struct {
 	name string
 }
 
-func resourceInventory() []managedResource {
+// gatewayInventory is what the operator creates for the Gateway of the tenant.
+// The certificate and the Secrets are not here: cert-manager writes the Secret
+// of a Certificate, and the CA of the tenant is in two namespaces.
+func gatewayInventory() []managedResource {
+	return []managedResource{
+		{schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}, HTTPRouteName},
+		{schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway"}, GatewayName},
+		{schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"}, CAIssuerName},
+	}
+}
+
+func workloadInventory() []managedResource {
 	deployment := schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
 	service := schema.GroupVersionKind{Version: "v1", Kind: "Service"}
 	return []managedResource{
-		{schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}, HTTPRouteName},
 		{deployment, GuacamoleName},
 		{service, GuacamoleName},
 		{deployment, GuacdName},
@@ -585,8 +749,9 @@ func deploymentOutcome(ctx context.Context, c client.Client, namespace, name str
 // gatewayOutcome waits for the certificate of the listener, for the Gateway to
 // program the listener, and for the Gateway to accept the route. The Gateway
 // can accept the route before the listener is programmed.
-func (c *RDPComponent) gatewayOutcome(ctx context.Context, namespace string, gateway resources.GatewayRef) *Outcome {
-	ready, message, err := resources.IsCertificateReady(ctx, c.client, gateway.Namespace, TLSCertificateName)
+func (c *RDPComponent) gatewayOutcome(ctx context.Context, namespace string) *Outcome {
+	gateway := resources.GatewayRef{Namespace: namespace, Name: GatewayName}
+	ready, message, err := resources.IsCertificateReady(ctx, c.client, namespace, TLSCertificateName)
 	if err != nil {
 		outcome := degradedOutcome(ReasonReconcileFailed, message, err)
 		return &outcome

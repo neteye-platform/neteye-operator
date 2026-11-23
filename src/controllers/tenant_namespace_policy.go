@@ -85,7 +85,7 @@ func (p *TenantNamespacePolicy) SetupWithManager(mgr ctrl.Manager) error {
 		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: TenantNamespacePolicyName}}}
 	})
 	onlyThePolicies := builder.WithPredicates(predicate.NewPredicateFuncs(func(object client.Object) bool {
-		return object.GetName() == TenantNamespacePolicyName || object.GetName() == TenantRoutePolicyName
+		return object.GetName() == TenantNamespacePolicyName
 	}))
 	policy := &unstructured.Unstructured{}
 	policy.SetGroupVersionKind(validatingAdmissionPolicyGVK)
@@ -160,7 +160,7 @@ type tenantAdmissionPolicy struct {
 }
 
 func tenantAdmissionPolicies(operatorUsername string) []tenantAdmissionPolicy {
-	return []tenantAdmissionPolicy{tenantNamespacePolicy(operatorUsername), tenantRoutePolicy()}
+	return []tenantAdmissionPolicy{tenantNamespacePolicy(operatorUsername)}
 }
 
 func tenantNamespacePolicy(operatorUsername string) tenantAdmissionPolicy {

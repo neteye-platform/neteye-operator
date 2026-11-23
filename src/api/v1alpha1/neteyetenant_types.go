@@ -91,7 +91,7 @@ type NetEyeTenantSpec struct {
 // NetEyeAlyvixSpec configures the Alyvix feature module of a tenant. While it
 // is enabled, the tenant runs the RDP access to the Alyvix sessions: an Apache
 // Guacamole web application and proxy daemon (guacd) in the tenant namespace,
-// which the shared Gateway exposes on a hostname of the tenant. The Guacamole
+// which the Gateway of the tenant exposes on the hostname of the tenant. The Guacamole
 // JSON authentication key of the tenant is generated once, in a Secret of the
 // tenant namespace.
 type NetEyeAlyvixSpec struct {

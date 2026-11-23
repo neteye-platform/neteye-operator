@@ -103,6 +103,7 @@ spec:
           - secrets
           verbs:
           - create
+          - delete
           - get
           - list
           - update
@@ -219,8 +220,11 @@ spec:
           resources:
           - issuers
           verbs:
+          - create
+          - delete
           - get
           - list
+          - update
           - watch
         - apiGroups:
           - gateway.networking.k8s.io

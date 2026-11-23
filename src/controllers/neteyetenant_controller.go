@@ -87,10 +87,11 @@ type NetEyeTenantReconciler struct {
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;create;update;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates;issuers,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get;list;watch;create;update
 
@@ -315,9 +316,12 @@ func (r *NetEyeTenantReconciler) reconcileAlyvixRDP(ctx context.Context, tenant 
 		message := fmt.Sprintf("unsupported NetEye version '%s'; supported versions are: %v", ne.Spec.Version, neteye.SupportedVersions())
 		return degradedResult(tenantAlyvixRDPComponentID, "UnsupportedVersion", message, r.failureRequeue(), fmt.Errorf("%s", message))
 	}
-	var gateway *resources.GatewayRef
+	// Each tenant has its own Gateway, in its namespace, with the class of the
+	// Gateway of the NetEye resource. Its annotations are not for the Gateways of
+	// the tenants: they can ask for the address of the shared one.
+	var gateway *alyvix.GatewayInputs
 	if ne.Spec.Gateway.EffectiveManaged() {
-		gateway = &resources.GatewayRef{Namespace: ne.Namespace, Name: ne.Spec.Gateway.Name}
+		gateway = &alyvix.GatewayInputs{ClassName: ne.Spec.Gateway.ClassName, IssuerName: ne.Spec.InternalCertificateIssuerRef, Shared: resources.GatewayRef{Namespace: ne.Namespace, Name: ne.Spec.Gateway.Name}}
 	}
 	outcome := r.RDPComponent.Ensure(ctx, alyvix.RDPInputs{
 		Namespace:      tenant.Namespace,
@@ -327,11 +331,6 @@ func (r *NetEyeTenantReconciler) reconcileAlyvixRDP(ctx context.Context, tenant 
 		CABundle:       caBundleRefForTenant(tenant),
 		Gateway:        gateway,
 	}, owner)
-	if gateway != nil && outcome.Phase != alyvix.PhaseDegraded {
-		if result, waiting, err := r.waitForTenantRoutePolicy(ctx); waiting {
-			return result, err
-		}
-	}
 	switch outcome.Phase {
 	case alyvix.PhaseReady:
 		return readyResult(tenantAlyvixRDPComponentID, outcome.Reason, outcome.Message)
@@ -345,26 +344,6 @@ func (r *NetEyeTenantReconciler) reconcileAlyvixRDP(ctx context.Context, tenant 
 func caBundleRefForTenant(tenant *neteye.NetEyeTenant) resources.CABundleRef {
 	selector := tenant.Spec.EffectiveCABundle()
 	return resources.CABundleRef{Name: selector.Name, Key: selector.Key}
-}
-
-// waitForTenantRoutePolicy reports the RDP access not ready while the API
-// server does not enforce the route policy. The listener of the RDP access is
-// shared by the tenants, so without the policy whoever can write the routes of
-// a tenant namespace can serve the hostname of another tenant.
-func (r *NetEyeTenantReconciler) waitForTenantRoutePolicy(ctx context.Context) (componentResult, bool, error) {
-	state, message, err := checkTenantAdmissionPolicy(ctx, r.Client, tenantRoutePolicy())
-	switch {
-	case err != nil:
-		result, err := degradedResult(tenantAlyvixRDPComponentID, "RoutePolicyCheckFailed", fmt.Sprintf("failed to check the tenant route admission policy: %v", err), r.failureRequeue(), err)
-		return result, true, err
-	case state == tenantPolicyConflict:
-		result, err := degradedResult(tenantAlyvixRDPComponentID, "RoutePolicyConflict", message, r.failureRequeue(), fmt.Errorf("%s", message))
-		return result, true, err
-	case state == tenantPolicyMissing:
-		result, err := progressingResult(tenantAlyvixRDPComponentID, "WaitingForRoutePolicy", message, r.failureRequeue())
-		return result, true, err
-	}
-	return componentResult{}, false, nil
 }
 
 // netEye returns the NetEye resource, the singleton in the shared namespace,
@@ -408,7 +387,8 @@ func (r *NetEyeTenantReconciler) ensureNamespaceMetadata(ctx context.Context, te
 	return nil
 }
 
-// reconcileDelete removes the tenant metadata from the namespace, so that the
+// reconcileDelete removes the intermediate CA of the tenant from the shared
+// namespace, and the tenant metadata from the namespace, so that the
 // namespace no longer counts as a tenant namespace, and then releases the
 // display name. The namespace itself and
 // anything else in it stay: deleting a tenant never deletes the namespace that
@@ -422,6 +402,14 @@ func (r *NetEyeTenantReconciler) reconcileDelete(ctx context.Context, tenant *ne
 	// the metadata that another tenant wrote on that namespace.
 	if invalidTenantReason(tenant) != "" {
 		return r.removeFinalizer(ctx, tenant)
+	}
+	// The intermediate CA of the tenant is in the shared namespace, which the
+	// garbage collector does not clean with the tenant.
+	if r.RDPComponent != nil {
+		if err := r.RDPComponent.DeleteSharedCA(ctx, tenant.Namespace); err != nil {
+			ctrl.LoggerFrom(ctx).Error(err, "unable to remove the intermediate CA of the tenant", "requeueAfter", r.failureRequeue())
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
 	}
 	if err := r.removeNamespaceMetadata(ctx, tenant); err != nil {
 		ctrl.LoggerFrom(ctx).Error(err, "unable to remove the tenant metadata from the namespace", "requeueAfter", r.failureRequeue())
@@ -576,7 +564,7 @@ func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	admissionPolicyBinding := &unstructured.Unstructured{}
 	admissionPolicyBinding.SetGroupVersionKind(validatingAdmissionPolicyBindingGVK)
 	onlyTheTenantPolicies := builder.WithPredicates(predicate.NewPredicateFuncs(func(object client.Object) bool {
-		return object.GetName() == TenantNamespacePolicyName || object.GetName() == TenantRoutePolicyName
+		return object.GetName() == TenantNamespacePolicyName
 	}))
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&neteye.NetEyeTenant{}, builder.WithPredicates(reconcileOnSpecOrDeletionChange)).

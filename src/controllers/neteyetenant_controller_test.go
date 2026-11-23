@@ -57,12 +57,6 @@ func tenantNamespacePolicyObjects() []client.Object {
 	return append([]client.Object{tenantCRD()}, tenantAdmissionPolicyObjects(tenantNamespacePolicy(testOperatorUsername))...)
 }
 
-// tenantRoutePolicyObjects returns the route policy and its binding as
-// TenantNamespacePolicy writes them, without the CRD.
-func tenantRoutePolicyObjects() []client.Object {
-	return tenantAdmissionPolicyObjects(tenantRoutePolicy())
-}
-
 func tenantAdmissionPolicyObjects(p tenantAdmissionPolicy) []client.Object {
 	owner := metav1.OwnerReference{APIVersion: customResourceDefinitionGVK.GroupVersion().String(), Kind: customResourceDefinitionGVK.Kind, Name: netEyeTenantCRDName, UID: "crd-uid", Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(false)}
 	policy := &unstructured.Unstructured{}
@@ -91,8 +85,7 @@ func tenantCRD() *unstructured.Unstructured {
 // admission policies are in place.
 func newTenantReconciler(t *testing.T, objects ...client.Object) (*NetEyeTenantReconciler, client.Client) {
 	t.Helper()
-	policies := append(tenantNamespacePolicyObjects(), tenantRoutePolicyObjects()...)
-	return newTenantReconcilerWithoutPolicy(t, append(policies, objects...)...)
+	return newTenantReconcilerWithoutPolicy(t, append(tenantNamespacePolicyObjects(), objects...)...)
 }
 
 // newTenantReconcilerWithoutPolicy builds a reconciler on a fake cluster that
