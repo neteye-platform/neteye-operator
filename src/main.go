@@ -24,6 +24,7 @@ import (
 	"github.com/neteye-platform/neteye-operator/internal/alyvix"
 	"github.com/neteye-platform/neteye-operator/internal/elasticstack"
 	"github.com/neteye-platform/neteye-operator/internal/keycloak"
+	"github.com/neteye-platform/neteye-operator/internal/tenantgateway"
 )
 
 var (
@@ -195,6 +196,7 @@ func main() {
 		Scheme:                     mgr.GetScheme(),
 		APIReader:                  mgr.GetAPIReader(),
 		RDPComponent:               alyvix.NewRDPComponent(mgr.GetClient()),
+		GatewayComponent:           tenantgateway.NewComponent(mgr.GetClient()),
 		OperatorUsername:           operatorUsername,
 		FailureRequeueAfter:        failureRequeue,
 		ProgressingRequeueAfter:    waitForProgressingRequeue,

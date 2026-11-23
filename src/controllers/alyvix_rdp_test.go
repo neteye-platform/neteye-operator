@@ -15,10 +15,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/alyvix"
+	"github.com/neteye-platform/neteye-operator/internal/tenantgateway"
 )
 
 // rdpNetEye is the NetEye resource that selects the images and the Gateway of
@@ -54,12 +56,12 @@ func alyvixTenant(name string, enabled bool) *neteye.NetEyeTenant {
 // readyRDPCA is the intermediate CA of a tenant in the shared namespace, as
 // cert-manager leaves it when the Certificate is ready.
 func readyRDPCA(tenant string) []client.Object {
-	certificate := newUnstructured(certificateGVK, neteye.NetEyeNamespace, alyvix.CANamePrefix+tenant)
+	certificate := newUnstructured(certificateGVK, neteye.NetEyeNamespace, tenantgateway.SharedCAName(tenant))
 	certificate.SetLabels(map[string]string{"app.kubernetes.io/managed-by": "neteye-operator"})
 	certificate.Object["status"] = map[string]any{"conditions": []any{map[string]any{"type": "Ready", "status": "True"}}}
 	secret := &corev1.Secret{
 		// cert-manager names the Certificate that wrote the Secret.
-		ObjectMeta: metav1.ObjectMeta{Namespace: neteye.NetEyeNamespace, Name: alyvix.CANamePrefix + tenant, Annotations: map[string]string{"cert-manager.io/certificate-name": alyvix.CANamePrefix + tenant}},
+		ObjectMeta: metav1.ObjectMeta{Namespace: neteye.NetEyeNamespace, Name: tenantgateway.SharedCAName(tenant), Annotations: map[string]string{"cert-manager.io/certificate-name": tenantgateway.SharedCAName(tenant)}},
 		Type:       corev1.SecretTypeTLS,
 		Data:       map[string][]byte{corev1.TLSCertKey: []byte("ca-chain"), corev1.TLSPrivateKeyKey: []byte("ca-key")},
 	}
@@ -73,6 +75,7 @@ func newTenantReconcilerWithRDP(t *testing.T, objects ...client.Object) (*NetEye
 	t.Helper()
 	r, c := newTenantReconciler(t, objects...)
 	r.RDPComponent = alyvix.NewRDPComponent(c)
+	r.GatewayComponent = tenantgateway.NewComponent(c)
 	return r, c
 }
 
@@ -146,19 +149,20 @@ func TestNetEyeTenantDeploysTheRDPAccessWhenTheTenantEnablesAlyvix(t *testing.T)
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.HTTPRouteName}, route); err != nil {
 		t.Fatalf("route: %v", err)
 	}
-	if parents, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs"); len(parents) != 1 || parents[0].(map[string]any)["namespace"] != testTenant || parents[0].(map[string]any)["name"] != alyvix.GatewayName {
+	if parents, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs"); len(parents) != 1 || parents[0].(map[string]any)["namespace"] != testTenant || parents[0].(map[string]any)["name"] != tenantgateway.GatewayName {
 		t.Errorf("route parents = %v, want the Gateway of the tenant", parents)
 	}
 	// The tenant has its own Gateway, with the class of the NetEye resource, and
 	// its CA is signed by the internal Issuer of the NetEye resource.
-	gateway := requireExists(context.Background(), t, c, gatewayGVK, testTenant, alyvix.GatewayName)
+	gateway := requireExists(context.Background(), t, c, gatewayGVK, testTenant, tenantgateway.GatewayName)
 	if class, _, _ := unstructured.NestedString(gateway.Object, "spec", "gatewayClassName"); class != "cilium" {
 		t.Errorf("gatewayClassName = %q, want the class of the NetEye resource", class)
 	}
 	if hostname := alyvix.Hostname(testTenant); !strings.HasPrefix(hostname, "guacamole.tenant-") || !strings.HasSuffix(hostname, ".neteyelocal") {
 		t.Errorf("hostname = %q", hostname)
 	}
-	requireExists(context.Background(), t, c, certificateGVK, testTenant, alyvix.TLSCertificateName)
+	// The Gateway has the listener of the RDP access, with its certificate.
+	requireExists(context.Background(), t, c, certificateGVK, testTenant, tenantgateway.ListenerCertificateName(alyvix.ServiceName))
 	secret := &corev1.Secret{}
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.JSONAuthSecretName}, secret); err != nil || len(secret.Data[alyvix.JSONAuthSecretKey]) != 32 {
 		t.Errorf("JSON authentication Secret = %v, err = %v", secret.Data, err)
@@ -177,8 +181,12 @@ func TestNetEyeTenantReportsTheRDPAccessDisabledWithoutAlyvix(t *testing.T) {
 			if result := rdpResult(t, r, c, testTenant); result.State != componentStateReady || result.Reason != "Disabled" {
 				t.Errorf("alyvix-rdp component = %#v, want disabled", result)
 			}
-			// A disabled component does not keep the tenant from being ready.
-			assertTenantPhase(t, getTenant(t, c, testTenant, testTenant), neteye.PhaseReady, "All components are ready")
+			// A disabled component does not keep the tenant from being ready: only
+			// the Gateway of the tenant, which every tenant has, is still waited for.
+			tenant := getTenant(t, c, testTenant, testTenant)
+			if strings.Contains(tenant.Status.Message, string(tenantAlyvixRDPComponentID)) || !strings.Contains(tenant.Status.Message, string(tenantGatewayComponentID)+": ") {
+				t.Errorf("status message = %q, want only the Gateway waited for", tenant.Status.Message)
+			}
 			if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.GuacamoleName}, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 				t.Errorf("guacamole Deployment err = %v, want not found", err)
 			}
@@ -341,9 +349,9 @@ func TestAPIServerValidatesTheAlyvixRDPPorts(t *testing.T) {
 func TestNetEyeTenantDeletionRemovesTheRDPAccessThatTheGarbageCollectorLeaves(t *testing.T) {
 	r, c := newTenantReconcilerWithRDP(t, append(readyRDPCA(testTenant), plainNamespace(testTenant), alyvixTenant(testTenant, true), rdpNetEye())...)
 	reconcileTenant(t, r)
-	requireExists(context.Background(), t, c, certificateGVK, neteye.NetEyeNamespace, alyvix.CANamePrefix+testTenant)
+	requireExists(context.Background(), t, c, certificateGVK, neteye.NetEyeNamespace, tenantgateway.SharedCAName(testTenant))
 	// cert-manager writes the Secret of the listener certificate without an owner.
-	listenerSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: alyvix.TLSSecretName, Annotations: map[string]string{"cert-manager.io/certificate-name": alyvix.TLSCertificateName}}, Type: corev1.SecretTypeTLS}
+	listenerSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: tenantgateway.ListenerSecretName(alyvix.ServiceName), Annotations: map[string]string{"cert-manager.io/certificate-name": tenantgateway.ListenerCertificateName(alyvix.ServiceName)}}, Type: corev1.SecretTypeTLS}
 	if err := c.Create(context.Background(), listenerSecret); err != nil {
 		t.Fatal(err)
 	}
@@ -353,15 +361,44 @@ func TestNetEyeTenantDeletionRemovesTheRDPAccessThatTheGarbageCollectorLeaves(t 
 	}
 	reconcileTenant(t, r)
 
-	certificate := newUnstructured(certificateGVK, neteye.NetEyeNamespace, alyvix.CANamePrefix+testTenant)
+	certificate := newUnstructured(certificateGVK, neteye.NetEyeNamespace, tenantgateway.SharedCAName(testTenant))
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(certificate), certificate); !apierrors.IsNotFound(err) {
 		t.Errorf("CA Certificate err = %v, want deleted with the tenant", err)
 	}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: neteye.NetEyeNamespace, Name: alyvix.CANamePrefix + testTenant}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: neteye.NetEyeNamespace, Name: tenantgateway.SharedCAName(testTenant)}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Errorf("CA Secret err = %v, want deleted with the tenant", err)
 	}
 	// The namespace stays: the private key of the listener must not.
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.TLSSecretName}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: tenantgateway.ListenerSecretName(alyvix.ServiceName)}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Errorf("listener Secret err = %v, want deleted with the tenant", err)
+	}
+}
+
+// Every tenant has a Gateway, also without a service: it has the listener of
+// the domain of the tenant.
+func TestNetEyeTenantWithoutAlyvixHasAGatewayWithTheListenerOfTheTenantOnly(t *testing.T) {
+	r, c := newTenantReconcilerWithRDP(t, append(readyRDPCA(testTenant), plainNamespace(testTenant), alyvixTenant(testTenant, false), rdpNetEye())...)
+	reconcileTenant(t, r)
+
+	gateway := requireExists(context.Background(), t, c, gatewayGVK, testTenant, tenantgateway.GatewayName)
+	listeners, _, _ := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
+	if len(listeners) != 1 || listeners[0].(map[string]any)["name"] != tenantgateway.TenantListenerName || listeners[0].(map[string]any)["hostname"] != tenantgateway.Domain(testTenant) {
+		t.Errorf("listeners = %v, want only the listener of the tenant on %s", listeners, tenantgateway.Domain(testTenant))
+	}
+}
+
+func TestNetEyeTenantWithUnmanagedGatewaysHasNoGateway(t *testing.T) {
+	ne := rdpNetEye()
+	ne.Spec.Gateway.Managed = ptr.To(false)
+	r, c := newTenantReconcilerWithRDP(t, append(readyRDPCA(testTenant), plainNamespace(testTenant), alyvixTenant(testTenant, true), ne)...)
+	reconcileTenant(t, r)
+
+	gateway := newUnstructured(gatewayGVK, testTenant, tenantgateway.GatewayName)
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gateway), gateway); !apierrors.IsNotFound(err) {
+		t.Errorf("Gateway err = %v, want none with the Gateways managed outside the operator", err)
+	}
+	route := newUnstructured(httpRouteGVK, testTenant, alyvix.HTTPRouteName)
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(route), route); !apierrors.IsNotFound(err) {
+		t.Errorf("route err = %v, want none", err)
 	}
 }

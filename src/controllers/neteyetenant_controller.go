@@ -30,6 +30,7 @@ import (
 	neteye "github.com/neteye-platform/neteye-operator/api/v1alpha1"
 	"github.com/neteye-platform/neteye-operator/internal/alyvix"
 	"github.com/neteye-platform/neteye-operator/internal/resources"
+	"github.com/neteye-platform/neteye-operator/internal/tenantgateway"
 )
 
 const (
@@ -46,6 +47,10 @@ const (
 	// the tenant: Apache Guacamole and guacd. It runs while the tenant enables
 	// the Alyvix feature module.
 	tenantAlyvixRDPComponentID componentID = "alyvix-rdp"
+	// tenantGatewayComponentID is the Gateway of the tenant, in its namespace,
+	// with the CA of the tenant that signs the certificates of its listeners.
+	// The services of the tenant expose themselves through it.
+	tenantGatewayComponentID componentID = "gateway"
 )
 
 var tenantNamePattern = regexp.MustCompile(neteye.TenantNamePattern)
@@ -63,6 +68,9 @@ type NetEyeTenantReconciler struct {
 	// RDPComponent reconciles the RDP access to the Alyvix sessions of a
 	// tenant. When nil, the component is reported as disabled.
 	RDPComponent *alyvix.RDPComponent
+	// GatewayComponent reconciles the Gateway of a tenant. When nil, the
+	// tenant has no Gateway.
+	GatewayComponent *tenantgateway.Component
 
 	// OperatorUsername is the Kubernetes username of the operator, the only
 	// user that the tenant namespace admission policy exempts. The tenant uses
@@ -180,6 +188,7 @@ func (r *NetEyeTenantReconciler) reconcileTenant(ctx context.Context, tenant *ne
 	}
 	operations := map[componentID]componentOperation{
 		tenantNamespaceComponentID: func() (componentResult, error) { return r.reconcileNamespace(ctx, tenant) },
+		tenantGatewayComponentID:   func() (componentResult, error) { return r.reconcileGateway(ctx, tenant) },
 		tenantAlyvixRDPComponentID: func() (componentResult, error) { return r.reconcileAlyvixRDP(ctx, tenant) },
 	}
 	if procedure != lifecycleSteady && tenant.Spec.EffectiveUseProcedureGates() {
@@ -242,16 +251,70 @@ func (r *NetEyeTenantReconciler) netEyeCompleted(ctx context.Context, version st
 	return false, nil
 }
 
-// tenantLifecycleNodes declares what each tenant component waits for. The RDP
-// access waits for the namespace only while the tenant enables Alyvix: its
-// removal must not wait for the namespace baseline, so a disabled RDP access
-// is removed on every pass.
+// tenantLifecycleNodes declares what each tenant component waits for. The
+// Gateway waits for the namespace. The RDP access waits for the namespace only
+// while the tenant enables Alyvix: its removal must not wait for it, so a
+// disabled RDP access is removed on every pass. It does not wait for the
+// Gateway, so its workloads start while the Gateway gets ready: it is ready
+// itself only when the Gateway has programmed its listener.
 func tenantLifecycleNodes(tenant *neteye.NetEyeTenant) []lifecycleNode {
 	rdp := lifecycleNode{ID: tenantAlyvixRDPComponentID}
 	if tenant.Spec.AlyvixEnabled() {
 		rdp.Dependencies = []componentID{tenantNamespaceComponentID}
 	}
-	return []lifecycleNode{{ID: tenantNamespaceComponentID}, rdp}
+	return []lifecycleNode{
+		{ID: tenantNamespaceComponentID},
+		{ID: tenantGatewayComponentID, Dependencies: []componentID{tenantNamespaceComponentID}},
+		rdp,
+	}
+}
+
+// tenantServices tells, for each service that can have a listener on the
+// Gateway of the tenant, whether the tenant enables it.
+func tenantServices(tenant *neteye.NetEyeTenant) map[string]bool {
+	return map[string]bool{alyvix.ServiceName: tenant.Spec.AlyvixEnabled()}
+}
+
+// reconcileGateway keeps the Gateway of the tenant, with a listener for the
+// domain of the tenant and one for each service that the tenant enables. With
+// the Gateways managed outside the operator, it removes the Gateway of the
+// tenant and its CA.
+func (r *NetEyeTenantReconciler) reconcileGateway(ctx context.Context, tenant *neteye.NetEyeTenant) (componentResult, error) {
+	if r.GatewayComponent == nil {
+		return readyResult(tenantGatewayComponentID, "NotConfigured", "The operator does not manage the Gateways of the tenants")
+	}
+	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
+	ne, err := r.netEye(ctx)
+	if err != nil {
+		return degradedResult(tenantGatewayComponentID, "NetEyeUnavailable", fmt.Sprintf("failed to read the NetEye resource: %v", err), r.failureRequeue(), err)
+	}
+	if ne == nil {
+		return progressingResult(tenantGatewayComponentID, "WaitingForNetEye", fmt.Sprintf("waiting for the NetEye resource in namespace %q, which selects the Gateway class and the certificate Issuer", neteye.NetEyeNamespace), r.progressingRequeue())
+	}
+	if !ne.Spec.Gateway.EffectiveManaged() {
+		if err := r.GatewayComponent.Delete(ctx, tenant.Namespace, tenantServices(tenant), owner); err != nil {
+			return degradedResult(tenantGatewayComponentID, "DeleteFailed", fmt.Sprintf("failed to remove the Gateway of the tenant: %v", err), r.failureRequeue(), err)
+		}
+		return readyResult(tenantGatewayComponentID, "Unmanaged", "The Gateways are managed outside the operator")
+	}
+	// The Gateway of the tenant has the class of the Gateway of the NetEye
+	// resource. Its annotations are not for the Gateways of the tenants: they
+	// can ask for the address of the shared one.
+	outcome := r.GatewayComponent.Ensure(ctx, tenantgateway.Inputs{
+		Namespace:  tenant.Namespace,
+		ClassName:  ne.Spec.Gateway.ClassName,
+		IssuerName: ne.Spec.InternalCertificateIssuerRef,
+		Shared:     resources.GatewayRef{Namespace: ne.Namespace, Name: ne.Spec.Gateway.Name},
+		Services:   tenantServices(tenant),
+	}, owner)
+	switch outcome.Phase {
+	case tenantgateway.PhaseReady:
+		return readyResult(tenantGatewayComponentID, outcome.Reason, outcome.Message)
+	case tenantgateway.PhaseProgressing:
+		return progressingResult(tenantGatewayComponentID, outcome.Reason, outcome.Message, r.progressingRequeue())
+	default:
+		return degradedResult(tenantGatewayComponentID, outcome.Reason, outcome.Message, r.failureRequeue(), outcome.Err)
+	}
 }
 
 func invalidTenantReason(tenant *neteye.NetEyeTenant) string {
@@ -293,7 +356,8 @@ func (r *NetEyeTenantReconciler) reconcileNamespace(ctx context.Context, tenant 
 // reconcileAlyvixRDP deploys the RDP access to the Alyvix sessions in the
 // tenant namespace while the tenant enables the Alyvix feature module, and
 // removes it otherwise. The images come from the NetEye version of the NetEye
-// resource, which also names the Gateway.
+// resource. Its route attaches to the listener of the RDP access on the
+// Gateway of the tenant.
 func (r *NetEyeTenantReconciler) reconcileAlyvixRDP(ctx context.Context, tenant *neteye.NetEyeTenant) (componentResult, error) {
 	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
 	if !tenant.Spec.AlyvixEnabled() || r.RDPComponent == nil {
@@ -316,20 +380,14 @@ func (r *NetEyeTenantReconciler) reconcileAlyvixRDP(ctx context.Context, tenant 
 		message := fmt.Sprintf("unsupported NetEye version '%s'; supported versions are: %v", ne.Spec.Version, neteye.SupportedVersions())
 		return degradedResult(tenantAlyvixRDPComponentID, "UnsupportedVersion", message, r.failureRequeue(), fmt.Errorf("%s", message))
 	}
-	// Each tenant has its own Gateway, in its namespace, with the class of the
-	// Gateway of the NetEye resource. Its annotations are not for the Gateways of
-	// the tenants: they can ask for the address of the shared one.
-	var gateway *alyvix.GatewayInputs
-	if ne.Spec.Gateway.EffectiveManaged() {
-		gateway = &alyvix.GatewayInputs{ClassName: ne.Spec.Gateway.ClassName, IssuerName: ne.Spec.InternalCertificateIssuerRef, Shared: resources.GatewayRef{Namespace: ne.Namespace, Name: ne.Spec.Gateway.Name}}
-	}
 	outcome := r.RDPComponent.Ensure(ctx, alyvix.RDPInputs{
 		Namespace:      tenant.Namespace,
 		GuacamoleImage: components.GuacamoleImage,
 		GuacdImage:     components.GuacdImage,
 		Ports:          tenant.Spec.Alyvix.EffectiveRDPPorts(),
 		CABundle:       caBundleRefForTenant(tenant),
-		Gateway:        gateway,
+		// The Gateway of the tenant has the listener of the RDP access.
+		ManagedGateway: ne.Spec.Gateway.EffectiveManaged() && r.GatewayComponent != nil,
 	}, owner)
 	switch outcome.Phase {
 	case alyvix.PhaseReady:
@@ -403,14 +461,21 @@ func (r *NetEyeTenantReconciler) reconcileDelete(ctx context.Context, tenant *ne
 	if invalidTenantReason(tenant) != "" {
 		return r.removeFinalizer(ctx, tenant)
 	}
-	// The garbage collector does not remove all of the RDP access with the
-	// tenant: the intermediate CA of the tenant is in the shared namespace, and
-	// cert-manager gives the Secret of the listener certificate, which holds its
-	// private key, no owner. The namespace stays, so they are removed here.
+	// The garbage collector does not remove all of the Gateway of the tenant:
+	// the CA of the tenant is in the shared namespace, and cert-manager gives
+	// the Secrets of the listener certificates, which hold their private keys,
+	// no owner. The namespace stays, so they are removed here, with the RDP
+	// access.
+	owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
 	if r.RDPComponent != nil {
-		owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
 		if err := r.RDPComponent.Delete(ctx, tenant.Namespace, owner); err != nil {
 			ctrl.LoggerFrom(ctx).Error(err, "unable to remove the RDP access of the tenant", "requeueAfter", r.failureRequeue())
+			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
+		}
+	}
+	if r.GatewayComponent != nil {
+		if err := r.GatewayComponent.Delete(ctx, tenant.Namespace, tenantServices(tenant), owner); err != nil {
+			ctrl.LoggerFrom(ctx).Error(err, "unable to remove the Gateway of the tenant", "requeueAfter", r.failureRequeue())
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
 	}

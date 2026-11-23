@@ -27,19 +27,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/neteye-platform/neteye-operator/internal/resources"
+	"github.com/neteye-platform/neteye-operator/internal/tenantgateway"
 )
 
-const (
-	testTenant          = "neteye-tenant-2bh46bfv"
-	testSharedNamespace = "neteye-tenant-shared"
-	testIssuer          = "neteye-internal-issuer"
-)
-
-var gatewayGVK = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway"}
+const testTenant = "neteye-tenant-2bh46bfv"
 
 var (
-	certificateGVK = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
-	httpRouteGVK   = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}
+	gatewayGVK   = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "Gateway"}
+	httpRouteGVK = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}
 )
 
 func newClient(t *testing.T, objects ...client.Object) client.Client {
@@ -57,9 +52,7 @@ func owner() metav1.OwnerReference {
 
 func inputs(gateway bool) RDPInputs {
 	in := RDPInputs{Namespace: testTenant, GuacamoleImage: "guacamole-image", GuacdImage: "guacd-image", Ports: []int32{3389}, CABundle: resources.CABundleRef{Name: "neteye-ca-bundle", Key: "ca-bundle.pem"}}
-	if gateway {
-		in.Gateway = &GatewayInputs{ClassName: "cilium", IssuerName: testIssuer, Shared: resources.GatewayRef{Namespace: testSharedNamespace, Name: "neteye"}}
-	}
+	in.ManagedGateway = gateway
 	return in
 }
 
@@ -109,57 +102,26 @@ func markDeploymentReady(t *testing.T, c client.Client, name string) {
 	}
 }
 
-// readyCA is the intermediate CA of the tenant in the shared namespace, as
-// cert-manager leaves it when the Certificate is ready: the Certificate and
-// its Secret.
-func readyCA() []client.Object {
-	certificate := &unstructured.Unstructured{}
-	certificate.SetGroupVersionKind(certificateGVK)
-	certificate.SetNamespace(testSharedNamespace)
-	certificate.SetName(sharedCAName(testTenant))
-	certificate.SetUID("shared-ca-certificate-uid")
-	certificate.SetLabels(map[string]string{"app.kubernetes.io/managed-by": "neteye-operator"})
-	certificate.Object["status"] = map[string]any{"conditions": []any{map[string]any{"type": "Ready", "status": "True"}}}
-	secret := &corev1.Secret{
-		// cert-manager names the Certificate that wrote the Secret.
-		ObjectMeta: metav1.ObjectMeta{Namespace: testSharedNamespace, Name: sharedCAName(testTenant), UID: "shared-ca-secret-uid", Annotations: map[string]string{"cert-manager.io/certificate-name": sharedCAName(testTenant)}},
-		Type:       corev1.SecretTypeTLS,
-		Data:       map[string][]byte{corev1.TLSCertKey: []byte("ca-chain"), corev1.TLSPrivateKeyKey: []byte("ca-key"), "ca.crt": []byte("root")},
-	}
-	return []client.Object{certificate, secret, sharedGatewayWithAddress()}
-}
-
-// sharedGatewayWithAddress is the shared Gateway of the NetEye resource, with
-// the address that the load balancer pool gave it.
-func sharedGatewayWithAddress() *unstructured.Unstructured {
-	gateway := &unstructured.Unstructured{}
-	gateway.SetGroupVersionKind(gatewayGVK)
-	gateway.SetNamespace(testSharedNamespace)
-	gateway.SetName("neteye")
-	gateway.Object["status"] = map[string]any{"addresses": []any{map[string]any{"type": "IPAddress", "value": "192.0.2.128"}}}
-	return gateway
-}
-
-// markCertificateReady sets the Ready condition of a Certificate that the
-// component created.
-func markCertificateReady(t *testing.T, c client.Client, namespace, name string) {
-	t.Helper()
-	certificate := unstructuredObject(t, c, certificateGVK, namespace, name)
-	certificate.Object["status"] = map[string]any{"conditions": []any{map[string]any{"type": "Ready", "status": "True"}}}
-	if err := c.Update(context.Background(), certificate); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// setListenerStatus sets the generation of the Gateway of the tenant, and the
-// Programmed condition of its RDP listener for an observed generation.
+// setListenerStatus writes the Gateway of the tenant, which the component of
+// the tenant reconciles, with a generation and the Programmed condition of the
+// RDP listener for an observed generation.
 func setListenerStatus(t *testing.T, c client.Client, generation, observed int64, programmed string) {
 	t.Helper()
-	gateway := unstructuredObject(t, c, gatewayGVK, testTenant, GatewayName)
+	gateway := &unstructured.Unstructured{}
+	gateway.SetGroupVersionKind(gatewayGVK)
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: tenantgateway.GatewayName}, gateway); apierrors.IsNotFound(err) {
+		gateway.SetNamespace(testTenant)
+		gateway.SetName(tenantgateway.GatewayName)
+		if err := c.Create(context.Background(), gateway); err != nil {
+			t.Fatal(err)
+		}
+	} else if err != nil {
+		t.Fatal(err)
+	}
 	gateway.SetGeneration(generation)
 	gateway.Object["status"] = map[string]any{"listeners": []any{
-		map[string]any{"name": "http", "conditions": []any{map[string]any{"type": "Programmed", "status": "True", "observedGeneration": generation}}},
-		map[string]any{"name": GatewayListenerName, "conditions": []any{map[string]any{"type": "Programmed", "status": programmed, "observedGeneration": observed}}},
+		map[string]any{"name": tenantgateway.TenantListenerName, "conditions": []any{map[string]any{"type": "Programmed", "status": "True", "observedGeneration": generation}}},
+		map[string]any{"name": ServiceName, "conditions": []any{map[string]any{"type": "Programmed", "status": programmed, "observedGeneration": observed}}},
 	}}
 	if err := c.Update(context.Background(), gateway); err != nil {
 		t.Fatal(err)
@@ -170,7 +132,7 @@ func markRouteAccepted(t *testing.T, c client.Client) {
 	t.Helper()
 	route := unstructuredObject(t, c, httpRouteGVK, testTenant, HTTPRouteName)
 	parent := map[string]any{
-		"parentRef": map[string]any{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": testTenant, "name": GatewayName, "sectionName": GatewayListenerName},
+		"parentRef": map[string]any{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": testTenant, "name": tenantgateway.GatewayName, "sectionName": ServiceName},
 		"conditions": []any{
 			map[string]any{"type": "Accepted", "status": "True", "observedGeneration": route.GetGeneration()},
 			map[string]any{"type": "ResolvedRefs", "status": "True", "observedGeneration": route.GetGeneration()},
@@ -185,7 +147,7 @@ func markRouteAccepted(t *testing.T, c client.Client) {
 }
 
 func TestRDPAccessDeploysGuacamoleAndGuacdInTheTenantNamespace(t *testing.T) {
-	c := newClient(t, readyCA()...)
+	c := newClient(t)
 	outcome := NewRDPComponent(c).Ensure(context.Background(), inputs(true), owner())
 	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonDeploymentNotAvailable {
 		t.Fatalf("outcome = %+v, want progressing until the Deployments are ready", outcome)
@@ -240,7 +202,7 @@ func TestRDPAccessDeploysGuacamoleAndGuacdInTheTenantNamespace(t *testing.T) {
 		t.Errorf("route hostnames = %v, want %v", hostnames, want)
 	}
 	parents, _, _ := unstructured.NestedSlice(route.Object, "spec", "parentRefs")
-	if want := []any{map[string]any{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": testTenant, "name": GatewayName, "sectionName": GatewayListenerName}}; !reflect.DeepEqual(parents, want) {
+	if want := []any{map[string]any{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": testTenant, "name": tenantgateway.GatewayName, "sectionName": ServiceName}}; !reflect.DeepEqual(parents, want) {
 		t.Errorf("route parents = %v, want the RDP listener of the Gateway of the tenant", parents)
 	}
 }
@@ -284,7 +246,7 @@ func TestRDPGuacdTrustsTheCABundleOfTheTenant(t *testing.T) {
 }
 
 func TestRDPRouteExposesOnlyThePathsOfTheModuleAndTheBrowser(t *testing.T) {
-	c := newClient(t, readyCA()...)
+	c := newClient(t)
 	NewRDPComponent(c).Ensure(context.Background(), inputs(true), owner())
 
 	route := unstructuredObject(t, c, httpRouteGVK, testTenant, HTTPRouteName)
@@ -429,19 +391,15 @@ func TestRDPNetworkPoliciesOpenOnlyTheTrafficOfTheAccess(t *testing.T) {
 	}
 }
 
-func TestRDPAccessIsReadyWhenTheWorkloadsTheCertificateAndTheRouteAreReady(t *testing.T) {
-	c := newClient(t, readyCA()...)
+func TestRDPAccessIsReadyWhenTheWorkloadsTheListenerAndTheRouteAreReady(t *testing.T) {
+	c := newClient(t)
 	component := NewRDPComponent(c)
 	component.Ensure(context.Background(), inputs(true), owner())
 	markDeploymentReady(t, c, GuacdName)
 	markDeploymentReady(t, c, GuacamoleName)
 
+	// The Gateway of the tenant does not exist yet.
 	outcome := component.Ensure(context.Background(), inputs(true), owner())
-	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonCertificateNotReady {
-		t.Fatalf("outcome = %+v, want waiting for the certificate of the listener", outcome)
-	}
-	markCertificateReady(t, c, testTenant, TLSCertificateName)
-	outcome = component.Ensure(context.Background(), inputs(true), owner())
 	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonListenerNotProgrammed {
 		t.Fatalf("outcome = %+v, want waiting for the Gateway to program the listener", outcome)
 	}
@@ -480,7 +438,7 @@ func TestRDPAccessIsReadyWhenTheWorkloadsTheCertificateAndTheRouteAreReady(t *te
 }
 
 func TestRDPAccessWithAnUnmanagedGatewayHasNoRoute(t *testing.T) {
-	c := newClient(t, readyCA()...)
+	c := newClient(t)
 	component := NewRDPComponent(c)
 	component.Ensure(context.Background(), inputs(true), owner())
 	unstructuredObject(t, c, httpRouteGVK, testTenant, HTTPRouteName)
@@ -539,7 +497,7 @@ func TestRDPDeleteKeepsTheKeyAndObjectsOfOthers(t *testing.T) {
 	if err := component.Delete(context.Background(), testTenant, owner()); err != nil {
 		t.Fatal(err)
 	}
-	for _, resource := range allInventory() {
+	for _, resource := range resourceInventory() {
 		object := &unstructured.Unstructured{}
 		object.SetGroupVersionKind(resource.gvk)
 		err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: resource.name}, object)
@@ -567,7 +525,7 @@ func TestRDPDeleteOnlyDeletesTheObjectThatPassedTheOwnershipCheck(t *testing.T) 
 	// The fake client assigns no UID, so every object gets its own here: the
 	// test then tells apart an empty, a reused and the right UID.
 	created := 0
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(readyCA()...).WithInterceptorFuncs(interceptor.Funcs{
+	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
 		Create: func(ctx context.Context, inner client.WithWatch, object client.Object, opts ...client.CreateOption) error {
 			created++
 			object.SetUID(types.UID(fmt.Sprintf("uid-%d", created)))
@@ -586,7 +544,7 @@ func TestRDPDeleteOnlyDeletesTheObjectThatPassedTheOwnershipCheck(t *testing.T) 
 	component.Ensure(context.Background(), inputs(true), owner())
 	uids := map[string]types.UID{}
 	seen := map[types.UID]bool{}
-	for _, resource := range allInventory() {
+	for _, resource := range resourceInventory() {
 		uid := unstructuredObject(t, c, resource.gvk, testTenant, resource.name).GetUID()
 		if uid == "" || seen[uid] {
 			t.Fatalf("%s %s has the UID %q, want a distinct, nonempty one", resource.gvk.Kind, resource.name, uid)
@@ -594,24 +552,6 @@ func TestRDPDeleteOnlyDeletesTheObjectThatPassedTheOwnershipCheck(t *testing.T) 
 		seen[uid] = true
 		uids[resource.gvk.Kind+"/"+resource.name] = uid
 	}
-	// The Secret with the key of the CA is typed: its kind is empty in the client.
-	caSecret := &corev1.Secret{}
-	getObject(t, c, CASecretName, caSecret)
-	uids["/"+CASecretName] = caSecret.UID
-	sharedCASecret := &corev1.Secret{}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testSharedNamespace, Name: sharedCAName(testTenant)}, sharedCASecret); err != nil {
-		t.Fatal(err)
-	}
-	uids["/"+sharedCAName(testTenant)] = sharedCASecret.UID
-	// The two Certificates are deleted after the label check, so with a precondition too.
-	uids["Certificate/"+TLSCertificateName] = unstructuredObject(t, c, certificateGVK, testTenant, TLSCertificateName).GetUID()
-	uids["Certificate/"+sharedCAName(testTenant)] = unstructuredObject(t, c, certificateGVK, testSharedNamespace, sharedCAName(testTenant)).GetUID()
-	for name, uid := range uids {
-		if uid == "" {
-			t.Fatalf("%s has an empty UID", name)
-		}
-	}
-
 	if err := component.Delete(context.Background(), testTenant, owner()); err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +567,7 @@ func TestRDPDeleteGoesOnWhenAnObjectCannotBeDeleted(t *testing.T) {
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(readyCA()...).WithInterceptorFuncs(interceptor.Funcs{
+	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
 		Delete: func(ctx context.Context, inner client.WithWatch, object client.Object, opts ...client.DeleteOption) error {
 			if object.GetObjectKind().GroupVersionKind().Kind == "HTTPRoute" {
 				return errors.New("denied by an admission policy")
@@ -643,7 +583,7 @@ func TestRDPDeleteGoesOnWhenAnObjectCannotBeDeleted(t *testing.T) {
 		t.Errorf("err = %v, want the failure of the route", err)
 	}
 	unstructuredObject(t, c, httpRouteGVK, testTenant, HTTPRouteName)
-	for _, resource := range allInventory() {
+	for _, resource := range resourceInventory() {
 		if resource.gvk.Kind == "HTTPRoute" {
 			continue
 		}
@@ -655,254 +595,9 @@ func TestRDPDeleteGoesOnWhenAnObjectCannotBeDeleted(t *testing.T) {
 	}
 }
 
-func allInventory() []managedResource {
-	return append(gatewayInventory(), workloadInventory()...)
-}
-
 func TestRDPHostnameIsTheServiceOnTheTenant(t *testing.T) {
 	if got, want := Hostname("neteye-tenant-2bh46bfv"), "guacamole.tenant-2bh46bfv.neteyelocal"; got != want {
 		t.Errorf("hostname = %q, want %q", got, want)
-	}
-}
-
-func TestRDPAccessWaitsForTheIntermediateCAOfTheTenant(t *testing.T) {
-	c := newClient(t)
-	outcome := NewRDPComponent(c).Ensure(context.Background(), inputs(true), owner())
-	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonDeploymentNotAvailable {
-		t.Fatalf("outcome = %+v, want the workloads first", outcome)
-	}
-	markDeploymentReady(t, c, GuacdName)
-	markDeploymentReady(t, c, GuacamoleName)
-	outcome = NewRDPComponent(c).Ensure(context.Background(), inputs(true), owner())
-	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonCertificateNotReady {
-		t.Fatalf("outcome = %+v, want waiting for the CA of the tenant", outcome)
-	}
-
-	// The internal Issuer signs the intermediate CA, in the shared namespace.
-	ca := unstructuredObject(t, c, certificateGVK, testSharedNamespace, sharedCAName(testTenant))
-	if isCA, _, _ := unstructured.NestedBool(ca.Object, "spec", "isCA"); !isCA {
-		t.Errorf("CA Certificate spec = %v, want isCA", ca.Object["spec"])
-	}
-	if issuer, _, _ := unstructured.NestedString(ca.Object, "spec", "issuerRef", "name"); issuer != testIssuer {
-		t.Errorf("CA Certificate issuer = %q, want %q", issuer, testIssuer)
-	}
-	// Nothing of the Gateway exists before the CA: it could not serve.
-	for _, resource := range gatewayInventory() {
-		object := &unstructured.Unstructured{}
-		object.SetGroupVersionKind(resource.gvk)
-		if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: resource.name}, object); !apierrors.IsNotFound(err) {
-			t.Errorf("%s %s err = %v, want not created", resource.gvk.Kind, resource.name, err)
-		}
-	}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: CASecretName}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
-		t.Errorf("CA Secret err = %v, want not created", err)
-	}
-}
-
-func TestRDPGatewayOfTheTenantSignsWithTheIntermediateCAOfTheTenant(t *testing.T) {
-	c := newClient(t, append(readyCA(), &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: testSharedNamespace, Name: "neteye-root-ca"},
-		Type:       corev1.SecretTypeTLS,
-		Data:       map[string][]byte{corev1.TLSCertKey: []byte("root-cert"), corev1.TLSPrivateKeyKey: []byte("root-key")},
-	})...)
-	NewRDPComponent(c).Ensure(context.Background(), inputs(true), owner())
-
-	// The tenant namespace has the key of the intermediate CA, and only it, with
-	// the certificate of the root CA.
-	secret := &corev1.Secret{}
-	getObject(t, c, CASecretName, secret)
-	want := map[string][]byte{corev1.TLSCertKey: []byte("ca-chain"), corev1.TLSPrivateKeyKey: []byte("ca-key"), "ca.crt": []byte("root")}
-	if secret.Type != corev1.SecretTypeTLS || !reflect.DeepEqual(secret.Data, want) {
-		t.Errorf("CA Secret = %v %v, want only the certificate and the key of the intermediate CA", secret.Type, secret.Data)
-	}
-	if owners := secret.GetOwnerReferences(); len(owners) != 1 || owners[0].UID != "tenant-uid" {
-		t.Errorf("CA Secret owners = %#v, want the tenant", owners)
-	}
-	secrets := &corev1.SecretList{}
-	if err := c.List(context.Background(), secrets, client.InNamespace(testTenant)); err != nil {
-		t.Fatal(err)
-	}
-	for _, other := range secrets.Items {
-		if _, found := other.Data[corev1.TLSPrivateKeyKey]; found && other.Name != CASecretName {
-			t.Errorf("Secret %s holds a private key", other.Name)
-		}
-		if string(other.Data[corev1.TLSPrivateKeyKey]) == "root-key" {
-			t.Errorf("Secret %s holds the key of the root CA", other.Name)
-		}
-	}
-
-	issuer := unstructuredObject(t, c, schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"}, testTenant, CAIssuerName)
-	if name, _, _ := unstructured.NestedString(issuer.Object, "spec", "ca", "secretName"); name != CASecretName {
-		t.Errorf("Issuer spec = %v, want the CA Secret of the tenant", issuer.Object["spec"])
-	}
-	certificate := unstructuredObject(t, c, certificateGVK, testTenant, TLSCertificateName)
-	dnsNames, _, _ := unstructured.NestedStringSlice(certificate.Object, "spec", "dnsNames")
-	issuerName, _, _ := unstructured.NestedString(certificate.Object, "spec", "issuerRef", "name")
-	if !reflect.DeepEqual(dnsNames, []string{"guacamole.tenant-2bh46bfv.neteyelocal"}) || issuerName != CAIssuerName {
-		t.Errorf("Certificate spec = %v, want the hostname of the tenant, signed by its Issuer", certificate.Object["spec"])
-	}
-
-	gateway := unstructuredObject(t, c, gatewayGVK, testTenant, GatewayName)
-	if class, _, _ := unstructured.NestedString(gateway.Object, "spec", "gatewayClassName"); class != "cilium" {
-		t.Errorf("gatewayClassName = %q", class)
-	}
-	if _, found, _ := unstructured.NestedMap(gateway.Object, "spec", "infrastructure"); found {
-		t.Error("the Gateway of the tenant has the annotations of the shared Gateway, which can ask for its address")
-	}
-	listeners, _, _ := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
-	// Only the HTTPS listener: nothing redirects HTTP, so port 80 stays closed.
-	if len(listeners) != 1 {
-		t.Errorf("listeners = %v, want only the HTTPS listener %s", listeners, GatewayListenerName)
-	}
-	var rdp map[string]any
-	for _, listener := range listeners {
-		if listener.(map[string]any)["name"] == GatewayListenerName {
-			rdp = listener.(map[string]any)
-		}
-	}
-	if rdp == nil {
-		t.Fatalf("listeners = %v, want the listener %s", listeners, GatewayListenerName)
-	}
-	from, _, _ := unstructured.NestedString(rdp, "allowedRoutes", "namespaces", "from")
-	secretName, _, _ := unstructured.NestedString(rdp["tls"].(map[string]any)["certificateRefs"].([]any)[0].(map[string]any), "name")
-	if rdp["hostname"] != "guacamole.tenant-2bh46bfv.neteyelocal" || from != "Same" || secretName != TLSSecretName {
-		t.Errorf("listener = %v, want the hostname of the tenant, routes of its namespace only, and its certificate", rdp)
-	}
-	if owners := gateway.GetOwnerReferences(); len(owners) != 1 || owners[0].UID != "tenant-uid" {
-		t.Errorf("Gateway owners = %#v, want the tenant", owners)
-	}
-}
-
-func TestRDPAccessFollowsTheRenewalOfTheIntermediateCA(t *testing.T) {
-	c := newClient(t, readyCA()...)
-	component := NewRDPComponent(c)
-	component.Ensure(context.Background(), inputs(true), owner())
-
-	renewed := &corev1.Secret{}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testSharedNamespace, Name: sharedCAName(testTenant)}, renewed); err != nil {
-		t.Fatal(err)
-	}
-	renewed.Data[corev1.TLSCertKey] = []byte("renewed-chain")
-	renewed.Data[corev1.TLSPrivateKeyKey] = []byte("renewed-key")
-	if err := c.Update(context.Background(), renewed); err != nil {
-		t.Fatal(err)
-	}
-	component.Ensure(context.Background(), inputs(true), owner())
-
-	copied := &corev1.Secret{}
-	getObject(t, c, CASecretName, copied)
-	if string(copied.Data[corev1.TLSCertKey]) != "renewed-chain" || string(copied.Data[corev1.TLSPrivateKeyKey]) != "renewed-key" {
-		t.Errorf("CA Secret of the tenant = %v, want the renewed CA", copied.Data)
-	}
-}
-
-func TestRDPAccessRefusesAGatewayWithoutAClassOrAnIssuer(t *testing.T) {
-	for name, change := range map[string]func(*GatewayInputs){
-		"no class":          func(gateway *GatewayInputs) { gateway.ClassName = "" },
-		"no issuer":         func(gateway *GatewayInputs) { gateway.IssuerName = "" },
-		"no shared Gateway": func(gateway *GatewayInputs) { gateway.Shared.Name = "" },
-	} {
-		t.Run(name, func(t *testing.T) {
-			c := newClient(t, readyCA()...)
-			in := inputs(true)
-			change(in.Gateway)
-			outcome := NewRDPComponent(c).Ensure(context.Background(), in, owner())
-			if outcome.Phase != PhaseDegraded || outcome.Reason != ReasonInvalidConfiguration {
-				t.Errorf("outcome = %+v, want an invalid configuration", outcome)
-			}
-		})
-	}
-}
-
-func TestRDPDeleteRemovesTheIntermediateCAOfTheTenantFromBothNamespaces(t *testing.T) {
-	c := newClient(t, readyCA()...)
-	component := NewRDPComponent(c)
-	component.Ensure(context.Background(), inputs(true), owner())
-	getObject(t, c, CASecretName, &corev1.Secret{})
-
-	if err := component.Delete(context.Background(), testTenant, owner()); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: CASecretName}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
-		t.Errorf("CA Secret of the tenant err = %v, want deleted", err)
-	}
-	ca := &unstructured.Unstructured{}
-	ca.SetGroupVersionKind(certificateGVK)
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testSharedNamespace, Name: sharedCAName(testTenant)}, ca); !apierrors.IsNotFound(err) {
-		t.Errorf("CA Certificate err = %v, want deleted", err)
-	}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testSharedNamespace, Name: sharedCAName(testTenant)}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
-		t.Errorf("CA Secret of the shared namespace err = %v, want deleted", err)
-	}
-}
-
-func TestRDPAccessWithAnUnmanagedGatewayRemovesTheGatewayOfTheTenant(t *testing.T) {
-	c := newClient(t, readyCA()...)
-	component := NewRDPComponent(c)
-	component.Ensure(context.Background(), inputs(true), owner())
-	unstructuredObject(t, c, gatewayGVK, testTenant, GatewayName)
-
-	component.Ensure(context.Background(), inputs(false), owner())
-	for _, resource := range gatewayInventory() {
-		object := &unstructured.Unstructured{}
-		object.SetGroupVersionKind(resource.gvk)
-		if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: resource.name}, object); !apierrors.IsNotFound(err) {
-			t.Errorf("%s %s err = %v, want deleted", resource.gvk.Kind, resource.name, err)
-		}
-	}
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: CASecretName}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
-		t.Errorf("CA Secret err = %v, want deleted", err)
-	}
-}
-
-// The shared Gateway can ask the load balancer pool for a fixed address. The
-// Gateway of a tenant that came first would take that address.
-func TestRDPGatewayOfTheTenantWaitsForTheAddressOfTheSharedGateway(t *testing.T) {
-	objects := readyCA()
-	shared := objects[len(objects)-1].(*unstructured.Unstructured)
-	delete(shared.Object, "status")
-	c := newClient(t, objects...)
-	component := NewRDPComponent(c)
-	component.Ensure(context.Background(), inputs(true), owner())
-	markDeploymentReady(t, c, GuacdName)
-	markDeploymentReady(t, c, GuacamoleName)
-
-	outcome := component.Ensure(context.Background(), inputs(true), owner())
-	if outcome.Phase != PhaseProgressing || outcome.Reason != ReasonSharedGatewayNotReady {
-		t.Fatalf("outcome = %+v, want waiting for the address of the shared Gateway", outcome)
-	}
-	gateway := &unstructured.Unstructured{}
-	gateway.SetGroupVersionKind(gatewayGVK)
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: GatewayName}, gateway); !apierrors.IsNotFound(err) {
-		t.Errorf("Gateway of the tenant err = %v, want not created before the shared Gateway has its address", err)
-	}
-
-	live := unstructuredObject(t, c, gatewayGVK, testSharedNamespace, "neteye")
-	live.Object["status"] = sharedGatewayWithAddress().Object["status"]
-	if err := c.Update(context.Background(), live); err != nil {
-		t.Fatal(err)
-	}
-	component.Ensure(context.Background(), inputs(true), owner())
-	unstructuredObject(t, c, gatewayGVK, testTenant, GatewayName)
-}
-
-// The intermediate CA has no owner: a Certificate of someone else with its
-// name must not be taken over.
-func TestRDPAccessDoesNotTakeOverACertificateOfSomeoneElseAtTheNameOfTheCA(t *testing.T) {
-	foreign := &unstructured.Unstructured{}
-	foreign.SetGroupVersionKind(certificateGVK)
-	foreign.SetNamespace(testSharedNamespace)
-	foreign.SetName(sharedCAName(testTenant))
-	foreign.Object["spec"] = map[string]any{"secretName": "theirs", "issuerRef": map[string]any{"name": "their-issuer"}}
-	c := newClient(t, foreign, sharedGatewayWithAddress())
-
-	outcome := NewRDPComponent(c).Ensure(context.Background(), inputs(true), owner())
-	if outcome.Phase != PhaseDegraded || !strings.Contains(outcome.Message, "not managed by the operator") {
-		t.Errorf("outcome = %+v, want degraded: the Certificate belongs to someone else", outcome)
-	}
-	live := unstructuredObject(t, c, certificateGVK, testSharedNamespace, sharedCAName(testTenant))
-	if secretName, _, _ := unstructured.NestedString(live.Object, "spec", "secretName"); secretName != "theirs" {
-		t.Errorf("spec = %v, want the Certificate of someone else unchanged", live.Object["spec"])
 	}
 }
 

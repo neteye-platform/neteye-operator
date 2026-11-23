@@ -5,6 +5,7 @@ package resources
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -73,13 +74,18 @@ const (
 // EnsureCACertificate ensures a namespaced cert-manager Certificate of a CA
 // exists: an intermediate CA that the issuer in issuerRef signs. Its Secret
 // holds the chain of the CA and its private key, so an Issuer of type CA can
-// sign with it.
+// sign with it. A critical name constraint limits the CA to permittedDNSDomains
+// and their subdomains: the clients refuse a certificate that it signs for any
+// other name.
 //
 // The Certificate has no owner reference, for it can be in another namespace
 // than the object that needs it. A caller deletes it with DeleteManagedCertificate.
-func EnsureCACertificate(ctx context.Context, client client.Client, namespace string, name string, secretName string, commonName string, issuerRef CertificateIssuerRef) error {
+func EnsureCACertificate(ctx context.Context, client client.Client, namespace string, name string, secretName string, commonName string, permittedDNSDomains []string, issuerRef CertificateIssuerRef) error {
 	if err := validateCertificateIssuerRef(issuerRef); err != nil {
 		return err
+	}
+	if len(permittedDNSDomains) == 0 {
+		return fmt.Errorf("a CA Certificate needs the DNS domains that it may sign for")
 	}
 	outcome, err := Apply(ctx, client, ObjectDefinition{
 		GVK:       certificateGVK(),
@@ -95,6 +101,10 @@ func EnsureCACertificate(ctx context.Context, client client.Client, namespace st
 			"duration":    CACertificateDuration,
 			"renewBefore": CACertificateRenewBefore,
 			"usages":      []any{"cert sign", "crl sign"},
+			"nameConstraints": map[string]any{
+				"critical":  true,
+				"permitted": map[string]any{"dnsDomains": stringSliceToInterfaces(permittedDNSDomains)},
+			},
 			"privateKey": map[string]any{
 				"algorithm":      "RSA",
 				"size":           int64(2048),

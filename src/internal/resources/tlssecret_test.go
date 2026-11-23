@@ -116,7 +116,7 @@ func TestCopyTLSSecretRefusesASecretOfSomeoneElse(t *testing.T) {
 
 func TestEnsureCACertificateAsksForAnIntermediateCA(t *testing.T) {
 	c := secretClient(t)
-	if err := EnsureCACertificate(context.Background(), c, "shared", "ca", "ca-secret", "tenant", CertificateIssuerRef{Name: "internal"}); err != nil {
+	if err := EnsureCACertificate(context.Background(), c, "shared", "ca", "ca-secret", "tenant", []string{"tenant-a.example"}, CertificateIssuerRef{Name: "internal"}); err != nil {
 		t.Fatal(err)
 	}
 	certificate := &unstructured.Unstructured{}
@@ -130,8 +130,16 @@ func TestEnsureCACertificateAsksForAnIntermediateCA(t *testing.T) {
 	if !isCA || issuer != "internal" || secret != "ca-secret" || certificate.GetLabels()[managedByLabel] != managedByValue {
 		t.Errorf("Certificate = %v %v", certificate.GetLabels(), certificate.Object["spec"])
 	}
-	if err := EnsureCACertificate(context.Background(), c, "shared", "ca", "ca-secret", "tenant", CertificateIssuerRef{}); err == nil {
+	critical, _, _ := unstructured.NestedBool(certificate.Object, "spec", "nameConstraints", "critical")
+	domains, _, _ := unstructured.NestedStringSlice(certificate.Object, "spec", "nameConstraints", "permitted", "dnsDomains")
+	if !critical || len(domains) != 1 || domains[0] != "tenant-a.example" {
+		t.Errorf("name constraints = %v, want a critical constraint to tenant-a.example", certificate.Object["spec"])
+	}
+	if err := EnsureCACertificate(context.Background(), c, "shared", "ca", "ca-secret", "tenant", []string{"tenant-a.example"}, CertificateIssuerRef{}); err == nil {
 		t.Error("a CA Certificate without an issuer was accepted")
+	}
+	if err := EnsureCACertificate(context.Background(), c, "shared", "other", "other-secret", "tenant", nil, CertificateIssuerRef{Name: "internal"}); err == nil {
+		t.Error("a CA Certificate without name constraints was accepted")
 	}
 }
 
