@@ -58,12 +58,26 @@ spec:
 The images come from the release data of the `NetEye` resource. The services
 of a tenant have the hostname `<service>.tenant-<tenant>.neteyelocal`, where
 `<tenant>` is the name of the tenant namespace without the prefix
-`neteye-tenant-`:
-the RDP access is on `guacamole.tenant-<tenant>.neteyelocal`.
+`neteye-tenant-`: the RDP access is on `guacamole.tenant-<tenant>.neteyelocal`.
+
+The operator publishes no DNS record for the hostname. The Gateway of the
+tenant gets its address from the load balancer pool, and reports it in
+`status.addresses`; the listener `guacamole` of the Gateway names the hostname.
+Resolve the hostname to that address on the clients of the RDP access, for
+example in `/etc/hosts`:
+
+```sh
+kubectl -n <namespace> get gateway neteye \
+  -o jsonpath='{.spec.listeners[?(@.name=="guacamole")].hostname} {.status.addresses[0].value}'
+```
+
+On NetEye, the setup of the Alyvix module does it on every node.
 
 - The Guacamole JSON authentication key of a tenant is generated once, in the
   Secret `alyvix-rdp-json-auth` (key `json-secret-key`, 32 hexadecimal
   characters) of the tenant namespace. The Alyvix module needs the same key.
+  The web application restarts when the key changes, and not for a change of
+  the labels or annotations of the Secret.
   The key stays when the access is disabled; delete the Secret to get a new
   one.
 - Each tenant has its own Gateway `neteye`, in its namespace, with the

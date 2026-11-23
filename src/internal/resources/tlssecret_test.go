@@ -5,6 +5,7 @@ package resources
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -17,6 +18,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func secretClient(t *testing.T, objs ...client.Object) client.Client {
@@ -166,5 +168,49 @@ func TestDeleteManagedCertificateDeletesOnlyWhatTheOperatorCreated(t *testing.T)
 	}
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "shared", Name: "theirs-secret"}, &corev1.Secret{}); err != nil {
 		t.Errorf("the Secret of someone else was deleted: %v", err)
+	}
+}
+
+func TestDeleteManagedCertificateDeletesOnlyTheCertificateThatPassedTheLabelCheck(t *testing.T) {
+	certificate := &unstructured.Unstructured{}
+	certificate.SetGroupVersionKind(certificateGVK())
+	certificate.SetNamespace("shared")
+	certificate.SetName("ours")
+	certificate.SetUID("ours-uid")
+	certificate.SetLabels(map[string]string{managedByLabel: managedByValue})
+	secret := caSecret("shared", "ours-secret", nil)
+	secret.Annotations = map[string]string{"cert-manager.io/certificate-name": "ours"}
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	gvk := certificateGVK()
+	scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
+	// The Certificate was replaced after the label check: the API server refuses the precondition.
+	var precondition *types.UID
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(certificate, secret).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(ctx context.Context, inner client.WithWatch, object client.Object, opts ...client.DeleteOption) error {
+			options := &client.DeleteOptions{}
+			options.ApplyOptions(opts)
+			if object.GetName() == "ours" {
+				if options.Preconditions != nil {
+					precondition = options.Preconditions.UID
+				}
+				return apierrors.NewConflict(gvk.GroupVersion().WithResource("certificates").GroupResource(), "ours", errors.New("the UID does not match"))
+			}
+			return inner.Delete(ctx, object, opts...)
+		},
+	}).Build()
+
+	if err := DeleteManagedCertificate(context.Background(), c, "shared", "ours", "ours-secret"); err == nil {
+		t.Fatal("err = nil, want the conflict of the replaced Certificate")
+	}
+	if precondition == nil || *precondition != "ours-uid" {
+		t.Errorf("precondition = %v, want the UID of the Certificate that passed the label check", precondition)
+	}
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "shared", Name: "ours-secret"}, &corev1.Secret{}); err != nil {
+		t.Errorf("the Secret was deleted although the Certificate was not: %v", err)
 	}
 }

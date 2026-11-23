@@ -85,6 +85,9 @@ func EnsureCACertificate(ctx context.Context, client client.Client, namespace st
 		GVK:       certificateGVK(),
 		Name:      name,
 		Namespace: namespace,
+		// The Certificate has no owner: only its label tells that the
+		// operator created it, and a Certificate of someone else stays as it is.
+		RequireManagedLabel: true,
 		Spec: map[string]any{
 			"secretName":  secretName,
 			"commonName":  commonName,
@@ -151,7 +154,11 @@ func DeleteManagedCertificate(ctx context.Context, c client.Client, namespace, n
 	case certificate.GetLabels()[managedByLabel] != managedByValue:
 		return nil
 	}
-	if err := c.Delete(ctx, certificate); err != nil && !apierrors.IsNotFound(err) {
+	// Delete only the Certificate that passed the label check: if it was
+	// replaced in between, the precondition fails, the Secret stays, and the
+	// next pass checks the new one.
+	uid := certificate.GetUID()
+	if err := c.Delete(ctx, certificate, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return deleteCertificateSecret(ctx, c, namespace, name, secretName)

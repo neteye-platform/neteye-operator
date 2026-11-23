@@ -101,6 +101,7 @@ func markDeploymentReady(t *testing.T, c client.Client, name string) {
 	deployment := &appsv1.Deployment{}
 	getObject(t, c, name, deployment)
 	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = *deployment.Spec.Replicas
 	deployment.Status.ReadyReplicas = *deployment.Spec.Replicas
 	deployment.Status.UpdatedReplicas = *deployment.Spec.Replicas
 	if err := c.Status().Update(context.Background(), deployment); err != nil {
@@ -116,11 +117,12 @@ func readyCA() []client.Object {
 	certificate.SetGroupVersionKind(certificateGVK)
 	certificate.SetNamespace(testSharedNamespace)
 	certificate.SetName(sharedCAName(testTenant))
+	certificate.SetUID("shared-ca-certificate-uid")
 	certificate.SetLabels(map[string]string{"app.kubernetes.io/managed-by": "neteye-operator"})
 	certificate.Object["status"] = map[string]any{"conditions": []any{map[string]any{"type": "Ready", "status": "True"}}}
 	secret := &corev1.Secret{
 		// cert-manager names the Certificate that wrote the Secret.
-		ObjectMeta: metav1.ObjectMeta{Namespace: testSharedNamespace, Name: sharedCAName(testTenant), Annotations: map[string]string{"cert-manager.io/certificate-name": sharedCAName(testTenant)}},
+		ObjectMeta: metav1.ObjectMeta{Namespace: testSharedNamespace, Name: sharedCAName(testTenant), UID: "shared-ca-secret-uid", Annotations: map[string]string{"cert-manager.io/certificate-name": sharedCAName(testTenant)}},
 		Type:       corev1.SecretTypeTLS,
 		Data:       map[string][]byte{corev1.TLSCertKey: []byte("ca-chain"), corev1.TLSPrivateKeyKey: []byte("ca-key"), "ca.crt": []byte("root")},
 	}
@@ -331,8 +333,8 @@ func TestRDPAccessGeneratesTheJSONAuthenticationKeyOnce(t *testing.T) {
 	}
 	guacamole := &appsv1.Deployment{}
 	getObject(t, c, GuacamoleName, guacamole)
-	if got := guacamole.Spec.Template.Annotations[jsonAuthKeyVersionAnnotation]; got == "" || got != secret.ResourceVersion {
-		t.Errorf("pod template key version = %q, want the Secret resourceVersion %q", got, secret.ResourceVersion)
+	if got := guacamole.Spec.Template.Annotations[jsonAuthKeyAnnotation]; got == "" || got != jsonAuthKeyFingerprint(key) || strings.Contains(got, key) {
+		t.Errorf("pod template key fingerprint = %q, want the fingerprint of the key, without the key", got)
 	}
 
 	component.Ensure(context.Background(), inputs(true), owner())
@@ -601,6 +603,14 @@ func TestRDPDeleteOnlyDeletesTheObjectThatPassedTheOwnershipCheck(t *testing.T) 
 		t.Fatal(err)
 	}
 	uids["/"+sharedCAName(testTenant)] = sharedCASecret.UID
+	// The two Certificates are deleted after the label check, so with a precondition too.
+	uids["Certificate/"+TLSCertificateName] = unstructuredObject(t, c, certificateGVK, testTenant, TLSCertificateName).GetUID()
+	uids["Certificate/"+sharedCAName(testTenant)] = unstructuredObject(t, c, certificateGVK, testSharedNamespace, sharedCAName(testTenant)).GetUID()
+	for name, uid := range uids {
+		if uid == "" {
+			t.Fatalf("%s has an empty UID", name)
+		}
+	}
 
 	if err := component.Delete(context.Background(), testTenant, owner()); err != nil {
 		t.Fatal(err)
@@ -874,4 +884,60 @@ func TestRDPGatewayOfTheTenantWaitsForTheAddressOfTheSharedGateway(t *testing.T)
 	}
 	component.Ensure(context.Background(), inputs(true), owner())
 	unstructuredObject(t, c, gatewayGVK, testTenant, GatewayName)
+}
+
+// Guacamole keeps its sessions in memory: a change of the Secret that is not a
+// change of the key must not replace its pod.
+func TestRDPAccessRestartsGuacamoleOnlyWhenTheKeyChanges(t *testing.T) {
+	c := newClient(t)
+	component := NewRDPComponent(c)
+	component.Ensure(context.Background(), inputs(true), owner())
+	fingerprint := func() string {
+		guacamole := &appsv1.Deployment{}
+		getObject(t, c, GuacamoleName, guacamole)
+		return guacamole.Spec.Template.Annotations[jsonAuthKeyAnnotation]
+	}
+	before := fingerprint()
+
+	secret := &corev1.Secret{}
+	getObject(t, c, JSONAuthSecretName, secret)
+	secret.Labels["backup.example/selected"] = "true"
+	secret.Annotations = map[string]string{"backup.example/last": "2026-11-23"}
+	if err := c.Update(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+	component.Ensure(context.Background(), inputs(true), owner())
+	if got := fingerprint(); got != before {
+		t.Errorf("fingerprint changed from %q to %q for a change of the metadata of the Secret", before, got)
+	}
+
+	getObject(t, c, JSONAuthSecretName, secret)
+	secret.Data[JSONAuthSecretKey] = []byte("0123456789abcdef0123456789abcdef")
+	if err := c.Update(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+	component.Ensure(context.Background(), inputs(true), owner())
+	if got := fingerprint(); got == before || got != jsonAuthKeyFingerprint("0123456789abcdef0123456789abcdef") {
+		t.Errorf("fingerprint = %q after a new key, want the fingerprint of the new key", got)
+	}
+}
+
+// The intermediate CA has no owner: a Certificate of someone else with its
+// name must not be taken over.
+func TestRDPAccessDoesNotTakeOverACertificateOfSomeoneElseAtTheNameOfTheCA(t *testing.T) {
+	foreign := &unstructured.Unstructured{}
+	foreign.SetGroupVersionKind(certificateGVK)
+	foreign.SetNamespace(testSharedNamespace)
+	foreign.SetName(sharedCAName(testTenant))
+	foreign.Object["spec"] = map[string]any{"secretName": "theirs", "issuerRef": map[string]any{"name": "their-issuer"}}
+	c := newClient(t, foreign, sharedGatewayWithAddress())
+
+	outcome := NewRDPComponent(c).Ensure(context.Background(), inputs(true), owner())
+	if outcome.Phase != PhaseDegraded || !strings.Contains(outcome.Message, "not managed by the operator") {
+		t.Errorf("outcome = %+v, want degraded: the Certificate belongs to someone else", outcome)
+	}
+	live := unstructuredObject(t, c, certificateGVK, testSharedNamespace, sharedCAName(testTenant))
+	if secretName, _, _ := unstructured.NestedString(live.Object, "spec", "secretName"); secretName != "theirs" {
+		t.Errorf("spec = %v, want the Certificate of someone else unchanged", live.Object["spec"])
+	}
 }

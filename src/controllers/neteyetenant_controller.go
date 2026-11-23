@@ -387,8 +387,8 @@ func (r *NetEyeTenantReconciler) ensureNamespaceMetadata(ctx context.Context, te
 	return nil
 }
 
-// reconcileDelete removes the intermediate CA of the tenant from the shared
-// namespace, and the tenant metadata from the namespace, so that the
+// reconcileDelete removes the RDP access of the tenant, and the tenant
+// metadata from the namespace, so that the
 // namespace no longer counts as a tenant namespace, and then releases the
 // display name. The namespace itself and
 // anything else in it stay: deleting a tenant never deletes the namespace that
@@ -403,11 +403,14 @@ func (r *NetEyeTenantReconciler) reconcileDelete(ctx context.Context, tenant *ne
 	if invalidTenantReason(tenant) != "" {
 		return r.removeFinalizer(ctx, tenant)
 	}
-	// The intermediate CA of the tenant is in the shared namespace, which the
-	// garbage collector does not clean with the tenant.
+	// The garbage collector does not remove all of the RDP access with the
+	// tenant: the intermediate CA of the tenant is in the shared namespace, and
+	// cert-manager gives the Secret of the listener certificate, which holds its
+	// private key, no owner. The namespace stays, so they are removed here.
 	if r.RDPComponent != nil {
-		if err := r.RDPComponent.DeleteSharedCA(ctx, tenant.Namespace); err != nil {
-			ctrl.LoggerFrom(ctx).Error(err, "unable to remove the intermediate CA of the tenant", "requeueAfter", r.failureRequeue())
+		owner := resources.OwnerReference(neteye.GroupVersion.String(), "NetEyeTenant", tenant)
+		if err := r.RDPComponent.Delete(ctx, tenant.Namespace, owner); err != nil {
+			ctrl.LoggerFrom(ctx).Error(err, "unable to remove the RDP access of the tenant", "requeueAfter", r.failureRequeue())
 			return ctrl.Result{RequeueAfter: r.failureRequeue()}, nil
 		}
 	}

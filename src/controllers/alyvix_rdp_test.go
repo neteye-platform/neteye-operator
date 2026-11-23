@@ -338,10 +338,15 @@ func TestAPIServerValidatesTheAlyvixRDPPorts(t *testing.T) {
 	}
 }
 
-func TestNetEyeTenantDeletionRemovesTheIntermediateCAFromTheSharedNamespace(t *testing.T) {
+func TestNetEyeTenantDeletionRemovesTheRDPAccessThatTheGarbageCollectorLeaves(t *testing.T) {
 	r, c := newTenantReconcilerWithRDP(t, append(readyRDPCA(testTenant), plainNamespace(testTenant), alyvixTenant(testTenant, true), rdpNetEye())...)
 	reconcileTenant(t, r)
 	requireExists(context.Background(), t, c, certificateGVK, neteye.NetEyeNamespace, alyvix.CANamePrefix+testTenant)
+	// cert-manager writes the Secret of the listener certificate without an owner.
+	listenerSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: testTenant, Name: alyvix.TLSSecretName, Annotations: map[string]string{"cert-manager.io/certificate-name": alyvix.TLSCertificateName}}, Type: corev1.SecretTypeTLS}
+	if err := c.Create(context.Background(), listenerSecret); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := c.Delete(context.Background(), getTenant(t, c, testTenant, testTenant)); err != nil {
 		t.Fatal(err)
@@ -354,5 +359,9 @@ func TestNetEyeTenantDeletionRemovesTheIntermediateCAFromTheSharedNamespace(t *t
 	}
 	if err := c.Get(context.Background(), types.NamespacedName{Namespace: neteye.NetEyeNamespace, Name: alyvix.CANamePrefix + testTenant}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
 		t.Errorf("CA Secret err = %v, want deleted with the tenant", err)
+	}
+	// The namespace stays: the private key of the listener must not.
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testTenant, Name: alyvix.TLSSecretName}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Errorf("listener Secret err = %v, want deleted with the tenant", err)
 	}
 }

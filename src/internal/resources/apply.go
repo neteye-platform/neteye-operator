@@ -5,6 +5,7 @@ package resources
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -44,6 +45,11 @@ type ObjectDefinition struct {
 	Spec      map[string]any
 	// Owner is nil for cluster-scoped or otherwise unowned objects.
 	Owner *metav1.OwnerReference
+	// RequireManagedLabel makes Apply refuse to update an existing object
+	// without the managed-by label of the operator. It protects an object
+	// without an owner, which the ownership check of Owner cannot protect, from
+	// being taken over.
+	RequireManagedLabel bool
 }
 
 // Apply creates the object when it is missing, or reconciles spec and owner
@@ -74,6 +80,9 @@ func reconcileExisting(ctx context.Context, c client.Client, key types.Namespace
 			return err
 		}
 
+		if obj.RequireManagedLabel && live.GetLabels()[managedByLabel] != managedByValue {
+			return fmt.Errorf("%s %s/%s is not managed by the operator and cannot be adopted", obj.GVK.Kind, obj.Namespace, obj.Name)
+		}
 		currentSpec, _, _ := unstructured.NestedMap(live.Object, "spec")
 		ownerChanged := false
 		if obj.Owner != nil {

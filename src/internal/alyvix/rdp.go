@@ -23,6 +23,7 @@ package alyvix
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -104,9 +105,12 @@ const (
 	// userCAMountPath holds the CA bundle of the tenant in the guacd pod.
 	userCAMountPath = "/etc/neteye/user-ca"
 
-	jsonAuthKeyVersionAnnotation = "neteye.cloud/json-auth-resource-version"
-	partOfLabel                  = "app.kubernetes.io/part-of"
-	partOfValue                  = "alyvix-rdp"
+	// jsonAuthKeyAnnotation is the fingerprint of the JSON authentication key
+	// on the pod template: the web application restarts when the key changes,
+	// and only then. The fingerprint does not reveal the key.
+	jsonAuthKeyAnnotation = "neteye.cloud/json-auth-key-fingerprint"
+	partOfLabel           = "app.kubernetes.io/part-of"
+	partOfValue           = "alyvix-rdp"
 )
 
 // Phase is the state of the RDP access of a tenant.
@@ -247,7 +251,7 @@ func (c *RDPComponent) Ensure(ctx context.Context, in RDPInputs, owner metav1.Ow
 			return degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("apply network policy %s: %w", policy.name, err))
 		}
 	}
-	keyVersion, outcome := c.ensureJSONAuthSecret(ctx, in.Namespace, owner)
+	keyFingerprint, outcome := c.ensureJSONAuthSecret(ctx, in.Namespace, owner)
 	if outcome != nil {
 		return *outcome
 	}
@@ -257,7 +261,7 @@ func (c *RDPComponent) Ensure(ctx context.Context, in RDPInputs, owner metav1.Ow
 	if err := resources.EnsureService(ctx, c.client, service(in.Namespace, GuacdName, "guacd", GuacdPort), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("apply Service %s: %w", GuacdName, err))
 	}
-	if err := resources.EnsureDeployment(ctx, c.client, guacamoleDeployment(in.Namespace, in.GuacamoleImage, keyVersion), owner); err != nil {
+	if err := resources.EnsureDeployment(ctx, c.client, guacamoleDeployment(in.Namespace, in.GuacamoleImage, keyFingerprint), owner); err != nil {
 		return degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("apply Deployment %s: %w", GuacamoleName, err))
 	}
 	if err := resources.EnsureService(ctx, c.client, service(in.Namespace, GuacamoleName, "http", GuacamolePort), owner); err != nil {
@@ -406,16 +410,16 @@ func (c *RDPComponent) deleteGatewayObjects(ctx context.Context, namespace strin
 	if err := resources.DeleteOwnedSecret(ctx, c.client, namespace, CASecretName, owner); err != nil {
 		errs = append(errs, fmt.Errorf("delete Secret %s: %w", CASecretName, err))
 	}
-	if err := c.DeleteSharedCA(ctx, namespace); err != nil {
+	if err := c.deleteSharedCA(ctx, namespace); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
 
-// DeleteSharedCA removes the intermediate CA of a tenant from the shared
+// deleteSharedCA removes the intermediate CA of a tenant from the shared
 // namespace, with its Secret. Its objects are not in the tenant namespace, so
 // the garbage collector does not remove them with the tenant.
-func (c *RDPComponent) DeleteSharedCA(ctx context.Context, namespace string) error {
+func (c *RDPComponent) deleteSharedCA(ctx context.Context, namespace string) error {
 	name := sharedCAName(namespace)
 	if err := resources.DeleteManagedCertificate(ctx, c.client, neteye.NetEyeNamespace, name, name); err != nil {
 		return fmt.Errorf("delete the CA Certificate %s/%s: %w", neteye.NetEyeNamespace, name, err)
@@ -488,8 +492,10 @@ func controlledBy(object client.Object, owner metav1.OwnerReference) bool {
 var jsonAuthKeyPattern = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
 
 // ensureJSONAuthSecret creates the Secret with a new random key when it does
-// not exist, and otherwise only checks the key. It returns the resourceVersion
-// of the Secret: the web application restarts when it changes.
+// not exist, and otherwise only checks the key. It returns the fingerprint of
+// the key: the web application restarts when it changes. A change of the
+// labels or annotations of the Secret does not restart it, so the open RDP
+// sessions stay.
 func (c *RDPComponent) ensureJSONAuthSecret(ctx context.Context, namespace string, owner metav1.OwnerReference) (string, *Outcome) {
 	secret := &corev1.Secret{}
 	err := c.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: JSONAuthSecretName}, secret)
@@ -519,7 +525,7 @@ func (c *RDPComponent) ensureJSONAuthSecret(ctx context.Context, namespace strin
 			outcome := degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("create Secret %s: %w", JSONAuthSecretName, err))
 			return "", &outcome
 		}
-		return secret.ResourceVersion, nil
+		return jsonAuthKeyFingerprint(key), nil
 	}
 	if err != nil {
 		outcome := degradedOutcome(ReasonReconcileFailed, "", fmt.Errorf("get Secret %s: %w", JSONAuthSecretName, err))
@@ -530,7 +536,14 @@ func (c *RDPComponent) ensureJSONAuthSecret(ctx context.Context, namespace strin
 		outcome := degradedOutcome(ReasonInvalidSecret, message, nil)
 		return "", &outcome
 	}
-	return secret.ResourceVersion, nil
+	return jsonAuthKeyFingerprint(string(secret.Data[JSONAuthSecretKey])), nil
+}
+
+// jsonAuthKeyFingerprint returns the first 64 bits of the SHA-256 of a key,
+// in hexadecimal: enough to tell keys apart, and nothing about the key.
+func jsonAuthKeyFingerprint(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:8])
 }
 
 // newJSONAuthKey returns 128 random bits as 32 hexadecimal characters, the
@@ -693,11 +706,11 @@ func guacdDeployment(namespace, image string, caBundle resources.CABundleRef) *a
 	}, corev1.Volume{Name: resources.UserCABundleVolumeName, VolumeSource: resources.UserCABundleVolumeSource(caBundle)})
 }
 
-func guacamoleDeployment(namespace, image, keyVersion string) *appsv1.Deployment {
+func guacamoleDeployment(namespace, image, keyFingerprint string) *appsv1.Deployment {
 	probe := func(period, failures int32) *corev1.Probe {
 		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: ContextPath + "/", Port: intstr.FromString("http")}}, PeriodSeconds: period, FailureThreshold: failures, TimeoutSeconds: 2}
 	}
-	return deployment(namespace, GuacamoleName, map[string]string{jsonAuthKeyVersionAnnotation: keyVersion}, corev1.Container{
+	return deployment(namespace, GuacamoleName, map[string]string{jsonAuthKeyAnnotation: keyFingerprint}, corev1.Container{
 		Name:  "guacamole",
 		Image: image,
 		Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: GuacamolePort, Protocol: corev1.ProtocolTCP}},
