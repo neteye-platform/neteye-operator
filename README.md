@@ -76,8 +76,9 @@ On NetEye, the setup of the Alyvix module does it on every node.
 - The Guacamole JSON authentication key of a tenant is generated once, in the
   Secret `alyvix-rdp-json-auth` (key `json-secret-key`, 32 hexadecimal
   characters) of the tenant namespace. The Alyvix module needs the same key.
-  The web application restarts when the key changes, and not for a change of
-  the labels or annotations of the Secret.
+  The web application restarts when the Secret changes, so it reads a new
+  key: the operator generates one when the Secret is deleted, and an
+  administrator can also edit the key in the Secret.
   The key stays when the access is disabled; delete the Secret to get a new
   one.
 - Each tenant has its own Gateway `neteye`, in its namespace, with the
