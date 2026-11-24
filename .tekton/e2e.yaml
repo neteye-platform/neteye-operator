@@ -5,9 +5,15 @@
 #   - Repository CR with an `incoming` entry targeting branch "main"
 #   - Secret referenced by that entry (the shared incoming-webhook secret)
 #   - A ServiceAccount for this PipelineRun with RBAC to create/get
-#     PipelineRuns in the "rd-neteye-pipeline" namespace (where the real
-#     neteye-operator-install/-update/-upgrade Pipelines from
-#     si-rd-tekton-pipelines are deployed)
+#     PipelineRuns in its own namespace (rd-neteye-pipeline on OpenShift,
+#     rd-pipelines on plat-eng-prod-bz-01), where the rhel8-neteye-build
+#     PipelineRuns of si-rd-tekton-pipelines are created
+#
+# It runs on either cluster, whichever the PAC incoming webhook reaches: the
+# child PipelineRuns go to the namespace of this run, and their account,
+# storage class and pod identity are chosen by the API groups the cluster
+# serves (OpenShift Routes or not). Drop the OpenShift branch once the
+# pipelines have moved to plat-eng-prod-bz-01.
 #
 # Triggers the "install", "update" and "upgrade" e2e pipelines as three
 # independent tasks, run in parallel once verify-revision has passed.
@@ -37,8 +43,6 @@ spec:
       value: "{{ operator-nightly-version }}"
     - name: operator-nightly-channel
       value: "{{ operator-nightly-channel }}"
-    - name: tekton-namespace
-      value: rd-neteye-pipeline
     - name: neteye-version
       value: latest
     - name: revision
@@ -49,9 +53,6 @@ spec:
         type: string
       - name: operator-nightly-channel
         type: string
-      - name: tekton-namespace
-        type: string
-        default: rd-neteye-pipeline
       - name: neteye-version
         type: string
         default: latest
@@ -100,8 +101,6 @@ spec:
             value: $(params.operator-nightly-version)
           - name: operator-nightly-channel
             value: $(params.operator-nightly-channel)
-          - name: tekton-namespace
-            value: $(params.tekton-namespace)
           - name: neteye-version
             value: $(params.neteye-version)
           - name: neteye-update-upgrade
@@ -111,8 +110,6 @@ spec:
             - name: operator-nightly-version
               type: string
             - name: operator-nightly-channel
-              type: string
-            - name: tekton-namespace
               type: string
             - name: neteye-version
               type: string
@@ -128,8 +125,9 @@ spec:
                   value: /tekton/home
                 - name: OPERATOR_NIGHTLY_VERSION
                   value: $(params.operator-nightly-version)
+                # The child PipelineRuns go to the namespace of this run (where the PAC Repository is)
                 - name: NAMESPACE
-                  value: $(params.tekton-namespace)
+                  value: $(context.taskRun.namespace)
                 - name: NETEYE_VERSION
                   value: $(params.neteye-version)
                 - name: OPERATOR_NIGHTLY_CHANNEL
@@ -150,6 +148,33 @@ spec:
                   echo "Invalid operator-nightly-channel (expected <major>.<minor>-nightly): '$OPERATOR_NIGHTLY_CHANNEL'" >&2
                   exit 1
                 fi
+
+                # Tell the cluster by the API groups it serves, and refuse to guess when they cannot be read.
+                if out="$(oc get --raw /apis/route.openshift.io/v1 2>&1)"; then
+                  platform=openshift
+                elif grep -q NotFound <<<"$out"; then
+                  platform=plat-eng-prod-bz-01
+                else
+                  echo "Cannot tell which cluster this is: $out" >&2
+                  exit 1
+                fi
+                if [[ "$platform" == openshift ]]; then
+                  service_account=openshift-pipelines
+                  storage_class=ocs-storagecluster-cephfs-sing-rep
+                  # The SCC gives every step UID 1000 and the fsGroup of the namespace.
+                  pod_template=""
+                else
+                  service_account=default
+                  storage_class=longhorn
+                  # The identity the OpenShift SCC gives these pods, set by hand: one UID for every task (clone,
+                  # Terraform and playbooks share the workspace directories) and a writable workspace.
+                  pod_template="$(printf '%s\n' \
+                    '      podTemplate:' \
+                    '        securityContext:' \
+                    '          runAsUser: 1000' \
+                    '          fsGroup: 1001100000')"
+                fi
+                echo "Platform: $platform (namespace $NAMESPACE, account $service_account, storage class $storage_class)"
 
                 attempt=0
                 max_attempts=3
@@ -175,14 +200,15 @@ spec:
                         - name: pathInRepo
                           value: rhel8-neteye-build/rhel8-neteye-build.yaml
                     taskRunTemplate:
-                      serviceAccountName: openshift-pipelines
+                      serviceAccountName: ${service_account}
+                ${pod_template}
                     timeouts:
                       pipeline: "3h30m0s"
                     workspaces:
                       - name: shared-workspace
                         volumeClaimTemplate:
                           spec:
-                            storageClassName: ocs-storagecluster-cephfs-sing-rep
+                            storageClassName: ${storage_class}
                             volumeMode: Filesystem
                             accessModes: ["ReadWriteMany"]
                             resources:
@@ -233,8 +259,6 @@ spec:
             value: $(params.operator-nightly-version)
           - name: operator-nightly-channel
             value: $(params.operator-nightly-channel)
-          - name: tekton-namespace
-            value: $(params.tekton-namespace)
           - name: neteye-version
             value: $(params.neteye-version)
           - name: neteye-update-upgrade
@@ -247,8 +271,6 @@ spec:
             value: $(params.operator-nightly-version)
           - name: operator-nightly-channel
             value: $(params.operator-nightly-channel)
-          - name: tekton-namespace
-            value: $(params.tekton-namespace)
           - name: neteye-version
             value: current
           - name: neteye-update-upgrade
