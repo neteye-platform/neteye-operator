@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -39,6 +40,9 @@ type GatewayListener struct {
 	TLSSecretName string
 	// RouteKind is the single route kind allowed on this listener.
 	RouteKind string
+	// RouteNamespaceSelector selects the namespaces whose routes may attach to
+	// this listener. When nil, only routes in the Gateway namespace attach.
+	RouteNamespaceSelector map[string]any
 }
 
 // EnsureGateway ensures a Gateway API Gateway exists. It exposes the cleartext
@@ -46,30 +50,41 @@ type GatewayListener struct {
 // supplied GatewayListener. An existing Gateway must already be controlled by
 // owner; otherwise it is rejected and left unchanged.
 func EnsureGateway(ctx context.Context, client client.Client, namespace string, name string, gatewayClassName string, annotations map[string]string, listeners []GatewayListener, owner metav1.OwnerReference) error {
-	desiredListeners := []any{
-		map[string]any{
-			"name":     gatewayHTTPListenerName,
-			"protocol": "HTTP",
-			"port":     int64(80),
-			"allowedRoutes": map[string]any{
-				"namespaces": map[string]any{
-					"from": "Same",
-				},
-				"kinds": routeKinds(RouteKindHTTP),
+	httpListener := map[string]any{
+		"name":     gatewayHTTPListenerName,
+		"protocol": "HTTP",
+		"port":     int64(80),
+		"allowedRoutes": map[string]any{
+			"namespaces": map[string]any{
+				"from": "Same",
 			},
+			"kinds": routeKinds(RouteKindHTTP),
 		},
 	}
+	return ensureGateway(ctx, client, namespace, name, gatewayClassName, annotations, []any{httpListener}, listeners, owner)
+}
+
+// EnsureHTTPSGateway ensures a Gateway API Gateway with only the supplied
+// HTTPS listeners: no cleartext listener, so the Gateway does not open port 80.
+// An existing Gateway must already be controlled by owner.
+func EnsureHTTPSGateway(ctx context.Context, client client.Client, namespace string, name string, gatewayClassName string, listeners []GatewayListener, owner metav1.OwnerReference) error {
+	return ensureGateway(ctx, client, namespace, name, gatewayClassName, nil, nil, listeners, owner)
+}
+
+func ensureGateway(ctx context.Context, client client.Client, namespace string, name string, gatewayClassName string, annotations map[string]string, desiredListeners []any, listeners []GatewayListener, owner metav1.OwnerReference) error {
 	for _, listener := range listeners {
+		namespaces := map[string]any{"from": "Same"}
+		if listener.RouteNamespaceSelector != nil {
+			namespaces = map[string]any{"from": "Selector", "selector": listener.RouteNamespaceSelector}
+		}
 		desiredListeners = append(desiredListeners, map[string]any{
 			"name":     listener.Name,
 			"protocol": "HTTPS",
 			"port":     int64(443),
 			"hostname": listener.Hostname,
 			"allowedRoutes": map[string]any{
-				"namespaces": map[string]any{
-					"from": "Same",
-				},
-				"kinds": routeKinds(listener.RouteKind),
+				"namespaces": namespaces,
+				"kinds":      routeKinds(listener.RouteKind),
 			},
 			"tls": map[string]any{
 				"mode": "Terminate",
@@ -142,6 +157,31 @@ func EnsureHTTPToHTTPSRedirectRoute(ctx context.Context, client client.Client, n
 	}
 
 	return ensureHTTPRouteSpec(ctx, client, namespace, HTTPToHTTPSRedirectRouteName, desiredSpec, &owner)
+}
+
+// GatewayAddress returns the first address in the status of the Gateway, or
+// "" when the Gateway does not exist or has no address yet.
+func GatewayAddress(ctx context.Context, c client.Client, gateway GatewayRef) (string, error) {
+	object := &unstructured.Unstructured{}
+	object.SetGroupVersionKind(gatewayGVK())
+	if err := c.Get(ctx, types.NamespacedName{Namespace: gateway.Namespace, Name: gateway.Name}, object); err != nil {
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	addresses, _, err := unstructured.NestedSlice(object.Object, "status", "addresses")
+	if err != nil {
+		return "", err
+	}
+	for _, raw := range addresses {
+		if address, ok := raw.(map[string]any); ok {
+			if value, _ := address["value"].(string); value != "" {
+				return value, nil
+			}
+		}
+	}
+	return "", nil
 }
 
 // DeleteOwnedGateways deletes every Gateway in namespace that owner controls.

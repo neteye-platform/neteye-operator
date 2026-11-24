@@ -23,6 +23,13 @@ and reports the other one as `Failed`. Derived names use `metadata.name`,
 which never changes.
 _Avoid_: Tenant name, when the stable `metadata.name` is meant
 
+**Alyvix RDP access**:
+The Apache Guacamole web application and proxy daemon (guacd) that a tenant
+runs in its namespace while its `spec.alyvix.enabled` is true. The Alyvix
+module opens RDP sessions to the Alyvix nodes through them, with the JSON
+authentication key of the tenant.
+_Avoid_: RDP gateway (the Gateway is the Gateway API resource)
+
 ### Keycloak identity
 
 **Realm**:

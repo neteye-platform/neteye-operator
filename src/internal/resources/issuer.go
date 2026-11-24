@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -45,6 +46,27 @@ func EnsureIssuerExists(ctx context.Context, client client.Client, namespace str
 	return nil
 }
 
+// EnsureCAIssuer ensures a namespaced cert-manager Issuer of type CA exists,
+// signing with the CA in the Secret secretName of its own namespace. Unlike
+// the Issuer of EnsureIssuerExists, the operator owns it: it is the Issuer of
+// one tenant, and it signs with the intermediate CA of the tenant only.
+func EnsureCAIssuer(ctx context.Context, client client.Client, namespace, name, secretName string, owner metav1.OwnerReference) error {
+	outcome, err := Apply(ctx, client, ObjectDefinition{
+		GVK:       certificateIssuerGVK(),
+		Name:      name,
+		Namespace: namespace,
+		Spec:      map[string]any{"ca": map[string]any{"secretName": secretName}},
+		Owner:     &owner,
+	})
+	if err != nil {
+		return err
+	}
+	if outcome == Created {
+		logf.FromContext(ctx).Info("Issuer created", "namespace", namespace, "issuer", name, "secret", secretName)
+	}
+	return nil
+}
+
 func certificateIssuerGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{
 		Group:   CertManagerGroup,
@@ -62,4 +84,9 @@ func validateCertificateIssuerRef(ref CertificateIssuerRef) error {
 		return fmt.Errorf("certificate issuer ref name is required")
 	}
 	return nil
+}
+
+// DeleteIssuer deletes the named Issuer when owner controls it.
+func DeleteIssuer(ctx context.Context, c client.Client, namespace, name string, owner metav1.OwnerReference) error {
+	return deleteOwned(ctx, c, certificateIssuerGVK(), namespace, name, owner)
 }

@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -49,15 +50,17 @@ var (
 	customResourceDefinitionGVK         = schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"}
 )
 
-// TenantNamespacePolicy keeps the admission policy that protects the tenant
-// metadata of namespaces in place. The policy is cluster-scoped and shared by
-// all tenants, so it is reconciled once for the installation instead of once
-// for each tenant. The API server evaluates it, so it keeps working while the
-// operator is down.
+// TenantNamespacePolicy keeps the admission policies of the tenant namespaces
+// in place: the one that protects the tenant metadata of namespaces, and the
+// one that keeps the routes of a tenant namespace on the hostname of the tenant
+// (see tenantRoutePolicySpec). The policies are cluster-scoped and shared by
+// all tenants, so they are reconciled once for the installation instead of once
+// for each tenant. The API server evaluates them, so they keep working while
+// the operator is down.
 //
-// It is a controller that watches the policy and its binding: a deleted or
-// changed object is restored at once. It also runs once at startup, so that a
-// missing policy is created, and again after every interval as a backstop.
+// It is a controller that watches the policies and their bindings: a deleted
+// or changed object is restored at once. It also runs once at startup, so that
+// a missing policy is created, and again after every interval as a backstop.
 //
 // To change the protected metadata by hand, stop the operator first, then
 // delete the binding: while the operator runs, it puts the binding back.
@@ -81,7 +84,7 @@ func (p *TenantNamespacePolicy) SetupWithManager(mgr ctrl.Manager) error {
 	toPolicy := handler.EnqueueRequestsFromMapFunc(func(context.Context, client.Object) []reconcile.Request {
 		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: TenantNamespacePolicyName}}}
 	})
-	onlyThePolicy := builder.WithPredicates(predicate.NewPredicateFuncs(func(object client.Object) bool {
+	onlyThePolicies := builder.WithPredicates(predicate.NewPredicateFuncs(func(object client.Object) bool {
 		return object.GetName() == TenantNamespacePolicyName
 	}))
 	policy := &unstructured.Unstructured{}
@@ -95,12 +98,12 @@ func (p *TenantNamespacePolicy) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("tenant-namespace-policy").
 		WatchesRawSource(source.Channel(start, toPolicy)).
-		Watches(policy, toPolicy, onlyThePolicy).
-		Watches(binding, toPolicy, onlyThePolicy).
+		Watches(policy, toPolicy, onlyThePolicies).
+		Watches(binding, toPolicy, onlyThePolicies).
 		Complete(p)
 }
 
-// Reconcile applies the policy and its binding. A failure is retried after
+// Reconcile applies the policies and their bindings. A failure is retried after
 // tenantNamespacePolicyRetryInterval; a success is checked again after the
 // interval.
 func (p *TenantNamespacePolicy) Reconcile(ctx context.Context, _ reconcile.Request) (ctrl.Result, error) {
@@ -115,9 +118,10 @@ func (p *TenantNamespacePolicy) Reconcile(ctx context.Context, _ reconcile.Reque
 	return ctrl.Result{RequeueAfter: interval}, nil
 }
 
-// Ensure applies the policy and its binding, both owned by the NetEyeTenant
-// CRD. An existing object with the same name that the CRD does not control is
-// reported as a conflict and left alone.
+// Ensure applies the policies and their bindings, all owned by the
+// NetEyeTenant CRD. An existing object with the same name that the CRD does not
+// control is reported as a conflict and left alone. Every policy is applied
+// even if another one fails.
 func (p *TenantNamespacePolicy) Ensure(ctx context.Context) error {
 	if p.OperatorUsername == "" {
 		return fmt.Errorf("the operator username is unknown, so the policy cannot exempt the operator")
@@ -127,34 +131,61 @@ func (p *TenantNamespacePolicy) Ensure(ctx context.Context) error {
 		return err
 	}
 	owner := tenantCRDOwnerReference(crd)
-	if _, err := resources.Apply(ctx, p.Client, resources.ObjectDefinition{GVK: validatingAdmissionPolicyGVK, Name: TenantNamespacePolicyName, Spec: tenantNamespacePolicySpec(p.OperatorUsername), Owner: &owner}); err != nil {
-		return fmt.Errorf("apply ValidatingAdmissionPolicy %q: %w", TenantNamespacePolicyName, err)
+	var errs []error
+	for _, policy := range tenantAdmissionPolicies(p.OperatorUsername) {
+		if err := ensureTenantAdmissionPolicy(ctx, p.Client, policy, owner); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	if _, err := resources.Apply(ctx, p.Client, resources.ObjectDefinition{GVK: validatingAdmissionPolicyBindingGVK, Name: TenantNamespacePolicyName, Spec: tenantNamespacePolicyBindingSpec(), Owner: &owner}); err != nil {
-		return fmt.Errorf("apply ValidatingAdmissionPolicyBinding %q: %w", TenantNamespacePolicyName, err)
+	return errors.Join(errs...)
+}
+
+func ensureTenantAdmissionPolicy(ctx context.Context, c client.Client, policy tenantAdmissionPolicy, owner metav1.OwnerReference) error {
+	if _, err := resources.Apply(ctx, c, resources.ObjectDefinition{GVK: validatingAdmissionPolicyGVK, Name: policy.name, Spec: policy.spec, Owner: &owner}); err != nil {
+		return fmt.Errorf("apply ValidatingAdmissionPolicy %q: %w", policy.name, err)
+	}
+	if _, err := resources.Apply(ctx, c, resources.ObjectDefinition{GVK: validatingAdmissionPolicyBindingGVK, Name: policy.name, Spec: tenantAdmissionPolicyBindingSpec(policy.name), Owner: &owner}); err != nil {
+		return fmt.Errorf("apply ValidatingAdmissionPolicyBinding %q: %w", policy.name, err)
 	}
 	return nil
 }
 
-// tenantNamespacePolicyState tells whether the API server enforces the
-// protection of the tenant metadata: the policy and its binding exist, the
-// NetEyeTenant CRD controls both, and their specs are the ones that
-// TenantNamespacePolicy writes. The policy is reconciled by
-// TenantNamespacePolicy, outside the tenant controller, so a tenant reads this
-// state before it reports itself ready.
-type tenantNamespacePolicyState int
+// tenantAdmissionPolicy is an admission policy of the tenant namespaces. Its
+// binding has the same name.
+type tenantAdmissionPolicy struct {
+	name string
+	// protects names what the policy protects, for the status of the tenant.
+	protects string
+	spec     map[string]any
+}
+
+func tenantAdmissionPolicies(operatorUsername string) []tenantAdmissionPolicy {
+	return []tenantAdmissionPolicy{tenantNamespacePolicy(operatorUsername)}
+}
+
+func tenantNamespacePolicy(operatorUsername string) tenantAdmissionPolicy {
+	return tenantAdmissionPolicy{name: TenantNamespacePolicyName, protects: "the tenant metadata of the namespace", spec: tenantNamespacePolicySpec(operatorUsername)}
+}
+
+// tenantPolicyState tells whether the API server enforces a tenant admission
+// policy: the policy and its binding exist, the NetEyeTenant CRD controls both,
+// and their specs are the ones that TenantNamespacePolicy writes. The policies
+// are reconciled by TenantNamespacePolicy, outside the tenant controller, so a
+// tenant reads this state before it reports the component that relies on the
+// policy ready.
+type tenantPolicyState int
 
 const (
-	// tenantNamespacePolicyEnforced means that the policy is in place.
-	tenantNamespacePolicyEnforced tenantNamespacePolicyState = iota
-	// tenantNamespacePolicyMissing means that the policy or the binding does
+	// tenantPolicyEnforced means that the policy is in place.
+	tenantPolicyEnforced tenantPolicyState = iota
+	// tenantPolicyMissing means that the policy or the binding does
 	// not exist yet, or that its spec is not the one of the operator.
 	// TenantNamespacePolicy creates them and corrects the spec.
-	tenantNamespacePolicyMissing
-	// tenantNamespacePolicyConflict means that an object with the reserved
+	tenantPolicyMissing
+	// tenantPolicyConflict means that an object with the reserved
 	// name exists but is not the one of the operator. The operator does not
 	// adopt it, so a person must remove it.
-	tenantNamespacePolicyConflict
+	tenantPolicyConflict
 )
 
 // checkTenantNamespacePolicy reads the policy and its binding and returns their
@@ -164,35 +195,41 @@ const (
 // field that the API server adds by default does not. The fields that select
 // the checked requests must be exactly the ones of the operator, because any
 // other value can only narrow them.
-func checkTenantNamespacePolicy(ctx context.Context, c client.Client, operatorUsername string) (tenantNamespacePolicyState, string, error) {
+func checkTenantNamespacePolicy(ctx context.Context, c client.Client, operatorUsername string) (tenantPolicyState, string, error) {
 	if operatorUsername == "" {
-		return tenantNamespacePolicyMissing, "the operator username is unknown, so the operator cannot protect the tenant metadata of the namespace", nil
+		return tenantPolicyMissing, "the operator username is unknown, so the operator cannot protect the tenant metadata of the namespace", nil
 	}
+	return checkTenantAdmissionPolicy(ctx, c, tenantNamespacePolicy(operatorUsername))
+}
+
+// checkTenantAdmissionPolicy reads a policy and its binding and returns their
+// state, as checkTenantNamespacePolicy describes.
+func checkTenantAdmissionPolicy(ctx context.Context, c client.Client, policy tenantAdmissionPolicy) (tenantPolicyState, string, error) {
 	crd, err := getTenantCRD(ctx, c)
 	if err != nil {
-		return tenantNamespacePolicyMissing, "", err
+		return tenantPolicyMissing, "", err
 	}
 	owner := tenantCRDOwnerReference(crd)
 	for _, object := range []resources.ObjectDefinition{
-		{GVK: validatingAdmissionPolicyGVK, Spec: tenantNamespacePolicySpec(operatorUsername)},
-		{GVK: validatingAdmissionPolicyBindingGVK, Spec: tenantNamespacePolicyBindingSpec()},
+		{GVK: validatingAdmissionPolicyGVK, Spec: policy.spec},
+		{GVK: validatingAdmissionPolicyBindingGVK, Spec: tenantAdmissionPolicyBindingSpec(policy.name)},
 	} {
 		live := &unstructured.Unstructured{}
 		live.SetGroupVersionKind(object.GVK)
-		if err := c.Get(ctx, types.NamespacedName{Name: TenantNamespacePolicyName}, live); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Name: policy.name}, live); err != nil {
 			if apierrors.IsNotFound(err) {
-				return tenantNamespacePolicyMissing, fmt.Sprintf("waiting for the %s %q that protects the tenant metadata of the namespace", object.GVK.Kind, TenantNamespacePolicyName), nil
+				return tenantPolicyMissing, fmt.Sprintf("waiting for the %s %q that protects %s", object.GVK.Kind, policy.name, policy.protects), nil
 			}
-			return tenantNamespacePolicyMissing, "", fmt.Errorf("get %s %q: %w", object.GVK.Kind, TenantNamespacePolicyName, err)
+			return tenantPolicyMissing, "", fmt.Errorf("get %s %q: %w", object.GVK.Kind, policy.name, err)
 		}
 		if !controlledByOwner(live, owner) {
-			return tenantNamespacePolicyConflict, fmt.Sprintf("the %s %q is not controlled by the CustomResourceDefinition %q, so the tenant metadata of the namespace is not protected; remove it and the operator creates its own", object.GVK.Kind, TenantNamespacePolicyName, netEyeTenantCRDName), nil
+			return tenantPolicyConflict, fmt.Sprintf("the %s %q is not controlled by the CustomResourceDefinition %q, so %s is not protected; remove it and the operator creates its own", object.GVK.Kind, policy.name, netEyeTenantCRDName, policy.protects), nil
 		}
 		if spec, _, _ := unstructured.NestedMap(live.Object, "spec"); !containsSpec(spec, object.Spec) || !sameScope(spec, object.Spec) {
-			return tenantNamespacePolicyMissing, fmt.Sprintf("waiting for the operator to restore the spec of the %s %q that protects the tenant metadata of the namespace", object.GVK.Kind, TenantNamespacePolicyName), nil
+			return tenantPolicyMissing, fmt.Sprintf("waiting for the operator to restore the spec of the %s %q that protects %s", object.GVK.Kind, policy.name, policy.protects), nil
 		}
 	}
-	return tenantNamespacePolicyEnforced, "", nil
+	return tenantPolicyEnforced, "", nil
 }
 
 // containsSpec reports whether live has every value of desired. A map may have
@@ -328,9 +365,11 @@ func tenantNamespacePolicySpec(operatorUsername string) map[string]any {
 	}
 }
 
-func tenantNamespacePolicyBindingSpec() map[string]any {
+// tenantAdmissionPolicyBindingSpec binds a policy to every request it matches,
+// and denies the ones that it refuses.
+func tenantAdmissionPolicyBindingSpec(policyName string) map[string]any {
 	return map[string]any{
-		"policyName":        TenantNamespacePolicyName,
+		"policyName":        policyName,
 		"validationActions": []any{"Deny"},
 	}
 }

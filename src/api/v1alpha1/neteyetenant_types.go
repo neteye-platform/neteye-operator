@@ -81,6 +81,61 @@ type NetEyeTenantSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=true
 	UseProcedureGates *bool `json:"useProcedureGates,omitempty"`
+
+	// Alyvix enables the Alyvix feature module for the tenant. The images
+	// come from the release data of the NetEye resource.
+	// +kubebuilder:validation:Optional
+	Alyvix *NetEyeAlyvixSpec `json:"alyvix,omitempty"`
+}
+
+// NetEyeAlyvixSpec configures the Alyvix feature module of a tenant. While it
+// is enabled, the tenant runs the RDP access to the Alyvix sessions: an Apache
+// Guacamole web application and proxy daemon (guacd) in the tenant namespace,
+// which the Gateway of the tenant exposes on the hostname of the tenant. The Guacamole
+// JSON authentication key of the tenant is generated once, in a Secret of the
+// tenant namespace.
+type NetEyeAlyvixSpec struct {
+	// Enabled enables the Alyvix feature module for the tenant.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// RDP configures the RDP access to the Alyvix sessions.
+	// +kubebuilder:validation:Optional
+	RDP *NetEyeAlyvixRDPSpec `json:"rdp,omitempty"`
+}
+
+// NetEyeAlyvixRDPSpec configures the RDP access to the Alyvix sessions of a
+// tenant.
+type NetEyeAlyvixRDPSpec struct {
+	// Ports lists the TCP ports of the RDP service on the Alyvix nodes. The
+	// proxy daemon may open connections to these ports on any address. The
+	// default is 3389.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:Minimum=1
+	// +kubebuilder:validation:items:Maximum=65535
+	// +listType=set
+	Ports []int32 `json:"ports,omitempty"`
+}
+
+// DefaultAlyvixRDPPort is the TCP port of the RDP service on the Alyvix nodes
+// when spec.alyvix.rdp.ports is unset.
+const DefaultAlyvixRDPPort int32 = 3389
+
+// AlyvixEnabled reports whether the Alyvix feature module is enabled for the
+// tenant.
+func (s *NetEyeTenantSpec) AlyvixEnabled() bool {
+	return s != nil && s.Alyvix != nil && s.Alyvix.Enabled
+}
+
+// EffectiveRDPPorts returns the RDP ports, applying the default for an unset
+// list.
+func (s *NetEyeAlyvixSpec) EffectiveRDPPorts() []int32 {
+	if s == nil || s.RDP == nil || len(s.RDP.Ports) == 0 {
+		return []int32{DefaultAlyvixRDPPort}
+	}
+	return append([]int32(nil), s.RDP.Ports...)
 }
 
 // EffectiveUseProcedureGates reports whether procedure gates are honored,
