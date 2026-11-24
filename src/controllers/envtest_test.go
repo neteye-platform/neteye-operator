@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -390,6 +391,48 @@ func TestAPIServerAppliesKeycloakDatabaseDefaults(t *testing.T) {
 	unsupported.Spec.Identity.DBConnection.Vendor = "mysql"
 	if err := c.Create(ctx, unsupported); !apierrors.IsInvalid(err) {
 		t.Errorf("create NetEye with unsupported database vendor: err = %v, want Invalid", err)
+	}
+}
+
+// The API server admits only what the Classis Server accepts in
+// revoked_signers: SHA-256 fingerprints as 64 lowercase hex digits, each once,
+// at most 64.
+func TestAPIServerValidatesTheRevokedPackageSigners(t *testing.T) {
+	c, _ := startEnvtest(t)
+	ctx := context.Background()
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: keycloak.WorkloadNamespace}}); err != nil {
+		t.Fatal(err)
+	}
+	netEyeRevoking := func(name string, signers ...string) *neteye.NetEye {
+		return &neteye.NetEye{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: keycloak.WorkloadNamespace},
+			Spec: neteye.NetEyeSpec{
+				Version:                      neteye.CurrentNetEyeVersion,
+				Gateway:                      neteye.NetEyeGatewaySpec{Name: "neteye", ClassName: "cilium"},
+				InternalCertificateIssuerRef: "internal-issuer",
+				Identity:                     neteye.NetEyeIdentitySpec{Hostname: "keycloak.example.com", DBConnection: neteye.NetEyeDBConnectionSpec{Host: "mariadb.example.com"}},
+				ClassisServer:                &neteye.NetEyeClassisServersSpec{RevokedPackageSigners: signers},
+			},
+		}
+	}
+	many := make([]string, 65)
+	for i := range many {
+		many[i] = fmt.Sprintf("%064x", i)
+	}
+
+	if err := c.Create(ctx, netEyeRevoking("valid", strings.Repeat("a", 64), many[1])); err != nil {
+		t.Errorf("create NetEye with two valid fingerprints: %v", err)
+	}
+	for name, signers := range map[string][]string{
+		"uppercase":    {strings.Repeat("A", 64)},
+		"too short":    {strings.Repeat("a", 63)},
+		"colons":       {strings.TrimSuffix(strings.Repeat("aa:", 32), ":")},
+		"duplicate":    {strings.Repeat("a", 64), strings.Repeat("a", 64)},
+		"over the cap": many,
+	} {
+		if err := c.Create(ctx, netEyeRevoking(strings.ReplaceAll(name, " ", "-"), signers...)); !apierrors.IsInvalid(err) {
+			t.Errorf("%s: err = %v, want Invalid", name, err)
+		}
 	}
 }
 

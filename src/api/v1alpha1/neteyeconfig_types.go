@@ -467,7 +467,7 @@ func (s *NetEyeGatewaySpec) EffectiveManaged() bool {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1", ClassisServerImage: "ghcr.io/neteye-platform/classis-server:0.7.0", PostgreSQLImage: "ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie@sha256:37fdeea29a4d3ed14570f719488ba55bd21e8975eaea864be5ce74d25a9a13de", RustFSImage: "docker.io/rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a", GuacamoleImage: "docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40", GuacdImage: "docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f", S3ClientImage: "docker.io/amazon/aws-cli:2.41.0@sha256:c5d442efed03350a3c3d7a42b23f42a8e7b76acf5dbb4b021f2641bcd36680ea"},
+	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1", ClassisServerImage: "ghcr.io/neteye-platform/classis-server:0.1.0@sha256:cf6a775839000bd48eef1759e75fc6f07a1f4ff353c9ac987ed183d6079fea33", PostgreSQLImage: "ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie@sha256:37fdeea29a4d3ed14570f719488ba55bd21e8975eaea864be5ce74d25a9a13de", RustFSImage: "docker.io/rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a", GuacamoleImage: "docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40", GuacdImage: "docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f", S3ClientImage: "docker.io/amazon/aws-cli:2.41.0@sha256:c5d442efed03350a3c3d7a42b23f42a8e7b76acf5dbb4b021f2641bcd36680ea"},
 }
 
 const (
@@ -609,6 +609,39 @@ type NetEyeSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=true
 	UseProcedureGates *bool `json:"useProcedureGates,omitempty"`
+
+	// ClassisServer holds the settings that the Classis Server of every tenant
+	// applies.
+	// +kubebuilder:validation:Optional
+	ClassisServer *NetEyeClassisServersSpec `json:"classisServer,omitempty"`
+}
+
+// NetEyeClassisServersSpec holds the settings that the Classis Server of every
+// tenant applies.
+type NetEyeClassisServersSpec struct {
+	// RevokedPackageSigners lists the Package Signers that every Classis Server
+	// refuses, each the SHA-256 of the DER certificate of the signer, as 64
+	// lowercase hex digits. A Server refuses a signature of a listed signer on
+	// upload, and offers to nobody the entries that the signer signed until
+	// another signer signs them again. Clients are not told. The operator writes
+	// the list into the configuration of the Server of every tenant and restarts
+	// each Server, because a Server reads the list only at start. A Classis
+	// Server release without the list (Classis ADR-0067) refuses to start when
+	// the list is not empty.
+	// +kubebuilder:validation:Optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:Pattern=`^[0-9a-f]{64}$`
+	RevokedPackageSigners []string `json:"revokedPackageSigners,omitempty"`
+}
+
+// EffectiveRevokedPackageSigners returns the Package Signers that every
+// Classis Server refuses, none when the spec sets no list.
+func (s *NetEyeSpec) EffectiveRevokedPackageSigners() []string {
+	if s == nil || s.ClassisServer == nil {
+		return nil
+	}
+	return s.ClassisServer.RevokedPackageSigners
 }
 
 // EffectiveUseProcedureGates reports whether procedure gates are honored,

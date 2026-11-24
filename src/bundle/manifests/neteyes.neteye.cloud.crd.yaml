@@ -82,6 +82,29 @@ spec:
                 required:
                 - name
                 type: object
+              classisServer:
+                description: |-
+                  ClassisServer holds the settings that the Classis Server of every tenant
+                  applies.
+                properties:
+                  revokedPackageSigners:
+                    description: |-
+                      RevokedPackageSigners lists the Package Signers that every Classis Server
+                      refuses, each the SHA-256 of the DER certificate of the signer, as 64
+                      lowercase hex digits. A Server refuses a signature of a listed signer on
+                      upload, and offers to nobody the entries that the signer signed until
+                      another signer signs them again. Clients are not told. The operator writes
+                      the list into the configuration of the Server of every tenant and restarts
+                      each Server, because a Server reads the list only at start. A Classis
+                      Server release without the list (Classis ADR-0067) refuses to start when
+                      the list is not empty.
+                    items:
+                      pattern: ^[0-9a-f]{64}$
+                      type: string
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
               elasticStack:
                 description: |-
                   ElasticStack configures the shared telemetry pipeline. Its telemetry group

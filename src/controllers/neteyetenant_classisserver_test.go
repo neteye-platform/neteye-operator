@@ -201,16 +201,20 @@ func TestClassisServerConfigUsesTheStoresOfTheTenant(t *testing.T) {
 	}
 }
 
-// mustClassisServerConfig renders the configuration of the server and fails the
-// test when it cannot.
-func mustClassisServerConfig(t *testing.T, tenant *neteye.NetEyeTenant) string {
+// mustClassisServerConfig renders the configuration of the server, refusing
+// the revoked signers, and fails the test when it cannot.
+func mustClassisServerConfig(t *testing.T, tenant *neteye.NetEyeTenant, revokedSigners ...string) string {
 	t.Helper()
-	config, err := classisServerConfig(tenant)
+	config, err := classisServerConfig(tenant, revokedSigners)
 	if err != nil {
 		t.Fatalf("render the configuration: %v", err)
 	}
 	return config
 }
+
+// signerFingerprint is the SHA-256 fingerprint of a test Package Signer: 64
+// times the hex digit.
+func signerFingerprint(digit string) string { return strings.Repeat(digit, 64) }
 
 // The rendered file is valid TOML and decodes to the settings it was built
 // from, with no key the settings do not know.
@@ -219,8 +223,16 @@ func TestClassisServerConfigDecodesToItsSettings(t *testing.T) {
 	local.Spec.ObjectStorage = &neteye.TenantObjectStorageSpec{Provider: neteye.TenantStorageLocal}
 	workloadIdentity := classisServerTenant(neteye.TenantStorageExternal)
 	workloadIdentity.Spec.ObjectStorage.External.CredentialsSecretName = ""
-	for name, tenant := range map[string]*neteye.NetEyeTenant{"local": local, "external": classisServerTenant(neteye.TenantStorageExternal), "workload identity": workloadIdentity} {
-		config := mustClassisServerConfig(t, tenant)
+	for name, test := range map[string]struct {
+		tenant  *neteye.NetEyeTenant
+		signers []string
+	}{
+		"local":             {tenant: local},
+		"external":          {tenant: classisServerTenant(neteye.TenantStorageExternal)},
+		"workload identity": {tenant: workloadIdentity},
+		"revoked signers":   {tenant: classisServerTenant(neteye.TenantStorageExternal), signers: []string{signerFingerprint("a"), signerFingerprint("b")}},
+	} {
+		config := mustClassisServerConfig(t, test.tenant, test.signers...)
 		var decoded classisServerFile
 		metadata, err := toml.Decode(config, &decoded)
 		if err != nil {
@@ -229,9 +241,27 @@ func TestClassisServerConfigDecodesToItsSettings(t *testing.T) {
 		if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
 			t.Errorf("%s: the configuration holds unknown keys %v", name, undecoded)
 		}
-		if want := classisServerFileOf(tenant); !reflect.DeepEqual(decoded, want) {
+		if want := classisServerFileOf(test.tenant, test.signers); !reflect.DeepEqual(decoded, want) {
 			t.Errorf("%s: the configuration decodes to %+v, want %+v", name, decoded, want)
 		}
+	}
+}
+
+// The configuration lists the revoked Package Signers in [packages], and has no
+// [packages] section while none is revoked: a Classis Server release without
+// the list refuses the section.
+func TestClassisServerConfigListsTheRevokedPackageSigners(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantStorageExternal)
+	for _, signers := range [][]string{nil, {}} {
+		if config := mustClassisServerConfig(t, tenant, signers...); strings.Contains(config, "packages") || strings.Contains(config, "revoked_signers") {
+			t.Errorf("with no revoked signer the configuration has a [packages] section:\n%s", config)
+		}
+	}
+
+	config := mustClassisServerConfig(t, tenant, signerFingerprint("a"), signerFingerprint("b"))
+	want := "[packages]\nrevoked_signers = [\"" + signerFingerprint("a") + "\", \"" + signerFingerprint("b") + "\"]\n"
+	if !strings.Contains(config, want) {
+		t.Errorf("the configuration lacks %q:\n%s", want, config)
 	}
 }
 
@@ -326,6 +356,91 @@ func TestClassisServerImageFollowsTheNetEyeVersion(t *testing.T) {
 		if got := deployment.Spec.Template.Spec.Containers[0].Image; got != want {
 			t.Errorf("image = %q, want %q", got, want)
 		}
+	}
+}
+
+// The Package Signers that the NetEye resource revokes reach the configuration
+// of the server, and a change of the list restarts the server: the pod
+// template follows the version of the ConfigMap. A list in another order is
+// the same list and restarts nothing.
+func TestClassisServerRefusesThePackageSignersTheNetEyeResourceRevokes(t *testing.T) {
+	ctx := context.Background()
+	netEye := netEyeResource()
+	tenant := classisServerTenant(neteye.TenantStorageExternal)
+	r, c := newTenantReconciler(t, append([]client.Object{plainNamespace(testTenant), tenant, netEye}, externalSecrets()...)...)
+	observe := func() (config, version string) {
+		t.Helper()
+		reconcileTenant(t, r)
+		configMap := &corev1.ConfigMap{}
+		if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: classisServerName}, configMap); err != nil {
+			t.Fatalf("ConfigMap: %v", err)
+		}
+		deployment := &appsv1.Deployment{}
+		if err := c.Get(ctx, types.NamespacedName{Namespace: testTenant, Name: classisServerName}, deployment); err != nil {
+			t.Fatalf("Deployment: %v", err)
+		}
+		return configMap.Data[classisServerConfigFile], deployment.Spec.Template.Annotations[classisServerConfigVersionAnnotation]
+	}
+	revoke := func(signers ...string) {
+		t.Helper()
+		if err := c.Get(ctx, client.ObjectKeyFromObject(netEye), netEye); err != nil {
+			t.Fatalf("NetEye: %v", err)
+		}
+		netEye.Spec.ClassisServer = &neteye.NetEyeClassisServersSpec{RevokedPackageSigners: signers}
+		if err := c.Update(ctx, netEye); err != nil {
+			t.Fatalf("update the NetEye resource: %v", err)
+		}
+	}
+
+	config, unrevoked := observe()
+	if strings.Contains(config, "[packages]") {
+		t.Fatalf("no signer is revoked, yet the configuration has a [packages] section:\n%s", config)
+	}
+
+	revoke(signerFingerprint("b"), signerFingerprint("a"))
+	config, revoked := observe()
+	if want := "revoked_signers = [\"" + signerFingerprint("a") + "\", \"" + signerFingerprint("b") + "\"]"; !strings.Contains(config, want) {
+		t.Errorf("the configuration lacks %q:\n%s", want, config)
+	}
+	if revoked == unrevoked {
+		t.Errorf("revoking a signer left the pod template at configuration version %q: the server keeps its old list", revoked)
+	}
+
+	revoke(signerFingerprint("a"), signerFingerprint("b"))
+	if _, reordered := observe(); reordered != revoked {
+		t.Errorf("reordering the list moved the configuration version from %q to %q: the server restarts for nothing", revoked, reordered)
+	}
+
+	revoke()
+	config, cleared := observe()
+	if strings.Contains(config, "[packages]") {
+		t.Errorf("the list is empty again, yet the configuration has a [packages] section:\n%s", config)
+	}
+	if cleared == revoked {
+		t.Errorf("clearing the list left the pod template at configuration version %q", cleared)
+	}
+}
+
+// The server refuses every signer that a NetEye resource revokes, once each and
+// in a stable order.
+func TestRevokedPackageSignersAreTheUnionOfTheNetEyeResources(t *testing.T) {
+	first := netEyeResource()
+	first.Spec.ClassisServer = &neteye.NetEyeClassisServersSpec{RevokedPackageSigners: []string{signerFingerprint("c"), signerFingerprint("a")}}
+	second := netEyeResource()
+	second.ObjectMeta = metav1.ObjectMeta{Namespace: "elsewhere", Name: "neteye"}
+	second.Spec.ClassisServer = &neteye.NetEyeClassisServersSpec{RevokedPackageSigners: []string{signerFingerprint("b"), signerFingerprint("a")}}
+	r, _ := newTenantReconciler(t, first, second)
+	signers, err := r.revokedPackageSigners(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{signerFingerprint("a"), signerFingerprint("b"), signerFingerprint("c")}; !reflect.DeepEqual(signers, want) {
+		t.Errorf("revoked signers = %v, want %v", signers, want)
+	}
+
+	r, _ = newTenantReconciler(t, netEyeResource())
+	if signers, err := r.revokedPackageSigners(context.Background()); err != nil || len(signers) != 0 {
+		t.Errorf("a NetEye resource without a list revokes %v (%v), want none", signers, err)
 	}
 }
 
