@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"sort"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -54,14 +55,10 @@ func (v *NetEyeValidator) ValidateCreate(ctx context.Context, obj *NetEye) (admi
 	if err := validateGateway(obj); err != nil {
 		return nil, err
 	}
-	if obj.Spec.Version == CurrentNetEyeVersion {
-		return databaseWarnings(obj), v.validateSingleAuthority(ctx, obj)
+	if err := validateVersionOnCreate(obj.Spec.Version); err != nil {
+		return nil, invalidVersionError(obj, err)
 	}
-
-	return nil, invalidVersionError(
-		obj,
-		fmt.Sprintf("NetEye version must be %s on create", CurrentNetEyeVersion),
-	)
+	return databaseWarnings(obj), v.validateSingleAuthority(ctx, obj)
 }
 
 // ValidateUpdate validates NetEye version transitions on update.
@@ -78,19 +75,65 @@ func (v *NetEyeValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *Ne
 	if err := validateGateway(newObj); err != nil {
 		return nil, err
 	}
-	oldVersion := oldObj.Spec.Version
-	newVersion := newObj.Spec.Version
-
-	if oldVersion == CurrentNetEyeVersion && newVersion == CurrentNetEyeVersion {
-		return databaseWarnings(newObj), v.validateSingleAuthority(ctx, newObj)
+	if err := validateVersionOnUpdate(oldObj.Spec.Version, newObj.Spec.Version); err != nil {
+		return nil, invalidVersionError(newObj, err)
 	}
-	if oldVersion == PreviousNetEyeVersion && newVersion == CurrentNetEyeVersion {
-		return databaseWarnings(newObj), v.validateSingleAuthority(ctx, newObj)
+	if oldObj.Spec.Version != newObj.Spec.Version {
+		if err := v.validateTenantsCompleted(ctx, newObj, oldObj.Spec.Version); err != nil {
+			return nil, err
+		}
 	}
+	return databaseWarnings(newObj), v.validateSingleAuthority(ctx, newObj)
+}
 
-	return nil, invalidVersionError(
-		newObj,
-		fmt.Sprintf("NetEye version can only remain at %s or upgrade from %s to %s", CurrentNetEyeVersion, PreviousNetEyeVersion, CurrentNetEyeVersion),
+// validateVersionOnCreate is the version rule of a new NetEye or NetEyeTenant:
+// it must be the version that this operator installs.
+func validateVersionOnCreate(version string) *field.Error {
+	if version == CurrentNetEyeVersion {
+		return nil
+	}
+	return field.Invalid(field.NewPath("spec", "version"), version, fmt.Sprintf("NetEye version must be %s on create", CurrentNetEyeVersion))
+}
+
+// validateVersionOnUpdate is the version rule of an existing NetEye or
+// NetEyeTenant: it can keep the version that this operator installs, or
+// upgrade to it from the previous version.
+func validateVersionOnUpdate(oldVersion, newVersion string) *field.Error {
+	if newVersion == CurrentNetEyeVersion && (oldVersion == CurrentNetEyeVersion || oldVersion == PreviousNetEyeVersion) {
+		return nil
+	}
+	return field.Invalid(field.NewPath("spec", "version"), newVersion, fmt.Sprintf("NetEye version can only remain at %s or upgrade from %s to %s", CurrentNetEyeVersion, PreviousNetEyeVersion, CurrentNetEyeVersion))
+}
+
+// validateTenantsCompleted refuses an upgrade of the NetEye resource while a
+// tenant has completed a version other than the one that the NetEye resource
+// leaves. A tenant is then never more than one version behind the NetEye
+// resource. A tenant that never completed a version does not count: it has
+// nothing to upgrade, and it installs the version that it is set to. A tenant
+// that is being deleted does not count either.
+func (v *NetEyeValidator) validateTenantsCompleted(ctx context.Context, obj *NetEye, fromVersion string) error {
+	if v.reader == nil {
+		return nil
+	}
+	tenants := &NetEyeTenantList{}
+	if err := v.reader.List(ctx, tenants); err != nil {
+		return apierrors.NewInternalError(fmt.Errorf("list NetEyeTenant resources: %w", err))
+	}
+	var behind []string
+	for i := range tenants.Items {
+		tenant := &tenants.Items[i]
+		if tenant.DeletionTimestamp.IsZero() && tenant.Status.CurrentVersion != "" && tenant.Status.CurrentVersion != fromVersion {
+			behind = append(behind, fmt.Sprintf("%s (current version %q)", tenant.Name, tenant.Status.CurrentVersion))
+		}
+	}
+	if len(behind) == 0 {
+		return nil
+	}
+	sort.Strings(behind)
+	return apierrors.NewInvalid(
+		GroupVersion.WithKind("NetEye").GroupKind(),
+		obj.Name,
+		field.ErrorList{field.Forbidden(field.NewPath("spec", "version"), fmt.Sprintf("every NetEyeTenant must complete NetEye %s before the upgrade; at another version: %s", fromVersion, strings.Join(behind, ", ")))},
 	)
 }
 
@@ -305,12 +348,6 @@ func (v *NetEyeValidator) ValidateDelete(_ context.Context, _ *NetEye) (admissio
 	return nil, nil
 }
 
-func invalidVersionError(neteye *NetEye, message string) error {
-	return apierrors.NewInvalid(
-		GroupVersion.WithKind("NetEye").GroupKind(),
-		neteye.Name,
-		field.ErrorList{
-			field.Invalid(field.NewPath("spec", "version"), neteye.Spec.Version, message),
-		},
-	)
+func invalidVersionError(neteye *NetEye, err *field.Error) error {
+	return apierrors.NewInvalid(GroupVersion.WithKind("NetEye").GroupKind(), neteye.Name, field.ErrorList{err})
 }

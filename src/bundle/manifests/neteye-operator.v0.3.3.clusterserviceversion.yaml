@@ -16,6 +16,12 @@ spec:
       kind: NetEye
       name: neteyes.neteye.cloud
       version: v1alpha1
+    - description: NetEyeTenant represents one NetEye tenant; it lives in the namespace
+        of the tenant, which has the same name, and reconciles the tenant namespace.
+      displayName: NetEye Tenant
+      kind: NetEyeTenant
+      name: neteyetenants.neteye.cloud
+      version: v1alpha1
     - description: KeycloakClient declares an OpenID Connect client the operator keeps
         continuously reconciled in the identity service.
       displayName: Keycloak Client
@@ -97,6 +103,7 @@ spec:
           - secrets
           verbs:
           - create
+          - delete
           - get
           - list
           - update
@@ -119,6 +126,18 @@ spec:
           - delete
           - get
           - list
+          - patch
+          - watch
+        - apiGroups:
+          - admissionregistration.k8s.io
+          resources:
+          - validatingadmissionpolicies
+          - validatingadmissionpolicybindings
+          verbs:
+          - create
+          - get
+          - list
+          - update
           - watch
         - apiGroups:
           - storage.k8s.io
@@ -201,8 +220,11 @@ spec:
           resources:
           - issuers
           verbs:
+          - create
+          - delete
           - get
           - list
+          - update
           - watch
         - apiGroups:
           - gateway.networking.k8s.io
@@ -270,6 +292,30 @@ spec:
           - get
           - list
           - watch
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - neteyetenants
+          verbs:
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - neteyetenants/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - neteye.cloud
+          resources:
+          - neteyetenants/finalizers
+          verbs:
+          - update
         - apiGroups:
           - neteye.cloud
           resources:
@@ -385,12 +431,24 @@ spec:
             spec:
               containers:
               - env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: SERVICE_ACCOUNT_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: spec.serviceAccountName
                 - name: RELATED_IMAGE_KEYCLOAK
                   value: ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9
                 - name: RELATED_IMAGE_OTEL_COLLECTOR
                   value: docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
                 - name: RELATED_IMAGE_EDOT_GATEWAY
                   value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1
+                - name: RELATED_IMAGE_GUACAMOLE
+                  value: docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40
+                - name: RELATED_IMAGE_GUACD
+                  value: docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f
                 image: ghcr.io/neteye-platform/neteye-operator:0.3.3
                 imagePullPolicy: Always
                 name: manager
@@ -435,6 +493,7 @@ spec:
           - leases
           verbs:
           - create
+          - delete
           - get
           - list
           - patch
@@ -479,6 +538,10 @@ spec:
     name: neteye-otel-collector
   - image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1
     name: neteye-edot-gateway
+  - image: docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40
+    name: neteye-guacamole
+  - image: docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f
+    name: neteye-guacd
   version: 0.3.3
   webhookdefinitions:
   - admissionReviewVersions:
@@ -502,3 +565,24 @@ spec:
     targetPort: 9443
     type: ValidatingAdmissionWebhook
     webhookPath: /validate-neteye-cloud-v1alpha1-neteye
+  - admissionReviewVersions:
+    - v1
+    containerPort: 9443
+    deploymentName: neteye-operator
+    failurePolicy: Fail
+    generateName: vneteyetenant-v1alpha1.neteye.cloud
+    rules:
+    - apiGroups:
+      - neteye.cloud
+      apiVersions:
+      - v1alpha1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - neteyetenants
+      scope: Namespaced
+    sideEffects: None
+    targetPort: 9443
+    type: ValidatingAdmissionWebhook
+    webhookPath: /validate-neteye-cloud-v1alpha1-neteyetenant

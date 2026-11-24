@@ -38,6 +38,106 @@ only required while the Gateway is managed. Route traffic yourself to the
 `neteye-kc-service` Service (port 8080) and the `otel-collector-service` Service
 (4317 for gRPC, 4318 for HTTP) in the `neteye-tenant-shared` namespace.
 
+### Gateway of a tenant
+
+Each `NetEyeTenant` has its own Gateway `neteye`, in its namespace, with the
+GatewayClass of the `NetEye` resource, so the listeners and their limits are
+not shared between the tenants. The services of a tenant have the hostname
+`<service>.tenant-<tenant>.neteyelocal`, where `<tenant>` is the name of the
+tenant namespace without the prefix `neteye-tenant-`.
+
+- The Gateway always has the HTTPS listener `tenant`, on the domain of the
+  tenant `tenant-<tenant>.neteyelocal`, and one HTTPS listener for each service
+  that the tenant enables, on the hostname of the service: `guacamole` while
+  the tenant enables Alyvix. Each listener accepts only the routes of the
+  tenant namespace. The Gateway has no HTTP listener.
+- Each listener has its own certificate (`neteye-gateway-<listener>`, Secret
+  `neteye-gateway-<listener>-tls`), signed by the Issuer `neteye-tenant-ca`
+  of the tenant namespace. That Issuer signs with the CA of the tenant: the
+  Certificate `neteye-tenant-ca-<tenant>` of the shared namespace, an
+  intermediate CA signed by `spec.internalCertificateIssuerRef`. A critical
+  name constraint limits the CA to `tenant-<tenant>.neteyelocal` and its
+  subdomains, so the clients refuse a certificate that it signs for the
+  hostname of another tenant.
+- The operator copies the certificate and the key of the CA, with the
+  certificate of the root CA, into the Secret `neteye-tenant-ca` of the tenant
+  namespace, also after a renewal. The tenant namespace never holds the key of
+  the root CA. Clients that trust the root CA trust the certificates of the
+  listeners, through the chain of the CA of the tenant, which the Gateway
+  sends: a client that limits the depth of the chain must allow 2, as the web
+  server of NetEye does.
+- The Gateway gets its address from the load balancer pool: the annotations of
+  `spec.gateway` are for the shared Gateway only. It is created only after the
+  shared Gateway has its address, so the pool cannot give that address to a
+  tenant.
+- The operator publishes no DNS record. The Gateway reports its address in
+  `status.addresses`, and each listener names its hostname. Resolve the
+  hostnames to that address on the clients of the services, for example in
+  `/etc/hosts`:
+
+  ```sh
+  kubectl -n <namespace> get gateway neteye \
+    -o jsonpath='{.spec.listeners[?(@.name=="guacamole")].hostname} {.status.addresses[0].value}'
+  ```
+
+  On NetEye, the setup of the Alyvix module does it for Guacamole on every
+  node.
+- Disabling a service removes its listener and its certificate. Deleting the
+  tenant removes the Gateway, the certificates with their Secrets, the Issuer
+  and the CA of the tenant in both namespaces.
+
+With `spec.gateway.managed: false` the operator creates neither the Gateway of
+a tenant nor its CA nor the routes of the services: route traffic to the
+Services of the tenant namespace yourself.
+
+### Alyvix RDP access
+
+The Alyvix feature module is enabled per tenant. A `NetEyeTenant` with
+`spec.alyvix.enabled: true` gets an Apache Guacamole web application and
+proxy daemon (guacd) in its namespace. The Alyvix module opens RDP sessions
+to the Alyvix nodes through them:
+
+```yaml
+spec:
+  displayName: Default
+  alyvix:
+    enabled: true
+    rdp:
+      # TCP ports of RDP on the Alyvix nodes; the default is 3389.
+      ports: [3389]
+```
+
+The images come from the release data of the `NetEye` resource. The RDP
+access is on `guacamole.tenant-<tenant>.neteyelocal`, on the listener
+`guacamole` of the Gateway of the tenant.
+
+- The Guacamole JSON authentication key of a tenant is generated once, in the
+  Secret `alyvix-rdp-json-auth` (key `json-secret-key`, 32 hexadecimal
+  characters) of the tenant namespace. The Alyvix module needs the same key.
+  The web application restarts when the Secret changes, so it reads a new
+  key: the operator generates one when the Secret is deleted, and an
+  administrator can also edit the key in the Secret.
+  The key stays when the access is disabled; delete the Secret to get a new
+  one.
+- The route `alyvix-guacamole` matches only the paths that the module and the
+  browser use: `POST /guacamole/api/tokens`, `DELETE /guacamole/api/session`,
+  `GET /guacamole/websocket-tunnel` and
+  `GET /guacamole/guacamole-common-js/all.min.js`.
+- guacd trusts the CAs of the optional ConfigMap that `spec.caBundle` of the
+  tenant selects (default `neteye-ca-bundle`, key `ca-bundle.pem`, in the
+  tenant namespace) for the RDP certificates of the Alyvix nodes, in addition
+  to the system CAs. A changed bundle applies to the next RDP sessions once
+  the kubelet refreshes the volume; guacd is not restarted, so the open
+  sessions stay. The certificates are verified only for connections that do
+  not ignore them (the Guacamole parameter `ignore-cert`).
+- The egress policies are not a destination allowlist: both workloads may
+  send DNS queries (TCP and UDP ports 53 and 5353) to any address, and guacd
+  may connect to the RDP ports on any address. Apart from DNS, the web
+  application reaches only guacd on TCP port 4822.
+
+With `spec.gateway.managed: false` no route is created: route traffic to the
+`alyvix-guacamole` Service (port 8080) of the tenant namespace yourself.
+
 ### Procedure gates
 
 Parts of NetEye still run on the legacy infrastructure and are installed and

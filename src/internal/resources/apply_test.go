@@ -6,6 +6,7 @@ package resources
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -241,5 +242,37 @@ func TestApplyRejectsForeignControllerWithoutOverwrite(t *testing.T) {
 	}
 	if spec, _, _ := unstructured.NestedMap(getObject(t, c, testGVK, "w", "ns").Object, "spec"); spec["foo"] != "old" {
 		t.Fatalf("spec=%v", spec)
+	}
+}
+
+func TestApplyWithRequireManagedLabelRefusesAnObjectOfSomeoneElse(t *testing.T) {
+	foreign := &unstructured.Unstructured{}
+	foreign.SetGroupVersionKind(testGVK)
+	foreign.SetNamespace("ns")
+	foreign.SetName("w")
+	foreign.Object["spec"] = map[string]any{"foo": "theirs"}
+	c := applyClient(t, foreign)
+
+	def := ObjectDefinition{GVK: testGVK, Name: "w", Namespace: "ns", Spec: map[string]any{"foo": "bar"}, RequireManagedLabel: true}
+	if _, err := Apply(context.Background(), c, def); err == nil || !strings.Contains(err.Error(), "not managed by the operator") {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	live := &unstructured.Unstructured{}
+	live.SetGroupVersionKind(testGVK)
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "w"}, live); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := unstructured.NestedString(live.Object, "spec", "foo"); got != "theirs" {
+		t.Errorf("spec.foo = %q, want the object of someone else unchanged", got)
+	}
+
+	// The operator still creates and updates its own object.
+	def.Name = "mine"
+	if _, err := Apply(context.Background(), c, def); err != nil {
+		t.Fatal(err)
+	}
+	def.Spec = map[string]any{"foo": "changed"}
+	if outcome, err := Apply(context.Background(), c, def); err != nil || outcome != Updated {
+		t.Errorf("update of the own object: outcome = %v, err = %v, want Updated", outcome, err)
 	}
 }

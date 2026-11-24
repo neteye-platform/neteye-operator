@@ -15,13 +15,17 @@ spec:
               verbs: [create, delete, get, list, patch, update, watch]
             - apiGroups: [""]
               resources: [secrets]
-              verbs: [create, get, list, update, watch]
+              verbs: [create, delete, get, list, update, watch]
             - apiGroups: [""]
               resources: [pods, pods/log]
               verbs: [get, list, watch]
             - apiGroups: [""]
               resources: [namespaces]
-              verbs: [create, delete, get, list, watch]
+              verbs: [create, delete, get, list, patch, watch]
+            - apiGroups: [admissionregistration.k8s.io]
+              resources:
+                [validatingadmissionpolicies, validatingadmissionpolicybindings]
+              verbs: [create, get, list, update, watch]
             - apiGroups: [storage.k8s.io]
               resources: [storageclasses]
               verbs: [get, list, watch]
@@ -46,7 +50,7 @@ spec:
               verbs: [create, delete, get, list, update, watch]
             - apiGroups: [cert-manager.io]
               resources: [issuers]
-              verbs: [get, list, watch]
+              verbs: [create, delete, get, list, update, watch]
             - apiGroups: [gateway.networking.k8s.io]
               resources: [gateways, httproutes, grpcroutes]
               verbs: [create, delete, get, list, update, watch]
@@ -68,6 +72,15 @@ spec:
             - apiGroups: [neteye.cloud]
               resources: [neteyeproceduregates]
               verbs: [create, get, list, watch]
+            - apiGroups: [neteye.cloud]
+              resources: [neteyetenants]
+              verbs: [get, list, patch, update, watch]
+            - apiGroups: [neteye.cloud]
+              resources: [neteyetenants/status]
+              verbs: [get, patch, update]
+            - apiGroups: [neteye.cloud]
+              resources: [neteyetenants/finalizers]
+              verbs: [update]
             - apiGroups: [neteye.cloud]
               resources: [keycloakclients]
               verbs: [create, get, list, patch, update, watch]
@@ -125,6 +138,14 @@ spec:
                     imagePullPolicy: Always
                     env:
                       - {
+                        name: POD_NAMESPACE,
+                        valueFrom: { fieldRef: { fieldPath: metadata.namespace } },
+                      }
+                      - {
+                        name: SERVICE_ACCOUNT_NAME,
+                        valueFrom: { fieldRef: { fieldPath: spec.serviceAccountName } },
+                      }
+                      - {
                         name: RELATED_IMAGE_KEYCLOAK,
                         value: ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9,
                       }
@@ -135,6 +156,14 @@ spec:
                       - {
                         name: RELATED_IMAGE_EDOT_GATEWAY,
                         value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1,
+                      }
+                      - {
+                        name: RELATED_IMAGE_GUACAMOLE,
+                        value: docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40,
+                      }
+                      - {
+                        name: RELATED_IMAGE_GUACD,
+                        value: docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f,
                       }
                     securityContext:
                       {
@@ -160,7 +189,7 @@ spec:
               verbs: [create, delete, get, list, patch, update, watch]
             - apiGroups: [coordination.k8s.io]
               resources: [leases]
-              verbs: [create, get, list, patch, update, watch]
+              verbs: [create, delete, get, list, patch, update, watch]
             - apiGroups: [""]
               resources: [events]
               verbs: [create, patch]

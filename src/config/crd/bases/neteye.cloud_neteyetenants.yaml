@@ -1,0 +1,199 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: neteyetenants.neteye.cloud
+spec:
+  group: neteye.cloud
+  names:
+    kind: NetEyeTenant
+    listKind: NetEyeTenantList
+    plural: neteyetenants
+    shortNames:
+    - netenant
+    singular: neteyetenant
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.displayName
+      name: Display Name
+      type: string
+    - jsonPath: .spec.version
+      name: Version
+      type: string
+    - jsonPath: .status.currentVersion
+      name: Current
+      priority: 1
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          NetEyeTenant is the Schema for the neteyetenants API. It represents one
+          NetEye tenant and its dedicated resources. It lives in the namespace of the
+          tenant and has the same name as that namespace.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NetEyeTenantSpec defines the desired state of a NetEye tenant.
+            properties:
+              alyvix:
+                description: |-
+                  Alyvix enables the Alyvix feature module for the tenant. The images
+                  come from the release data of the NetEye resource.
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled enables the Alyvix feature module for the
+                      tenant.
+                    type: boolean
+                  rdp:
+                    description: RDP configures the RDP access to the Alyvix sessions.
+                    properties:
+                      ports:
+                        description: |-
+                          Ports lists the TCP ports of the RDP service on the Alyvix nodes. The
+                          proxy daemon may open connections to these ports on any address. The
+                          default is 3389.
+                        items:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        maxItems: 16
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-type: set
+                    type: object
+                required:
+                - enabled
+                type: object
+              caBundle:
+                description: |-
+                  CABundle selects the optional ConfigMap with extra PEM CA certificates
+                  that the components of the tenant trust in addition to their built-in
+                  roots. The ConfigMap lives in the namespace of the tenant and may be
+                  absent. The default is neteye-ca-bundle/ca-bundle.pem.
+                properties:
+                  key:
+                    default: ca-bundle.pem
+                    description: Key is the key inside the ConfigMap holding the PEM
+                      bundle.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the name of the ConfigMap containing the
+                      referenced value.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              displayName:
+                description: |-
+                  DisplayName is the name of the tenant that people see and use. It can
+                  change, except while the tenant is at the previous version: then, as for
+                  the NetEye resource, the tenant accepts no change until it upgrades.
+                  Resources derived from the tenant use metadata.name, which never changes. It has at least one letter or digit, so a name made
+                  only of blank characters is refused; the Hangul fillers, which are
+                  letters that show nothing, do not count. The length counts characters,
+                  not bytes. Only one tenant holds a display name: the webhook refuses a
+                  name that another tenant uses, and when two writes pass the webhook at
+                  the same time, the operator gives the name to one tenant and reports the
+                  other one as Failed until it gets another display name.
+                maxLength: 63
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: must not contain surrounding whitespace
+                  rule: self == self.trim()
+                - message: must not contain control or format characters, or line
+                    or paragraph separators
+                  rule: '!self.matches(''[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]'')'
+                - message: must contain at least one letter or digit
+                  rule: self.matches('[^\\P{L}\\x{115F}\\x{1160}\\x{3164}\\x{FFA0}]|\\p{N}')
+              useProcedureGates:
+                default: true
+                description: |-
+                  UseProcedureGates makes the operator wait for and create
+                  NetEyeProcedureGates in the namespace of the tenant during its installs
+                  and upgrades. Disable it where no NetEye Ansible procedure runs and an
+                  administrator performs those steps.
+                type: boolean
+              version:
+                description: |-
+                  Version is the NetEye product version string of the tenant, e.g. "4.51".
+                  The rules are the same as for the version of the NetEye resource: a new
+                  tenant uses the version that this operator installs, and an existing
+                  tenant can only keep it or upgrade to it from the previous version. A
+                  tenant cannot use a newer version than the NetEye resource.
+                example: "4.51"
+                minLength: 1
+                pattern: ^[0-9]+\.[0-9]+$
+                type: string
+            required:
+            - displayName
+            - version
+            type: object
+          status:
+            description: |-
+              NetEyeTenantStatus defines the observed state of a NetEye tenant. It has the
+              same fields as the status of the NetEye resource, apart from the services.
+            properties:
+              currentVersion:
+                description: |-
+                  CurrentVersion is the NetEye release whose install or upgrade of the
+                  tenant has completed. While it differs from spec.version the operator is
+                  installing (when empty) or upgrading the tenant, and waits for the
+                  required NetEyeProcedureGates. The NetEye resource can upgrade only when
+                  every tenant has completed its version.
+                type: string
+              message:
+                description: Message is a human-readable aggregate status message.
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the generation of the most recently observed
+                  NetEyeTenant.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the aggregate lifecycle state of the tenant.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: metadata.name must be neteye-tenant- followed by an id of 8 characters
+            from abcdefghjkmnpqrstuvwxyz23456789
+          reason: FieldValueInvalid
+          rule: self.metadata.name.matches('^neteye-tenant-[a-hjkmnp-z2-9]{8}$')
+    served: true
+    storage: true
+    subresources:
+      status: {}
