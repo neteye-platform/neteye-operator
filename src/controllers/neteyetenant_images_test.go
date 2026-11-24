@@ -28,7 +28,7 @@ func TestTenantImagesFollowTheNetEyeVersion(t *testing.T) {
 			t.Errorf("no %s image for NetEye %s", name, neteye.CurrentNetEyeVersion)
 		}
 	}
-	for _, image := range []string{images.PostgreSQLImage, images.RustFSImage, images.S3ClientImage} {
+	for _, image := range []string{images.ClassisServerImage, images.PostgreSQLImage, images.RustFSImage, images.S3ClientImage} {
 		if !strings.Contains(image, "@sha256:") {
 			t.Errorf("image %q is not pinned by digest", image)
 		}

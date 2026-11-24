@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -100,6 +101,13 @@ type classisServerFile struct {
 	REST     classisServerREST     `toml:"rest"`
 	Database classisServerDatabase `toml:"database"`
 	Blobs    classisServerBlobs    `toml:"blobs"`
+	// Packages is nil, and the file has no [packages] section, while no Package
+	// Signer is revoked.
+	Packages *classisServerPackages `toml:"packages,omitempty"`
+}
+
+type classisServerPackages struct {
+	RevokedSigners []string `toml:"revoked_signers"`
 }
 
 type classisServerLog struct {
@@ -151,7 +159,10 @@ type classisServerS3 struct {
 // server admits an agent only by the bearer token it issued when the host
 // enrolled with the key of its Space, and refuses an [agents] section, so the
 // file has none.
-func classisServerFileOf(tenant *neteye.NetEyeTenant) classisServerFile {
+//
+// revokedSigners are the Package Signers the server refuses; the file has a
+// [packages] section only when there is one.
+func classisServerFileOf(tenant *neteye.NetEyeTenant, revokedSigners []string) classisServerFile {
 	spec := tenant.Spec.ClassisServer
 	database := tenantDatabaseEndpointOf(tenant)
 	storage := tenantObjectStorageEndpointOf(tenant)
@@ -168,6 +179,10 @@ func classisServerFileOf(tenant *neteye.NetEyeTenant) classisServerFile {
 	} else if ca := classisServerCABundle(tenant); ca != nil {
 		s3.CAFile = classisServerMount("ca-bundle") + "/" + ca.Key
 	}
+	var packages *classisServerPackages
+	if len(revokedSigners) > 0 {
+		packages = &classisServerPackages{RevokedSigners: revokedSigners}
+	}
 	return classisServerFile{
 		Listen: fmt.Sprintf("0.0.0.0:%d", classisServerAgentPort),
 		Log:    classisServerLog{Format: logFormat},
@@ -183,21 +198,46 @@ func classisServerFileOf(tenant *neteye.NetEyeTenant) classisServerFile {
 			CAFile:       classisServerMount("db-ca") + "/ca.crt",
 			TLS:          true,
 		}},
-		Blobs: classisServerBlobs{Store: "s3", S3: s3},
+		Blobs:    classisServerBlobs{Store: "s3", S3: s3},
+		Packages: packages,
 	}
 }
 
 // classisServerConfig renders the configuration of the server as TOML. The
 // encoder quotes and escapes every value, so no value of the spec can change
 // the structure of the file.
-func classisServerConfig(tenant *neteye.NetEyeTenant) (string, error) {
+func classisServerConfig(tenant *neteye.NetEyeTenant, revokedSigners []string) (string, error) {
 	var b strings.Builder
 	encoder := toml.NewEncoder(&b)
 	encoder.Indent = ""
-	if err := encoder.Encode(classisServerFileOf(tenant)); err != nil {
+	if err := encoder.Encode(classisServerFileOf(tenant, revokedSigners)); err != nil {
 		return "", fmt.Errorf("render the Classis Server configuration: %w", err)
 	}
 	return b.String(), nil
+}
+
+// revokedPackageSigners returns the Package Signers that the Classis Server of
+// every tenant refuses: the union of the lists of the NetEye resources, sorted,
+// so that an order change does not restart the servers.
+//
+// A Package Signer signs for the whole product, so when its key is exposed the
+// server of every tenant must refuse it. The list therefore lives on the NetEye
+// resource and not on each tenant, where an emergency would mean patching every
+// tenant, nor in the release data, where a revocation would wait for an
+// operator release. One change of the NetEye resource reaches every tenant at
+// once: the operator renders the list into the configuration of each server,
+// and the changed ConfigMap restarts it (the server reads the list at start).
+func (r *NetEyeTenantReconciler) revokedPackageSigners(ctx context.Context) ([]string, error) {
+	list := &neteye.NetEyeList{}
+	if err := r.List(ctx, list); err != nil {
+		return nil, fmt.Errorf("list NetEye resources: %w", err)
+	}
+	var signers []string
+	for i := range list.Items {
+		signers = append(signers, list.Items[i].Spec.EffectiveRevokedPackageSigners()...)
+	}
+	slices.Sort(signers)
+	return slices.Compact(signers), nil
 }
 
 func classisServerMount(volume string) string { return "/etc/classis/" + volume }
@@ -461,7 +501,11 @@ func (r *NetEyeTenantReconciler) reconcileClassisServer(ctx context.Context, ten
 		return progressingResult(classisServerComponentID, "WaitingForSecrets", "waiting for Secrets: "+strings.Join(missing, ", "), r.progressingRequeue())
 	}
 
-	config, err := classisServerConfig(tenant)
+	revokedSigners, err := r.revokedPackageSigners(ctx)
+	if err != nil {
+		return degradedResult(classisServerComponentID, "ConfigFailed", err.Error(), r.failureRequeue(), err)
+	}
+	config, err := classisServerConfig(tenant, revokedSigners)
 	if err != nil {
 		return degradedResult(classisServerComponentID, "ConfigFailed", err.Error(), r.failureRequeue(), err)
 	}
