@@ -20,11 +20,20 @@
       "minimumReleaseAge": null
     },
     {
-      "description": "One pull request per operand image: groupName is templated on the dependency, so every image is updated in all the files that reference it (including images added later) without being batched with the other operand images or the shared digest grouping",
+      "description": "One pull request per operand image: groupSlug is templated on the dependency, so every image is updated in all the files that reference it (including images added later) without being batched with the other operand images or the shared digest grouping. Renovate does not template groupName into the branch name, so groupSlug must be set explicitly",
       "matchDatasources": ["docker"],
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["src/api/v1alpha1/neteyeconfig_types.go", "src/config/manifests/patches/deployment.yaml", "src/config/manifests/patches/metadata.yaml"],
-      "groupName": "operand image {{{depName}}}"
+      "groupName": "operand image {{{depName}}}",
+      "groupSlug": "operand-image-{{{replace '/' '-' (replace '^[^/]+/' '' depName)}}}"
+    },
+    {
+      "description": "The Guacamole web application and guacd come from the same Apache Guacamole release and must be updated together",
+      "matchDatasources": ["docker"],
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["docker.io/guacamole/guacamole", "docker.io/guacamole/guacd"],
+      "groupName": "operand images Apache Guacamole",
+      "groupSlug": "operand-image-guacamole"
     }
   ],
   "customManagers": [
