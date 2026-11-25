@@ -64,14 +64,16 @@ func (v *NetEyeTenantValidator) ValidateCreate(ctx context.Context, obj *NetEyeT
 
 // ValidateUpdate validates NetEyeTenant resources on update. The name and the
 // namespace of a resource never change. The version follows the rules of the
-// NetEye resource, the database of the Classis Server is checked again, and a
-// new display name must be unique. An update of a tenant that is being
-// deleted, such as the removal of its finalizer, is always accepted.
+// NetEye resource, the database of the Classis Server is checked again, the
+// stores of the tenant are never removed, and a new display name must be
+// unique. An update of a tenant that is being deleted, such as the removal of
+// its finalizer, is always accepted.
 func (v *NetEyeTenantValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *NetEyeTenant) (admission.Warnings, error) {
 	if !newObj.DeletionTimestamp.IsZero() {
 		return nil, nil
 	}
 	errors := ValidateClassisServer(newObj)
+	errors = append(errors, validateStoresKept(oldObj, newObj)...)
 	if err := validateVersionOnUpdate(oldObj.Spec.Version, newObj.Spec.Version); err != nil {
 		errors = append(errors, err)
 	} else if oldObj.Spec.Version != newObj.Spec.Version {
@@ -125,6 +127,22 @@ func ValidateClassisServer(tenant *NetEyeTenant) field.ErrorList {
 		if connection != nil && connection.PasswordSecret != nil {
 			errors = append(errors, field.Forbidden(path.Child("passwordSecret"), "must not be set when spec.database.provider is local: the operator generates the credentials"))
 		}
+	}
+	return errors
+}
+
+// validateStoresKept refuses the removal of the database or of the object store
+// of a tenant. The CRD keeps their provider immutable, but its rule compares
+// the old and the new store only when both exist: removing a store and adding
+// it again with another provider would move the records without a migration.
+// A store can be added to a tenant that has none.
+func validateStoresKept(oldObj, newObj *NetEyeTenant) field.ErrorList {
+	var errors field.ErrorList
+	if oldObj.Spec.Database != nil && newObj.Spec.Database == nil {
+		errors = append(errors, field.Forbidden(field.NewPath("spec", "database"), "must not be removed once set: its provider is immutable"))
+	}
+	if oldObj.Spec.ObjectStorage != nil && newObj.Spec.ObjectStorage == nil {
+		errors = append(errors, field.Forbidden(field.NewPath("spec", "objectStorage"), "must not be removed once set: its provider is immutable"))
 	}
 	return errors
 }

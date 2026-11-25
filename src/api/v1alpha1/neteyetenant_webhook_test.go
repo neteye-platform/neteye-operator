@@ -298,6 +298,37 @@ func TestNetEyeTenantValidatorChecksTheStoresOfTheClassisServer(t *testing.T) {
 	}
 }
 
+// A store of the tenant can be added and changed, but not removed: removing it
+// and adding it again would change its provider without a migration.
+func TestNetEyeTenantValidatorKeepsTheStoresOfTheTenant(t *testing.T) {
+	bare := testTenant("neteye-tenant-2bh46bfv", "neteye-tenant-2bh46bfv", "Default")
+	withStores := bare.DeepCopy()
+	withStores.Spec.Database = &TenantDatabaseSpec{Provider: TenantStorageLocal}
+	withStores.Spec.ObjectStorage = &TenantObjectStorageSpec{Provider: TenantStorageLocal}
+	resized := withStores.DeepCopy()
+	resized.Spec.Database.Local = &TenantLocalDatabaseSpec{Replicas: 1}
+
+	v := tenantValidator(t)
+	if _, err := v.ValidateUpdate(context.Background(), bare, withStores); err != nil {
+		t.Errorf("adding the stores rejected: %v", err)
+	}
+	if _, err := v.ValidateUpdate(context.Background(), withStores, resized); err != nil {
+		t.Errorf("changing a store rejected: %v", err)
+	}
+	_, err := v.ValidateUpdate(context.Background(), withStores, bare)
+	for _, want := range []string{"spec.database", "spec.objectStorage"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("removing the stores: error = %v, want %q", err, want)
+		}
+	}
+	deleting := bare.DeepCopy()
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+	if _, err := v.ValidateUpdate(context.Background(), withStores, deleting); err != nil {
+		t.Errorf("tenant being deleted rejected: %v", err)
+	}
+}
+
 // A tenant that is being deleted is accepted whatever its spec, so that its
 // finalizer can be removed.
 func TestNetEyeTenantValidatorAcceptsAnInvalidTenantBeingDeleted(t *testing.T) {
