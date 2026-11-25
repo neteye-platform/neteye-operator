@@ -401,6 +401,23 @@ func TestDisabledClassisServerLosesItsDeploymentOnly(t *testing.T) {
 	}
 }
 
+// A disabled server waits for the namespace alone, so that a store that is not
+// ready does not block the deletion of its Deployment.
+func TestDisabledClassisServerDoesNotWaitForTheStores(t *testing.T) {
+	r := &NetEyeTenantReconciler{}
+	tenant := classisServerTenant(neteye.TenantStorageLocal)
+	nodes, _ := r.classisServerComponents(context.Background(), tenant)
+	if want := []componentID{tenantNamespaceComponentID, tenantDatabaseComponentID, tenantObjectStorageComponentID}; len(nodes) != 1 || !reflect.DeepEqual(nodes[0].Dependencies, want) {
+		t.Errorf("enabled server nodes = %+v, want one node depending on %v", nodes, want)
+	}
+
+	tenant.Spec.ClassisServer.Enabled = false
+	nodes, _ = r.classisServerComponents(context.Background(), tenant)
+	if want := []componentID{tenantNamespaceComponentID}; len(nodes) != 1 || !reflect.DeepEqual(nodes[0].Dependencies, want) {
+		t.Errorf("disabled server nodes = %+v, want one node depending on %v", nodes, want)
+	}
+}
+
 // A tenant that bypassed the webhook without an object store is not served:
 // the server reports the rule it breaks.
 func TestClassisServerRefusesATenantWithoutObjectStorage(t *testing.T) {

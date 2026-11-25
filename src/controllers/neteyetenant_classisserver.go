@@ -147,9 +147,10 @@ type classisServerS3 struct {
 // paths of the files the Deployment mounts; the database user and the S3
 // access key are the values that come from the environment.
 //
-// The server speaks plain HTTP: a reverse proxy in front of it ends TLS and
-// authenticates the agents. The server itself admits every request of the
-// agent plane and refuses an [agents] section, so the file has none.
+// The server speaks plain HTTP: a reverse proxy in front of it ends TLS. The
+// server admits an agent only by the bearer token it issued when the host
+// enrolled with the key of its Space, and refuses an [agents] section, so the
+// file has none.
 func classisServerFileOf(tenant *neteye.NetEyeTenant) classisServerFile {
 	spec := tenant.Spec.ClassisServer
 	database := tenantDatabaseEndpointOf(tenant)
@@ -361,18 +362,16 @@ func s3Port(endpoint string) int64 {
 // classisServerNetworkPolicySpec opens, over the default deny of the tenant, the
 // planes of the server, its way to PostgreSQL, to the object store and to DNS.
 //
-// DECISION PENDING, SECURITY: the Server authenticates NO agent. The agent plane
-// (4320) admits every request, and any peer that reaches the port can present
-// itself as any host (and, as the Server trusts X-Forwarded-For from any source,
-// under any address). The port MUST be reachable only through the proxy that
-// authenticates the agents. Today this policy admits ANY source on 4320, so any
-// pod of the cluster can talk to the server without passing the proxy: the
-// sources still have to be narrowed (the proxy of the PCS nodes, or the external
-// authentication library) before agents are connected.
+// The agent plane (4320) is open to any source: a native policy cannot select
+// the nodes of the PCS proxy, and the server admits an agent only by the bearer
+// token it issued, on /v1/opamp and on the package download alike. The server
+// trusts X-Forwarded-For from any source, so a peer that bypasses the proxy can
+// choose the address its admission failures and its rate are counted under: it
+// can evade the throttle, not present itself as another host.
 //
 // The operator plane (4321) is open to any source too, unless adminIngressCIDRs
-// narrows it: a native policy cannot select the nodes, and the proxy and the
-// Basic credentials of the plane limit who gets in. The policy lists no
+// narrows it: the proxy and the Basic credentials of the plane limit who gets
+// in, and the server throttles the failures of that plane as well. The policy lists no
 // rule for the kubelet: the kubelet probes 4321 from the node, and Cilium
 // admits the traffic of the local node to its pods whatever the policies say.
 // The egress to an external database and to an external object store is open to
@@ -415,17 +414,19 @@ func classisServerNetworkPolicySpec(tenant *neteye.NetEyeTenant) map[string]any 
 }
 
 // classisServerComponents returns the lifecycle nodes and operations of the
-// server, or none when the tenant has no server. The server comes after the
-// database and the object store of the tenant.
+// server, or none when the tenant has no server. An enabled server comes after
+// the database and the object store of the tenant. A disabled server only
+// deletes its Deployment, so it waits for the namespace alone: a store that
+// never becomes ready must not keep a disabled server running.
 func (r *NetEyeTenantReconciler) classisServerComponents(ctx context.Context, tenant *neteye.NetEyeTenant) ([]lifecycleNode, map[componentID]componentOperation) {
 	if tenant.Spec.ClassisServer == nil {
 		return nil, nil
 	}
 	dependencies := []componentID{tenantNamespaceComponentID}
-	if tenant.Spec.Database != nil {
+	if tenant.Spec.ClassisServer.Enabled && tenant.Spec.Database != nil {
 		dependencies = append(dependencies, tenantDatabaseComponentID)
 	}
-	if tenant.Spec.ObjectStorage != nil {
+	if tenant.Spec.ClassisServer.Enabled && tenant.Spec.ObjectStorage != nil {
 		dependencies = append(dependencies, tenantObjectStorageComponentID)
 	}
 	return []lifecycleNode{{ID: classisServerComponentID, Dependencies: dependencies}},
