@@ -440,11 +440,11 @@ spec:
                     fieldRef:
                       fieldPath: spec.serviceAccountName
                 - name: RELATED_IMAGE_KEYCLOAK
-                  value: ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9
+                  value: ghcr.io/neteye-platform/neteye-keycloak:1.1.5@sha256:3fe0a76b4625d69fe0552615bb9acbe0748ff84e5d4251d20c4adaf9c0c25806
                 - name: RELATED_IMAGE_OTEL_COLLECTOR
-                  value: docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+                  value: docker.io/otel/opentelemetry-collector-contrib:0.166.0@sha256:3e18fe04181de50bdd72e23ad4a4d6214b54351e63d496f1c58127cc4541ad7f
                 - name: RELATED_IMAGE_EDOT_GATEWAY
-                  value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1
+                  value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.7@sha256:cf610854505d489d151c303fd67c5e740efa2819e84339f1d236db806f4c2161
                 - name: RELATED_IMAGE_GUACAMOLE
                   value: docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40
                 - name: RELATED_IMAGE_GUACD
@@ -532,11 +532,11 @@ spec:
     name: Wuerth IT | Italy
     url: https://your.domain
   relatedImages:
-  - image: ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9
+  - image: ghcr.io/neteye-platform/neteye-keycloak:1.1.5@sha256:3fe0a76b4625d69fe0552615bb9acbe0748ff84e5d4251d20c4adaf9c0c25806
     name: neteye-keycloak
-  - image: docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+  - image: docker.io/otel/opentelemetry-collector-contrib:0.166.0@sha256:3e18fe04181de50bdd72e23ad4a4d6214b54351e63d496f1c58127cc4541ad7f
     name: neteye-otel-collector
-  - image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1
+  - image: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.7@sha256:cf610854505d489d151c303fd67c5e740efa2819e84339f1d236db806f4c2161
     name: neteye-edot-gateway
   - image: docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40
     name: neteye-guacamole
