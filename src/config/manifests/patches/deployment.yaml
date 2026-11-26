@@ -176,7 +176,7 @@ spec:
                       }
                       - {
                         name: RELATED_IMAGE_CLASSIS_SERVER,
-                        value: ghcr.io/neteye-platform/classis-server:0.7.0,
+                        value: ghcr.io/neteye-platform/classis-server:0.2.0@sha256:d1ffdcb674f5ec6e8c6f9300c47e9b1cd12fa8b8114135c0dd8f1e25d041ddf4,
                       }
                       - {
                         name: RELATED_IMAGE_POSTGRESQL,
