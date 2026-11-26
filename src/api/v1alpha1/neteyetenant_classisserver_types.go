@@ -106,10 +106,9 @@ type ClassisServerObjectStorageSpec struct {
 // the nodes, a service outside the cluster), the rule is open to any peer on
 // its ports.
 type ClassisServerNetworkSpec struct {
-	// AdminIngressCIDRs, when set, are the only sources of the operator plane
-	// (4321). When empty, any source reaches it: a native policy cannot select
-	// the nodes of the PCS proxy, so the proxy, TLS and the Basic credentials
-	// of the plane limit who gets in.
+	// AdminIngressCIDRs are the only sources of the operator plane (4321).
+	// When empty, the plane is closed to every source: list the addresses of
+	// the PCS proxy to open it.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxItems=32
 	AdminIngressCIDRs []string `json:"adminIngressCIDRs,omitempty"`

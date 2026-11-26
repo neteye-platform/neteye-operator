@@ -369,11 +369,10 @@ func s3Port(endpoint string) int64 {
 // choose the address its admission failures and its rate are counted under: it
 // can evade the throttle, not present itself as another host.
 //
-// The operator plane (4321) is open to any source too, unless adminIngressCIDRs
-// narrows it: the proxy and the Basic credentials of the plane limit who gets
-// in, and the server throttles the failures of that plane as well. The policy lists no
-// rule for the kubelet: the kubelet probes 4321 from the node, and Cilium
-// admits the traffic of the local node to its pods whatever the policies say.
+// The operator plane (4321) is open only to adminIngressCIDRs, and closed when
+// they are empty. The policy lists no rule for the kubelet: the kubelet probes
+// 4321 from the node, and Cilium admits the traffic of the local node to its
+// pods whatever the policies say, so the probes pass with the plane closed.
 // The egress to an external database and to an external object store is open to
 // any destination on their ports, because a native policy cannot name a
 // service outside the cluster.
@@ -382,8 +381,6 @@ func classisServerNetworkPolicySpec(tenant *neteye.NetEyeTenant) map[string]any 
 	ingress := []any{anyPeerPorts(resources.NetworkPolicyPorts("TCP", classisServerAgentPort))}
 	if len(network.AdminIngressCIDRs) > 0 {
 		ingress = append(ingress, map[string]any{"from": cidrPeers(network.AdminIngressCIDRs), "ports": resources.NetworkPolicyPorts("TCP", classisServerAdminPort)})
-	} else {
-		ingress = append(ingress, anyPeerPorts(resources.NetworkPolicyPorts("TCP", classisServerAdminPort)))
 	}
 	database := tenantDatabaseEndpointOf(tenant)
 	storage := tenantObjectStorageEndpointOf(tenant)

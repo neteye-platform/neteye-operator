@@ -553,13 +553,18 @@ func TestClassisServerNetworkPoliciesAreWidenedWherePeersCannotBeNamed(t *testin
 	if got := peerless(server["egress"].([]any), "to"); !reflect.DeepEqual(got, []any{resources.NetworkPolicyPorts("TCP", 5433, 9000)}) {
 		t.Errorf("egress to any destination = %v, want 5433 and 9000", got)
 	}
-	// 4320 is open to any source, and 4321 is narrowed by adminIngressCIDRs.
-	if got := peerless(server["ingress"].([]any), "from"); len(got) != 1 {
+	// 4320 is open to any source, and 4321 only to adminIngressCIDRs.
+	ingress := server["ingress"].([]any)
+	if got := peerless(ingress, "from"); len(got) != 1 {
 		t.Fatalf("expected the agent plane alone without a peer, got %v", got)
 	}
+	if len(ingress) != 2 {
+		t.Fatalf("expected the agent plane and the operator plane, got %v", ingress)
+	}
+	// Without adminIngressCIDRs the operator plane is closed.
 	external.Spec.ClassisServer.Network.AdminIngressCIDRs = nil
-	if got := peerless(classisServerNetworkPolicySpec(external)["ingress"].([]any), "from"); len(got) != 2 {
-		t.Fatalf("expected both planes without a peer, got %v", got)
+	if got := classisServerNetworkPolicySpec(external)["ingress"].([]any); !reflect.DeepEqual(got, []any{anyPeerPorts(resources.NetworkPolicyPorts("TCP", classisServerAgentPort))}) {
+		t.Fatalf("ingress without adminIngressCIDRs = %v, want the agent plane alone", got)
 	}
 
 	// Local stores: every egress names its peer.
