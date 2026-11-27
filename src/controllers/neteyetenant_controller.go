@@ -655,7 +655,7 @@ func (r *NetEyeTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&batchv1.Job{}).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(tenantForNamespace)).
 		Watches(&neteye.NetEyeProcedureGate{}, handler.EnqueueRequestsFromMapFunc(tenantForProcedureGate)).
-		Watches(&neteye.NetEye{}, handler.EnqueueRequestsFromMapFunc(r.allTenants), builder.WithPredicates(predicate.Or(netEyeCurrentVersionChanged, reconcileOnSpecOrDeletionChange))).
+		Watches(&neteye.NetEye{}, handler.EnqueueRequestsFromMapFunc(r.allTenants), builder.WithPredicates(netEyeChangedForTenants)).
 		Watches(admissionPolicy, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantPolicies).
 		Watches(admissionPolicyBinding, handler.EnqueueRequestsFromMapFunc(r.allTenants), onlyTheTenantPolicies).
 		Complete(r)
@@ -694,6 +694,12 @@ func tenantForProcedureGate(_ context.Context, gate client.Object) []reconcile.R
 	}
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: gate.GetNamespace(), Name: gate.GetNamespace()}}}
 }
+
+// netEyeChangedForTenants passes what of a NetEye resource every tenant
+// depends on: its version, its spec (the revoked Package Signers among it), and
+// its creation and deletion, since the union of the signers of all NetEye
+// resources shrinks when one is deleted.
+var netEyeChangedForTenants = predicate.Or(netEyeCurrentVersionChanged, reconcileOnSpecOrDeletionChange)
 
 // netEyeCurrentVersionChanged passes a NetEye resource whose
 // status.currentVersion changed.

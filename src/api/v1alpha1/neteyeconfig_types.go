@@ -609,6 +609,39 @@ type NetEyeSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=true
 	UseProcedureGates *bool `json:"useProcedureGates,omitempty"`
+
+	// ClassisServer holds the settings that the Classis Server of every tenant
+	// applies.
+	// +kubebuilder:validation:Optional
+	ClassisServer *NetEyeClassisServersSpec `json:"classisServer,omitempty"`
+}
+
+// NetEyeClassisServersSpec holds the settings that the Classis Server of every
+// tenant applies.
+type NetEyeClassisServersSpec struct {
+	// RevokedPackageSigners lists the Package Signers that every Classis Server
+	// refuses, each the SHA-256 of the DER certificate of the signer, as 64
+	// lowercase hex digits. A Server refuses a signature of a listed signer on
+	// upload, and offers to nobody the entries that the signer signed until
+	// another signer signs them again. Clients are not told. The operator writes
+	// the list into the configuration of the Server of every tenant and restarts
+	// each Server, because a Server reads the list only at start. A Classis
+	// Server release without the list (Classis ADR-0067) refuses to start when
+	// the list is not empty.
+	// +kubebuilder:validation:Optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:Pattern=`^[0-9a-f]{64}$`
+	RevokedPackageSigners []string `json:"revokedPackageSigners,omitempty"`
+}
+
+// EffectiveRevokedPackageSigners returns the Package Signers that every
+// Classis Server refuses, none when the spec sets no list.
+func (s *NetEyeSpec) EffectiveRevokedPackageSigners() []string {
+	if s == nil || s.ClassisServer == nil {
+		return nil
+	}
+	return s.ClassisServer.RevokedPackageSigners
 }
 
 // EffectiveUseProcedureGates reports whether procedure gates are honored,

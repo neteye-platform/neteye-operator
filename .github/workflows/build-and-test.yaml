@@ -100,9 +100,31 @@ jobs:
         working-directory: src
         run: CGO_ENABLED=1 go test -race ./controllers/...
 
+  classis-server-image:
+    name: Classis Server image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      # The Server refuses a key of its configuration that it does not know, so
+      # an image that predates one the operator renders stops every tenant.
+      - name: Start the pinned image on the rendered configuration
+        working-directory: src
+        run: make test-classis-server-image
+
   build-operator:
     name: Build operator image
-    needs: [release-metadata, unit, integration]
+    needs: [release-metadata, unit, integration, classis-server-image]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
