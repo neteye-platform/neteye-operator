@@ -545,5 +545,192 @@ class UpdateNightlyChannelTest(CatalogTreeTestCase):
             )
 
 
+class PreviousLineUpgradeEdgeTest(CatalogTreeTestCase):
+    """The head of a NetEye line skips the head of the previous line."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write_channel(
+            "4.51-stable",
+            "  - name: neteye-operator.0.3.3\n"
+            "  - name: neteye-operator.0.4.0\n"
+            "    replaces: neteye-operator.0.3.3\n",
+        )
+        self.write_bundle("0.3.3", digest("1"))
+        self.write_bundle("0.4.0", digest("2"))
+
+    def test_first_release_of_a_line_skips_previous_line_head(self) -> None:
+        update_catalog(self.catalog_path, "0.5.0", digest("3"), neteye_version="4.52")
+
+        self.assertEqual(
+            self.channel("4.52-stable"),
+            channel_document(
+                "4.52-stable",
+                "  - name: neteye-operator.0.5.0\n"
+                "    skips:\n"
+                "      - neteye-operator.0.4.0\n",
+            ),
+        )
+
+    def test_every_release_of_a_line_keeps_the_edge(self) -> None:
+        update_catalog(self.catalog_path, "0.5.0", digest("3"), neteye_version="4.52")
+        update_catalog(self.catalog_path, "0.5.1", digest("4"), neteye_version="4.52")
+
+        self.assertTrue(
+            self.channel("4.52-stable").endswith(
+                "  - name: neteye-operator.0.5.1\n"
+                "    replaces: neteye-operator.0.5.0\n"
+                "    skips:\n"
+                "      - neteye-operator.0.4.0\n"
+            )
+        )
+
+    def test_skips_only_the_closest_older_line(self) -> None:
+        self.write_channel("4.50-stable", "  - name: neteye-operator.0.1.14\n")
+        self.write_channel(
+            "4.51-nightly", "  - name: neteye-operator.0.4.0-nightly-abc1234\n"
+        )
+        self.write_channel("4.53-stable", "  - name: neteye-operator.0.6.0\n")
+
+        update_catalog(self.catalog_path, "0.5.0", digest("3"), neteye_version="4.52")
+
+        self.assertEqual(
+            self.channel("4.52-stable").count("      - "),
+            1,
+            self.channel("4.52-stable"),
+        )
+        self.assertIn("      - neteye-operator.0.4.0\n", self.channel("4.52-stable"))
+
+    def test_orders_lines_numerically_across_majors(self) -> None:
+        self.write_channel("4.100-stable", "  - name: neteye-operator.0.9.0\n")
+
+        update_catalog(self.catalog_path, "1.0.0", digest("3"), neteye_version="5.0")
+
+        self.assertIn("      - neteye-operator.0.9.0\n", self.channel("5.0-stable"))
+
+    def test_unversioned_release_has_no_cross_line_edge(self) -> None:
+        update_catalog(self.catalog_path, "0.2.0", digest("3"))
+
+        self.assertNotIn("0.4.0", self.channel("stable"))
+
+    def test_rejects_invalid_neteye_release_line(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid NetEye release line"):
+            update_catalog(self.catalog_path, "0.5.0", digest("3"), neteye_version="4")
+
+    def test_backport_becomes_the_next_line_upgrade_source(self) -> None:
+        update_catalog(self.catalog_path, "0.5.0", digest("3"), neteye_version="4.52")
+
+        update_catalog_backport(self.catalog_path, "0.4.1", digest("4"))
+
+        self.assertTrue(
+            self.channel("4.51-stable").endswith(
+                "  - name: neteye-operator.0.4.1\n"
+                "    replaces: neteye-operator.0.4.0\n"
+                "    skips:\n"
+                "      - neteye-operator.0.3.3\n"
+            )
+        )
+        self.assertEqual(
+            self.channel("4.52-stable"),
+            channel_document(
+                "4.52-stable",
+                "  - name: neteye-operator.0.5.0\n"
+                "    skips:\n"
+                "      - neteye-operator.0.4.0\n"
+                "      - neteye-operator.0.4.1\n",
+            ),
+        )
+
+        update_catalog(self.catalog_path, "0.5.1", digest("5"), neteye_version="4.52")
+
+        self.assertTrue(
+            self.channel("4.52-stable").endswith(
+                "  - name: neteye-operator.0.5.1\n"
+                "    replaces: neteye-operator.0.5.0\n"
+                "    skips:\n"
+                "      - neteye-operator.0.4.1\n"
+            )
+        )
+
+    def test_backport_keeps_its_own_previous_line_edge(self) -> None:
+        self.write_channel("4.50-stable", "  - name: neteye-operator.0.1.14\n")
+        self.write_channel(
+            "4.51-stable",
+            "  - name: neteye-operator.0.4.0\n"
+            "    skips:\n"
+            "      - neteye-operator.0.1.14\n",
+        )
+
+        update_catalog_backport(self.catalog_path, "0.4.1", digest("4"))
+
+        self.assertTrue(
+            self.channel("4.51-stable").endswith(
+                "  - name: neteye-operator.0.4.1\n"
+                "    replaces: neteye-operator.0.4.0\n"
+                "    skips:\n"
+                "      - neteye-operator.0.1.14\n"
+            )
+        )
+
+    def test_backport_leaves_nightly_channels_untouched(self) -> None:
+        update_catalog(self.catalog_path, "0.5.0", digest("3"), neteye_version="4.52")
+        self.write_channel(
+            "4.51-nightly", f"  - name: {PACKAGE}.0.4.0-nightly-0000001\n"
+        )
+        self.write_channel(
+            "4.52-nightly",
+            f"  - name: {PACKAGE}.0.4.0-nightly-0000002\n"
+            "    skips:\n"
+            f"      - {PACKAGE}.0.4.0-nightly-0000001\n",
+        )
+        before = {name: self.channel(name) for name in ("4.51-nightly", "4.52-nightly")}
+
+        update_catalog_backport(self.catalog_path, "0.4.1", digest("4"))
+
+        for name, text in before.items():
+            self.assertEqual(self.channel(name), text)
+        self.assertIn("  - name: neteye-operator.0.4.1\n", self.channel("4.51-stable"))
+        self.assertIn("      - neteye-operator.0.4.1\n", self.channel("4.52-stable"))
+
+    def test_nightly_head_skips_previous_line_nightly_head(self) -> None:
+        previous = f"{PACKAGE}.0.4.0-nightly-0000001"
+        self.write_channel(
+            "4.51-nightly",
+            f"  - name: {PACKAGE}.0.3.3-nightly-0000000\n"
+            f"  - name: {previous}\n"
+            f"    replaces: {PACKAGE}.0.3.3-nightly-0000000\n",
+        )
+        tags = [
+            "0.5.0-nightly-0000002",
+            "0.5.0-nightly-0000003",
+            "0.5.0-nightly-0000004",
+        ]
+
+        update_nightly_channel(self.catalog_path, nightly(tags[0]), "4.52")
+        self.assertEqual(
+            self.channel("4.52-nightly"),
+            channel_document(
+                "4.52-nightly",
+                f"  - name: {PACKAGE}.{tags[0]}\n    skips:\n      - {previous}\n",
+            ),
+        )
+
+        for tag in tags[1:]:
+            update_nightly_channel(self.catalog_path, nightly(tag), "4.52")
+        self.assertTrue(
+            self.channel("4.52-nightly").endswith(
+                f"  - name: {PACKAGE}.{tags[2]}\n"
+                f"    replaces: {PACKAGE}.{tags[1]}\n"
+                "    skips:\n"
+                f"      - {PACKAGE}.{tags[0]}\n"
+                f"      - {previous}\n"
+            )
+        )
+        self.assertNotIn(f"{PACKAGE}.0.4.0\n", self.channel("4.52-nightly"))
+        self.assertFalse(
+            update_nightly_channel(self.catalog_path, nightly(tags[2]), "4.52")
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
