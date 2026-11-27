@@ -88,6 +88,10 @@ lint-fix: golangci-lint ## Run golangci-lint and apply available fixes.
 test: generate fmt vet manifests envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./...
 
+.PHONY: test-classis-server-image
+test-classis-server-image: ## Start the pinned Classis Server image on the configuration the operator renders (needs docker).
+	CLASSIS_SERVER_IMAGE_TEST=1 go test ./controllers -run TestPinnedClassisServerImage -count=1 -v
+
 .PHONY: build
 build: generate fmt vet ## Build the manager binary.
 	go build -ldflags "$(LD_FLAGS)" -o bin/manager main.go
