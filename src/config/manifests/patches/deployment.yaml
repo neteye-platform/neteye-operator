@@ -155,7 +155,7 @@ spec:
                       }
                       - {
                         name: RELATED_IMAGE_EDOT_GATEWAY,
-                        value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1,
+                        value: docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.7@sha256:cf610854505d489d151c303fd67c5e740efa2819e84339f1d236db806f4c2161,
                       }
                       - {
                         name: RELATED_IMAGE_GUACAMOLE,
