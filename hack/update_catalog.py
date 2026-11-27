@@ -445,7 +445,8 @@ def update_catalog_backport(
 
     As for any release, the new head skips every earlier entry of the channel.
     In a NetEye line channel it becomes the upgrade source of the next line, so
-    the head of that line skips it too.
+    the head of that line skips it too. Nightly channels are left to the
+    nightly build.
     """
     if not valid_semver(version):
         raise ValueError(f"invalid release version: {version}")
@@ -461,6 +462,8 @@ def update_catalog_backport(
 
     matched: list[Channel] = []
     for name in catalog.channel_names():
+        if name.endswith("-nightly"):
+            continue
         channel = catalog.read_channel(name)
         if channel is None or not channel.entries:
             continue
@@ -481,16 +484,19 @@ def update_catalog_backport(
             "nothing to backport"
         )
 
+    matched_names = {channel.name for channel in matched}
     for channel in matched:
         match = LINE_CHANNEL_PATTERN.fullmatch(channel.name)
         if not match:
             channel.append_release(bundle_name)
             catalog.write_channel(channel)
             continue
-        line, kind = f"{match['major']}.{match['minor']}", match["kind"]
-        channel.append_release(bundle_name, catalog.previous_line_head(line, kind))
+        line = f"{match['major']}.{match['minor']}"
+        channel.append_release(bundle_name, catalog.previous_line_head(line, "stable"))
         catalog.write_channel(channel)
-        next_name = catalog.line_channel(line, kind, newer=True)
+        next_name = catalog.line_channel(line, "stable", newer=True)
+        if next_name in matched_names:
+            continue
         next_channel = catalog.read_channel(next_name) if next_name else None
         next_head = next_channel.head() if next_channel else None
         if next_head and bundle_name not in next_head.skips:

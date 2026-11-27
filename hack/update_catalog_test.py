@@ -672,6 +672,26 @@ class PreviousLineUpgradeEdgeTest(CatalogTreeTestCase):
             )
         )
 
+    def test_backport_leaves_nightly_channels_untouched(self) -> None:
+        update_catalog(self.catalog_path, "0.5.0", digest("3"), neteye_version="4.52")
+        self.write_channel(
+            "4.51-nightly", f"  - name: {PACKAGE}.0.4.0-nightly-0000001\n"
+        )
+        self.write_channel(
+            "4.52-nightly",
+            f"  - name: {PACKAGE}.0.4.0-nightly-0000002\n"
+            "    skips:\n"
+            f"      - {PACKAGE}.0.4.0-nightly-0000001\n",
+        )
+        before = {name: self.channel(name) for name in ("4.51-nightly", "4.52-nightly")}
+
+        update_catalog_backport(self.catalog_path, "0.4.1", digest("4"))
+
+        for name, text in before.items():
+            self.assertEqual(self.channel(name), text)
+        self.assertIn("  - name: neteye-operator.0.4.1\n", self.channel("4.51-stable"))
+        self.assertIn("      - neteye-operator.0.4.1\n", self.channel("4.52-stable"))
+
     def test_nightly_head_skips_previous_line_nightly_head(self) -> None:
         previous = f"{PACKAGE}.0.4.0-nightly-0000001"
         self.write_channel(
