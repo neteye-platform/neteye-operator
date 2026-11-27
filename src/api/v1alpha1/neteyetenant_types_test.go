@@ -6,6 +6,7 @@ package v1alpha1
 import (
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -91,5 +92,64 @@ func TestNetEyeTenantAlyvixEnabledAndEffectiveRDPPorts(t *testing.T) {
 	ports[0] = 1
 	if configured.RDP.Ports[0] != 3390 {
 		t.Error("EffectiveRDPPorts returns the spec slice")
+	}
+}
+
+// TestGeneratedCRDKeepsTheTenantDatabaseTypeImmutable keeps the rule that
+// forbids moving the records between a local and an external database.
+func TestGeneratedCRDKeepsTheStorageProvidersImmutable(t *testing.T) {
+	data, err := os.ReadFile("../../config/crd/bases/neteye.cloud_neteyetenants.yaml")
+	if err != nil {
+		t.Fatalf("read generated NetEyeTenant CRD: %v", err)
+	}
+	crd := string(data)
+	if got := strings.Count(crd, "self.provider == oldSelf.provider"); got != 2 {
+		t.Errorf("generated CRD has %d immutable providers, want 2 (database and objectStorage)", got)
+	}
+	for _, want := range []string{"external is required when provider is external", "external must not be set when provider is local", "local must not be set when provider is external"} {
+		if got := strings.Count(crd, want); got != 2 {
+			t.Errorf("generated CRD has rule %q %d times, want 2", want, got)
+		}
+	}
+	var parsed map[string]any
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parse generated NetEyeTenant CRD: %v", err)
+	}
+	// The images come from the operator for the NetEye version, and the
+	// instances of the database are its replicas: none of these is a field.
+	properties := map[string]bool{}
+	var walk func(node any)
+	walk = func(node any) {
+		switch node := node.(type) {
+		case map[string]any:
+			if props, ok := node["properties"].(map[string]any); ok {
+				for name := range props {
+					properties[name] = true
+				}
+			}
+			for _, child := range node {
+				walk(child)
+			}
+		case []any:
+			for _, child := range node {
+				walk(child)
+			}
+		}
+	}
+	versions, _ := parsed["spec"].(map[string]any)["versions"].([]any)
+	if len(versions) != 1 {
+		t.Fatalf("generated CRD has %d versions, want 1", len(versions))
+	}
+	schema := versions[0].(map[string]any)["schema"].(map[string]any)["openAPIV3Schema"].(map[string]any)
+	walk(schema["properties"].(map[string]any)["spec"])
+	for _, field := range []string{"image", "imageName", "instances", "type", "hostname", "blobs"} {
+		if properties[field] {
+			t.Errorf("generated CRD still has the field %q", field)
+		}
+	}
+	for _, field := range []string{"provider", "replicas", "dbConnection", "objectStorage"} {
+		if !properties[field] {
+			t.Errorf("generated CRD has no field %q", field)
+		}
 	}
 }

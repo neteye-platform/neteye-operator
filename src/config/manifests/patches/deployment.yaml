@@ -60,6 +60,15 @@ spec:
             - apiGroups: [cilium.io]
               resources: [ciliumnetworkpolicies]
               verbs: [delete, get]
+            - apiGroups: [postgresql.cnpg.io]
+              resources: [clusters, databases, databaseroles]
+              verbs: [create, get, list, update, watch]
+            - apiGroups: [batch]
+              resources: [jobs]
+              verbs: [create, delete, get, list, watch]
+            - apiGroups: [""]
+              resources: [persistentvolumeclaims]
+              verbs: [create, get, list, watch]
             - apiGroups: [neteye.cloud]
               resources: [neteyes]
               verbs: [create, delete, get, list, patch, update, watch]
@@ -164,6 +173,22 @@ spec:
                       - {
                         name: RELATED_IMAGE_GUACD,
                         value: docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f,
+                      }
+                      - {
+                        name: RELATED_IMAGE_CLASSIS_SERVER,
+                        value: ghcr.io/neteye-platform/classis-server:0.2.0@sha256:d1ffdcb674f5ec6e8c6f9300c47e9b1cd12fa8b8114135c0dd8f1e25d041ddf4,
+                      }
+                      - {
+                        name: RELATED_IMAGE_POSTGRESQL,
+                        value: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie@sha256:37fdeea29a4d3ed14570f719488ba55bd21e8975eaea864be5ce74d25a9a13de,
+                      }
+                      - {
+                        name: RELATED_IMAGE_RUSTFS,
+                        value: docker.io/rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a,
+                      }
+                      - {
+                        name: RELATED_IMAGE_S3_CLIENT,
+                        value: docker.io/amazon/aws-cli:2.41.0@sha256:c5d442efed03350a3c3d7a42b23f42a8e7b76acf5dbb4b021f2641bcd36680ea,
                       }
                     securityContext:
                       {

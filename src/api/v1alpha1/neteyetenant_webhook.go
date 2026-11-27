@@ -33,9 +33,10 @@ func SetupNetEyeTenantWebhookWithManager(mgr ctrl.Manager) error {
 // +kubebuilder:object:generate=false
 
 // NetEyeTenantValidator validates the NetEyeTenant rules that the CRD schema
-// cannot express: the version transitions, the namespace of a tenant, and a
-// display name that is unique among tenants. The CRD validates everything
-// that depends on one field only.
+// cannot express: the version transitions, the namespace of a tenant, a
+// display name that is unique among tenants, and the database and the object
+// store of the Classis Server, which depend on several fields of the spec. The
+// CRD validates everything that depends on one field only.
 type NetEyeTenantValidator struct {
 	reader client.Reader
 }
@@ -46,6 +47,7 @@ func (v *NetEyeTenantValidator) ValidateCreate(ctx context.Context, obj *NetEyeT
 	if err := validateVersionOnCreate(obj.Spec.Version); err != nil {
 		errors = append(errors, err)
 	}
+	errors = append(errors, ValidateClassisServer(obj)...)
 	if len(errors) == 0 {
 		checks, err := v.validateNotNewerThanNetEye(ctx, obj)
 		if err != nil {
@@ -62,14 +64,16 @@ func (v *NetEyeTenantValidator) ValidateCreate(ctx context.Context, obj *NetEyeT
 
 // ValidateUpdate validates NetEyeTenant resources on update. The name and the
 // namespace of a resource never change. The version follows the rules of the
-// NetEye resource, and a new display name must be unique. An update of a
-// tenant that is being deleted, such as the removal of its finalizer, is
-// always accepted.
+// NetEye resource, the database of the Classis Server is checked again, the
+// stores of the tenant are never removed, and a new display name must be
+// unique. An update of a tenant that is being deleted, such as the removal of
+// its finalizer, is always accepted.
 func (v *NetEyeTenantValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *NetEyeTenant) (admission.Warnings, error) {
 	if !newObj.DeletionTimestamp.IsZero() {
 		return nil, nil
 	}
-	var errors field.ErrorList
+	errors := ValidateClassisServer(newObj)
+	errors = append(errors, validateStoresKept(oldObj, newObj)...)
 	if err := validateVersionOnUpdate(oldObj.Spec.Version, newObj.Spec.Version); err != nil {
 		errors = append(errors, err)
 	} else if oldObj.Spec.Version != newObj.Spec.Version {
@@ -87,6 +91,60 @@ func (v *NetEyeTenantValidator) ValidateUpdate(ctx context.Context, oldObj, newO
 		errors = append(errors, checks...)
 	}
 	return nil, tenantInvalid(newObj, errors)
+}
+
+// ValidateClassisServer enforces that a Classis Server has the database and
+// the object store of the tenant, and that its credentials come from where the
+// database provider says: the operator generates them for a local database,
+// and an external database names them.
+func ValidateClassisServer(tenant *NetEyeTenant) field.ErrorList {
+	server := tenant.Spec.ClassisServer
+	if server == nil {
+		return nil
+	}
+	var errors field.ErrorList
+	if tenant.Spec.ObjectStorage == nil {
+		errors = append(errors, field.Required(field.NewPath("spec", "objectStorage"), "classisServer needs objectStorage"))
+	}
+	database := tenant.Spec.Database
+	if database == nil {
+		return append(errors, field.Required(field.NewPath("spec", "database"), "classisServer needs database"))
+	}
+	connection := server.DBConnection
+	path := field.NewPath("spec", "classisServer", "dbConnection")
+	switch database.Provider {
+	case TenantStorageExternal:
+		if connection == nil || connection.UsernameSecret == nil {
+			errors = append(errors, field.Required(path.Child("usernameSecret"), "required when spec.database.provider is external"))
+		}
+		if connection == nil || connection.PasswordSecret == nil {
+			errors = append(errors, field.Required(path.Child("passwordSecret"), "required when spec.database.provider is external"))
+		}
+	case TenantStorageLocal:
+		if connection != nil && connection.UsernameSecret != nil {
+			errors = append(errors, field.Forbidden(path.Child("usernameSecret"), "must not be set when spec.database.provider is local: the operator generates the credentials"))
+		}
+		if connection != nil && connection.PasswordSecret != nil {
+			errors = append(errors, field.Forbidden(path.Child("passwordSecret"), "must not be set when spec.database.provider is local: the operator generates the credentials"))
+		}
+	}
+	return errors
+}
+
+// validateStoresKept refuses the removal of the database or of the object store
+// of a tenant. The CRD keeps their provider immutable, but its rule compares
+// the old and the new store only when both exist: removing a store and adding
+// it again with another provider would move the records without a migration.
+// A store can be added to a tenant that has none.
+func validateStoresKept(oldObj, newObj *NetEyeTenant) field.ErrorList {
+	var errors field.ErrorList
+	if oldObj.Spec.Database != nil && newObj.Spec.Database == nil {
+		errors = append(errors, field.Forbidden(field.NewPath("spec", "database"), "must not be removed once set: its provider is immutable"))
+	}
+	if oldObj.Spec.ObjectStorage != nil && newObj.Spec.ObjectStorage == nil {
+		errors = append(errors, field.Forbidden(field.NewPath("spec", "objectStorage"), "must not be removed once set: its provider is immutable"))
+	}
+	return errors
 }
 
 // ValidateDelete allows NetEyeTenant deletion.
