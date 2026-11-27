@@ -456,7 +456,8 @@ func (s *NetEyeGatewaySpec) EffectiveManaged() bool {
 // Add new entries here when a NetEye release ships a new Keycloak (or other)
 // image version.
 var netEyeVersionMap = map[string]NetEyeComponents{
-	CurrentNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1", GuacamoleImage: "docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40", GuacdImage: "docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f"},
+	PreviousNetEyeVersion: {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1", GuacamoleImage: "docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40", GuacdImage: "docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f"},
+	CurrentNetEyeVersion:  {KeycloakImage: "ghcr.io/neteye-platform/neteye-keycloak:1.0.11@sha256:9aa0fa01771989e03911e6d00e81e3c279bc2ac925615466d2633fb40c2641c9", OTelCollectorImage: "docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea", EDOTGatewayImage: "docker.elastic.co/elastic-agent/elastic-otel-collector:9.5.6@sha256:9caf6481865156cc1ae52992be3b0596719a849501d677e36f38312e8c8ee0f1", GuacamoleImage: "docker.io/guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40", GuacdImage: "docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f"},
 }
 
 const (
@@ -475,8 +476,8 @@ const (
 	DefaultCABundleConfigMapName = "neteye-ca-bundle"
 	DefaultCABundleKey           = "ca-bundle.pem"
 
-	CurrentNetEyeVersion  = "4.51"
-	PreviousNetEyeVersion = "4.50"
+	CurrentNetEyeVersion  = "4.52"
+	PreviousNetEyeVersion = "4.51"
 )
 
 // ComponentsForVersion returns the component image set for the given NetEye
@@ -533,7 +534,7 @@ func IsLatestVersion(version string) bool {
 
 // NetEyeSpec defines the desired state of NetEyeConfig.
 type NetEyeSpec struct {
-	// Version is the NetEye product version string, e.g. "4.51".
+	// Version is the NetEye product version string, e.g. "4.52".
 	// It is used to resolve the correct component images (Keycloak, etc.).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
