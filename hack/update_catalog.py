@@ -26,6 +26,9 @@ NIGHTLY_IMAGE_PATTERN = re.compile(
 )
 NIGHTLY_VERSION_PATTERN = re.compile(r"-nightly-[0-9a-f]{7,40}$")
 NIGHTLY_BUNDLES_FILE = "nightly.yaml"
+LINE_CHANNEL_PATTERN = re.compile(
+    r"^(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)-(?P<kind>stable|nightly)$"
+)
 
 
 def document_field(document: str, field_name: str) -> str | None:
@@ -121,6 +124,13 @@ def bundle_document(version: str, image: str) -> str:
     )
 
 
+def line_key(neteye_version: str) -> tuple[int, int]:
+    match = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", neteye_version)
+    if not match:
+        raise ValueError(f"invalid NetEye release line: {neteye_version}")
+    return int(match.group(1)), int(match.group(2))
+
+
 def fetch_latest_neteye_version() -> str:
     response = requests.get(
         NETEYE_VERSION_URL,
@@ -207,19 +217,23 @@ class Channel:
             )
         return heads[0]
 
-    def append_release(self, bundle_name: str) -> None:
+    def append_release(self, bundle_name: str, upgrade_from: str | None = None) -> None:
         """Add a new head that every earlier entry can upgrade to directly.
 
         The new entry replaces the current head and skips every other existing
         entry, so an installation can jump from any version in the channel to
-        the new one without stepping through the versions in between.
+        the new one without stepping through the versions in between. It also
+        skips upgrade_from, the head of the previous NetEye release line.
         """
         head = self.head()
-        if head is None:
-            self.entries.append(Entry(bundle_name))
-            return
-        skips = [entry.name for entry in self.entries if entry.name != head.name]
-        self.entries.append(Entry(bundle_name, replaces=head.name, skips=skips))
+        skips = [
+            entry.name for entry in self.entries if head and entry.name != head.name
+        ]
+        if upgrade_from and all(entry.name != upgrade_from for entry in self.entries):
+            skips.append(upgrade_from)
+        self.entries.append(
+            Entry(bundle_name, replaces=head.name if head else None, skips=skips)
+        )
 
     def validate_entry_versions(self) -> None:
         for entry in self.entries:
@@ -278,6 +292,32 @@ class Catalog:
         if document is None:
             return None
         return Channel.parse(document, name)
+
+    def line_channel(self, neteye_version: str, kind: str, newer: bool) -> str | None:
+        """The closest older (or newer) NetEye line channel of this kind."""
+        target = line_key(neteye_version)
+        lines = []
+        for name in self.channel_names():
+            match = LINE_CHANNEL_PATTERN.fullmatch(name)
+            if not match or match["kind"] != kind:
+                continue
+            key = (int(match["major"]), int(match["minor"]))
+            if (key > target) if newer else (key < target):
+                lines.append((key, name))
+        if not lines:
+            return None
+        return (min(lines) if newer else max(lines))[1]
+
+    def previous_line_head(self, neteye_version: str, kind: str) -> str | None:
+        """The head of the previous NetEye line, where its upgrades start from.
+
+        Users update to it before upgrading NetEye, so the head of every line
+        must skip it.
+        """
+        name = self.line_channel(neteye_version, kind, newer=False)
+        channel = self.read_channel(name) if name else None
+        head = channel.head() if channel else None
+        return head.name if head else None
 
     def write_channel(self, channel: Channel) -> None:
         atomic_write(self.channels_dir / f"{channel.name}.yaml", channel.render())
@@ -381,7 +421,10 @@ def update_catalog(
             f"{head.version}"
         )
 
-    channel.append_release(bundle_name)
+    upgrade_from = (
+        catalog.previous_line_head(neteye_version, "stable") if neteye_version else None
+    )
+    channel.append_release(bundle_name, upgrade_from)
     catalog.write_channel(channel)
     catalog.write_bundle(version, bundle_image)
     if neteye_version:
@@ -401,6 +444,8 @@ def update_catalog_backport(
     """Add a bugfix release to every channel whose head is on the same minor line.
 
     As for any release, the new head skips every earlier entry of the channel.
+    In a NetEye line channel it becomes the upgrade source of the next line, so
+    the head of that line skips it too.
     """
     if not valid_semver(version):
         raise ValueError(f"invalid release version: {version}")
@@ -437,8 +482,20 @@ def update_catalog_backport(
         )
 
     for channel in matched:
-        channel.append_release(bundle_name)
+        match = LINE_CHANNEL_PATTERN.fullmatch(channel.name)
+        if not match:
+            channel.append_release(bundle_name)
+            catalog.write_channel(channel)
+            continue
+        line, kind = f"{match['major']}.{match['minor']}", match["kind"]
+        channel.append_release(bundle_name, catalog.previous_line_head(line, kind))
         catalog.write_channel(channel)
+        next_name = catalog.line_channel(line, kind, newer=True)
+        next_channel = catalog.read_channel(next_name) if next_name else None
+        next_head = next_channel.head() if next_channel else None
+        if next_head and bundle_name not in next_head.skips:
+            next_head.skips.append(bundle_name)
+            catalog.write_channel(next_channel)
     catalog.write_bundle(version, bundle_image)
     return True
 
@@ -450,7 +507,8 @@ def update_nightly_channel(
 
     The head is the only entry carrying upgrade edges: it replaces the previous
     head and skips everything before that, so an installation can move to the
-    newest nightly from any older one. Earlier entries are rewritten as plain
+    newest nightly from any older one. It also skips the head of the previous
+    NetEye line's nightly channel. Earlier entries are rewritten as plain
     names, which keeps the channel linear in size instead of repeating the full
     predecessor list on every entry.
 
@@ -481,6 +539,9 @@ def update_nightly_channel(
         entries[-1].replaces = names[-2]
     if len(names) >= 3:
         entries[-1].skips = names[:-2]
+    upgrade_from = catalog.previous_line_head(neteye_version, "nightly")
+    if upgrade_from and upgrade_from not in names:
+        entries[-1].skips.append(upgrade_from)
     rewritten = Channel(channel_name, entries)
 
     changed = rewritten.render() != catalog.channel_text(channel_name)
