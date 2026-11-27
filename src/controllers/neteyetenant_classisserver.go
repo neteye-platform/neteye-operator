@@ -96,6 +96,7 @@ func classisServerCABundle(tenant *neteye.NetEyeTenant) *neteye.NetEyeConfigMapK
 // the fields is the order of the rendered keys and tables.
 type classisServerFile struct {
 	Listen   string                `toml:"listen"`
+	BasePath string                `toml:"base_path,omitempty"`
 	Log      classisServerLog      `toml:"log"`
 	REST     classisServerREST     `toml:"rest"`
 	Database classisServerDatabase `toml:"database"`
@@ -169,8 +170,9 @@ func classisServerFileOf(tenant *neteye.NetEyeTenant) classisServerFile {
 		s3.CAFile = classisServerMount("ca-bundle") + "/" + ca.Key
 	}
 	return classisServerFile{
-		Listen: fmt.Sprintf("0.0.0.0:%d", classisServerAgentPort),
-		Log:    classisServerLog{Format: logFormat},
+		Listen:   fmt.Sprintf("0.0.0.0:%d", classisServerAgentPort),
+		BasePath: spec.BasePath,
+		Log:      classisServerLog{Format: logFormat},
 		REST: classisServerREST{
 			Listen: fmt.Sprintf("0.0.0.0:%d", classisServerAdminPort),
 			Auth:   classisServerRESTAuth{BasicUsersFile: classisServerMount("admin-users") + "/basic-users"},

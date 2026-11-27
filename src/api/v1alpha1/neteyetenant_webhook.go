@@ -103,6 +103,9 @@ func ValidateClassisServer(tenant *NetEyeTenant) field.ErrorList {
 		return nil
 	}
 	var errors field.ErrorList
+	if err := ValidateClassisServerBasePath(server.BasePath); err != "" {
+		errors = append(errors, field.Invalid(field.NewPath("spec", "classisServer", "basePath"), server.BasePath, err))
+	}
 	if tenant.Spec.ObjectStorage == nil {
 		errors = append(errors, field.Required(field.NewPath("spec", "objectStorage"), "classisServer needs objectStorage"))
 	}
@@ -130,6 +133,32 @@ func ValidateClassisServer(tenant *NetEyeTenant) field.ErrorList {
 	}
 	return errors
 }
+
+// ValidateClassisServerBasePath applies the rule of the Classis Server to its
+// base_path, so that a value the server would refuse fails at admission and
+// not at its startup: empty, or a path that starts with a slash, has no empty
+// segment and no trailing slash, and whose segments hold only the unreserved
+// characters of RFC 3986. It returns the reason, or an empty string.
+func ValidateClassisServerBasePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	unreserved := func(c rune) bool {
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("-._~", c)
+	}
+	rest, found := strings.CutPrefix(path, "/")
+	if found {
+		for _, segment := range strings.Split(rest, "/") {
+			if segment == "" || strings.IndexFunc(segment, func(c rune) bool { return !unreserved(c) }) >= 0 {
+				return invalidClassisBasePath
+			}
+		}
+		return ""
+	}
+	return invalidClassisBasePath
+}
+
+const invalidClassisBasePath = "must be empty, or start with `/`, have no empty segment and no trailing `/`, and hold only letters, digits, `-`, `.`, `_` and `~` in its segments"
 
 // validateStoresKept refuses the removal of the database or of the object store
 // of a tenant. The CRD keeps their provider immutable, but its rule compares

@@ -134,6 +134,17 @@ spec:
                     maxLength: 253
                     minLength: 1
                     type: string
+                  basePath:
+                    description: |-
+                      BasePath is the path under which the proxy in front of the server
+                      publishes its Agent plane, such as /classis. The operator renders it as
+                      base_path in the configuration of the server, and the Gateway route of the
+                      tenant matches the same value, so that the two cannot disagree. Empty
+                      serves the Agent plane at the root. It is empty, or starts with a slash,
+                      has no empty segment and no trailing slash, and its segments hold only
+                      letters, digits, `-`, `.`, `_` and `~`.
+                    maxLength: 253
+                    type: string
                   dbConnection:
                     description: |-
                       DBConnection is how the server connects to the PostgreSQL of the tenant.

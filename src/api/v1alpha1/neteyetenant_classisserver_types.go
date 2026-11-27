@@ -48,6 +48,17 @@ type NetEyeClassisServerSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	AdminUsersSecretName string `json:"adminUsersSecretName,omitempty"`
 
+	// BasePath is the path under which the proxy in front of the server
+	// publishes its Agent plane, such as /classis. The operator renders it as
+	// base_path in the configuration of the server, and the Gateway route of the
+	// tenant matches the same value, so that the two cannot disagree. Empty
+	// serves the Agent plane at the root. It is empty, or starts with a slash,
+	// has no empty segment and no trailing slash, and its segments hold only
+	// letters, digits, `-`, `.`, `_` and `~`.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=253
+	BasePath string `json:"basePath,omitempty"`
+
 	// LogLevel is the RUST_LOG filter of the server.
 	// +kubebuilder:default=info
 	// +kubebuilder:validation:MaxLength=256

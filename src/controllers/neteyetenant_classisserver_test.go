@@ -201,6 +201,26 @@ func TestClassisServerConfigUsesTheStoresOfTheTenant(t *testing.T) {
 	}
 }
 
+// base_path is written when the spec sets it and omitted when it is empty, so
+// that a tenant without it keeps the file it had; changing it changes the file,
+// and with it the configuration version that rolls the Deployment.
+func TestClassisServerConfigRendersTheBasePathOnlyWhenSet(t *testing.T) {
+	tenant := classisServerTenant(neteye.TenantStorageLocal)
+	tenant.Spec.ObjectStorage = &neteye.TenantObjectStorageSpec{Provider: neteye.TenantStorageLocal}
+	without := mustClassisServerConfig(t, tenant)
+	if strings.Contains(without, "base_path") {
+		t.Errorf("config names base_path while the spec leaves it empty:\n%s", without)
+	}
+	tenant.Spec.ClassisServer.BasePath = "/classis"
+	with := mustClassisServerConfig(t, tenant)
+	if !strings.Contains(with, `base_path = "/classis"`) {
+		t.Errorf("config lacks base_path:\n%s", with)
+	}
+	if with == without {
+		t.Error("a change of the base path leaves the configuration, and its version, unchanged")
+	}
+}
+
 // mustClassisServerConfig renders the configuration of the server and fails the
 // test when it cannot.
 func mustClassisServerConfig(t *testing.T, tenant *neteye.NetEyeTenant) string {

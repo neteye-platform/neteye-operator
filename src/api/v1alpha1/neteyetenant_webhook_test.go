@@ -340,3 +340,23 @@ func TestNetEyeTenantValidatorAcceptsAnInvalidTenantBeingDeleted(t *testing.T) {
 		t.Fatalf("tenant being deleted rejected: %v", err)
 	}
 }
+
+// The webhook refuses a basePath the Classis Server would refuse at startup,
+// and names the field.
+func TestNetEyeTenantValidatorChecksTheBasePathOfTheClassisServer(t *testing.T) {
+	for _, ok := range []string{"", "/classis", "/fleet/classis", "/a-b_c.d~e"} {
+		if reason := ValidateClassisServerBasePath(ok); reason != "" {
+			t.Errorf("%q should be valid: %s", ok, reason)
+		}
+	}
+	for _, bad := range []string{"classis", "/", "/classis/", "//classis", "/classis//agents", "/classis?x=1", "/classis#top", "/with space", "/{id}", "/*"} {
+		tenant := testTenant("neteye-tenant-2bh46bfv", "neteye-tenant-2bh46bfv", "Default")
+		tenant.Spec.Database = &TenantDatabaseSpec{Provider: TenantStorageLocal}
+		tenant.Spec.ObjectStorage = &TenantObjectStorageSpec{Provider: TenantStorageLocal}
+		tenant.Spec.ClassisServer = &NetEyeClassisServerSpec{BasePath: bad}
+		_, err := tenantValidator(t).ValidateCreate(context.Background(), tenant)
+		if err == nil || !strings.Contains(err.Error(), "spec.classisServer.basePath") {
+			t.Errorf("%q: error = %v, want one naming spec.classisServer.basePath", bad, err)
+		}
+	}
+}
