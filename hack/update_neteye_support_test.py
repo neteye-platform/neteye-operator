@@ -24,7 +24,7 @@ class UpdateSourceTest(unittest.TestCase):
         self.assertIn('CurrentNetEyeVersion  = "4.51"', updated)
         self.assertEqual(updated.count('KeycloakImage: "keycloak:1"'), 2)
         self.assertIn("PreviousNetEyeVersion: {KeycloakImage:", updated)
-        self.assertIn("CurrentNetEyeVersion: {KeycloakImage:", updated)
+        self.assertIn("CurrentNetEyeVersion:  {KeycloakImage:", updated)
 
     def test_second_advance_drops_the_older_supported_entry(self) -> None:
         updated = update_source(update_source(SOURCE, "4.51"), "4.52")

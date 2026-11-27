@@ -73,7 +73,7 @@ def update_source(source: str, target_version: str) -> str:
     updated_map = (
         f"{map_match.group(1)}"
         f"\tPreviousNetEyeVersion: {current_images[0]},\n"
-        f"\tCurrentNetEyeVersion: {current_images[0]},\n"
+        f"\tCurrentNetEyeVersion:  {current_images[0]},\n"
         f"{map_match.group(3)}"
     )
     updated_source = (

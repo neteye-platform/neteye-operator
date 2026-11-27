@@ -450,7 +450,7 @@ spec:
                 type: boolean
               version:
                 description: |-
-                  Version is the NetEye product version string, e.g. "4.51".
+                  Version is the NetEye product version string, e.g. "4.52".
                   It is used to resolve the correct component images (Keycloak, etc.).
                 example: "4.51"
                 minLength: 1

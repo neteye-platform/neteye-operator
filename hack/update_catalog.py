@@ -508,7 +508,7 @@ def parse_args() -> argparse.Namespace:
         "--neteye-version",
         required=False,
         help=(
-            "NetEye release line for the versioned channel, e.g. 4.51; "
+            "NetEye release line for the versioned channel, e.g. 4.52; "
             "defaults to querying https://api.neteye.cloud/v2/config/version/latest"
         ),
     )
