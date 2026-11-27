@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,6 +55,12 @@ func TestPinnedClassisServerImageAcceptsTheRenderedConfiguration(t *testing.T) {
 	image := currentImages(t).ClassisServerImage
 	if override := strings.TrimSpace(os.Getenv(neteye.RelatedImageClassisServerEnv)); override != "" {
 		image = override
+	}
+	// Pulled once, so that no run below prints the progress of a pull.
+	pull, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if output, err := exec.CommandContext(pull, "docker", "pull", "--quiet", image).CombinedOutput(); err != nil { //nolint:gosec // the image is the one the operator pins
+		t.Fatalf("docker pull %s: %v\n%s", image, err, output)
 	}
 	tenant := classisServerTenant(neteye.TenantStorageExternal)
 	signers := []string{strings.Repeat("a", 64), strings.Repeat("b", 64)}
@@ -139,7 +146,8 @@ func runClassisServerImage(t *testing.T, image string, tenant *neteye.NetEyeTena
 	}
 	args = append(args, image)
 	args = append(args, container.Args...)
-	return dockerOutput(t, "", args...)
+	_, output := dockerRun(t, "", args...)
+	return output
 }
 
 // configuredFiles lists the files that the configuration names under
@@ -190,12 +198,14 @@ func writeClassisServerFile(t *testing.T, root, path, content string) {
 // so that the test holds no hash of its own.
 func classisServerImageCredential(t *testing.T, image string) string {
 	t.Helper()
-	return strings.TrimSpace(dockerOutput(t, "smoke-test", "run", "--rm", "-i", "--network", "none", image, "hash-credential", "--basic"))
+	stdout, _ := dockerRun(t, "smoke-test", "run", "--rm", "-i", "--network", "none", image, "hash-credential", "--basic")
+	return strings.TrimSpace(stdout)
 }
 
-// dockerOutput runs docker and returns what it wrote on both outputs. A
-// non-zero exit is no error here: the tests read what the server said.
-func dockerOutput(t *testing.T, stdin string, args ...string) string {
+// dockerRun runs docker and returns what it wrote on the standard output, and
+// on both outputs together. A non-zero exit is no error here: the tests read
+// what the server said.
+func dockerRun(t *testing.T, stdin string, args ...string) (stdout, output string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -203,16 +213,16 @@ func dockerOutput(t *testing.T, stdin string, args ...string) string {
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-	var output bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &output, &output
+	var out, both bytes.Buffer
+	cmd.Stdout, cmd.Stderr = io.MultiWriter(&out, &both), &both
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			t.Fatalf("docker %s: %v\n%s", strings.Join(args, " "), ctx.Err(), output.String())
+			t.Fatalf("docker %s: %v\n%s", strings.Join(args, " "), ctx.Err(), both.String())
 		}
 		var exited *exec.ExitError
 		if !errors.As(err, &exited) {
 			t.Fatalf("docker %s: %v", strings.Join(args, " "), err)
 		}
 	}
-	return output.String()
+	return out.String(), both.String()
 }
