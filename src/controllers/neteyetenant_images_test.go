@@ -18,6 +18,10 @@ import (
 // cluster, as the images of Keycloak do; the RELATED_IMAGE_* variables of the
 // operator override them.
 func TestTenantImagesFollowTheNetEyeVersion(t *testing.T) {
+	// The defaults, whatever the environment of the developer overrides.
+	for _, env := range []string{neteye.RelatedImageClassisServerEnv, neteye.RelatedImagePostgreSQLEnv, neteye.RelatedImageRustFSEnv, neteye.RelatedImageS3ClientEnv} {
+		t.Setenv(env, "")
+	}
 	r, _ := newTenantReconciler(t, netEyeResource())
 	images, err := r.tenantImages(context.Background())
 	if err != nil {
@@ -34,6 +38,7 @@ func TestTenantImagesFollowTheNetEyeVersion(t *testing.T) {
 		}
 	}
 
+	t.Setenv(neteye.RelatedImageClassisServerEnv, "registry.example/classis-server:dev")
 	t.Setenv(neteye.RelatedImagePostgreSQLEnv, "registry.example/postgresql:dev")
 	t.Setenv(neteye.RelatedImageRustFSEnv, "registry.example/rustfs:dev")
 	t.Setenv(neteye.RelatedImageS3ClientEnv, "registry.example/aws-cli:dev")
@@ -41,7 +46,7 @@ func TestTenantImagesFollowTheNetEyeVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if images.PostgreSQLImage != "registry.example/postgresql:dev" || images.RustFSImage != "registry.example/rustfs:dev" || images.S3ClientImage != "registry.example/aws-cli:dev" {
+	if images.ClassisServerImage != "registry.example/classis-server:dev" || images.PostgreSQLImage != "registry.example/postgresql:dev" || images.RustFSImage != "registry.example/rustfs:dev" || images.S3ClientImage != "registry.example/aws-cli:dev" {
 		t.Errorf("overrides ignored: %#v", images)
 	}
 }
